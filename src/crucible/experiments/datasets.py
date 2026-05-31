@@ -21,6 +21,7 @@ except ImportError:
 
 # Constants
 DEFAULT_DATASET_NAME: Final[str] = "legal-rag-bench"
+DEFAULT_GST_DATASET_NAME: Final[str] = "gst-legal-rag"
 
 
 @beartype
@@ -31,13 +32,17 @@ def create_phoenix_dataset(
     dataset_name: str | None = None,
 ) -> Dataset:
     """
-    Create or get a Phoenix dataset from Legal RAG Bench.
+    Create or get a Phoenix dataset from Legal RAG Bench or GST Legal RAG.
+
+    Routes to appropriate loader based on slice_name prefix:
+    - gst_* slices use GST Legal RAG loader
+    - other slices use Legal RAG Bench loader
 
     Args:
         client: Phoenix client instance.
-        corpus_dir: Path to Legal RAG Bench corpus.
-        slice_name: Dataset slice ("pico", "nano", or "full").
-        dataset_name: Name for the dataset (defaults to "legal-rag-bench-{slice}").
+        corpus_dir: Path to corpus directory.
+        slice_name: Dataset slice (e.g., "pico", "nano", "gst_pico", "gst_full").
+        dataset_name: Name for the dataset (auto-generated if None).
 
     Returns:
         Phoenix Dataset instance.
@@ -53,10 +58,20 @@ def create_phoenix_dataset(
     if not corpus_dir.exists():
         raise ValueError(f"Corpus directory does not exist: {corpus_dir}")
 
-    from crucible.datasets import load_legal_rag_bench
+    # Route to appropriate loader based on slice prefix
+    if slice_name.startswith("gst_"):
+        from crucible.datasets import load_gst_legal_rag
 
-    # Load Legal RAG Bench dataset
-    dataset = load_legal_rag_bench(cache_dir=corpus_dir, slice=slice_name)
+        load_fn = load_gst_legal_rag
+        base_name = DEFAULT_GST_DATASET_NAME
+    else:
+        from crucible.datasets import load_legal_rag_bench
+
+        load_fn = load_legal_rag_bench
+        base_name = DEFAULT_DATASET_NAME
+
+    # Load dataset
+    dataset = load_fn(cache_dir=corpus_dir, slice=slice_name)
 
     # Convert to Phoenix format
     # Phoenix internally maps dataset outputs to evaluator's 'expected' parameter
@@ -76,7 +91,7 @@ def create_phoenix_dataset(
         )
 
     # Create or get dataset in Phoenix
-    name = dataset_name or f"{DEFAULT_DATASET_NAME}-{slice_name}"
+    name = dataset_name or f"{base_name}-{slice_name}"
 
     # Try to get existing dataset first
     try:
@@ -92,7 +107,7 @@ def create_phoenix_dataset(
             metadata=metadata_list,
             input_keys=["input"],
             output_keys=["expected"],
-            dataset_description=f"Legal RAG Bench {slice_name} slice",
+            dataset_description=f"{base_name} {slice_name} slice",
         )
 
 
@@ -106,7 +121,7 @@ def get_phoenix_dataset(
 
     Args:
         client: Phoenix client instance.
-        slice_name: Dataset slice ("pico", "nano", or "full").
+        slice_name: Dataset slice (e.g., "pico", "nano", "gst_pico", "gst_full").
 
     Returns:
         Phoenix Dataset instance or None if not found.
@@ -115,7 +130,13 @@ def get_phoenix_dataset(
     if Client is None:
         return None
 
-    name = f"{DEFAULT_DATASET_NAME}-{slice_name}"
+    # Route to appropriate base name based on slice prefix
+    if slice_name.startswith("gst_"):
+        base_name = DEFAULT_GST_DATASET_NAME
+    else:
+        base_name = DEFAULT_DATASET_NAME
+
+    name = f"{base_name}-{slice_name}"
 
     try:
         return client.datasets.get_dataset(dataset=name)

@@ -21,6 +21,26 @@ datasets:
       temperature: 0.0
       max_concurrent: 10
 
+  gst_legal_rag:
+    # Path to GST Legal RAG corpus
+    path: ${DATA_DIR:-data/rag}/gst_legal_rag
+
+    # Cache directory for GST dataset (vendored local files)
+    cache_path: ${CACHE_DIR:-data/rag}/gst_legal_rag
+
+    # Embedder configuration for retrieval
+    embeddings:
+      provider: huggingface  # or openai
+      model: sentence-transformers/all-MiniLM-L6-v2
+
+    # DeepEval LLM-judge configuration
+    deepeval:
+      enabled: true
+      judge_model: gpt-4o-mini
+      judge_model_provider: openai  # or bedrock
+      temperature: 0.0
+      max_concurrent: 10
+
 metrics:
   # RAG quality metrics (computed by DeepEval)
   - faithfulness

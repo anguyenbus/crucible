@@ -36,22 +36,34 @@ load_dotenv()
 
 def load_dataset(slice_name: str, config: dict) -> Any:
     """
-    Load Legal RAG Bench dataset by slice.
+    Load dataset by slice, routing to appropriate loader.
+
+    Routes to GST Legal RAG loader for gst_* slices, otherwise to
+    Legal RAG Bench loader.
 
     Args:
-        slice_name: Slice of dataset ('pico', 'nano', or 'full').
+        slice_name: Slice of dataset (e.g., 'pico', 'nano', 'full', 'gst_pico').
         config: Configuration dictionary.
 
     Returns:
         Iterator over dataset items.
 
     """
-    from crucible.datasets import load_legal_rag_bench
+    # Route to appropriate loader based on slice prefix
+    if slice_name.startswith("gst_"):
+        from crucible.datasets import load_gst_legal_rag
 
-    dataset_config = config["datasets"].get("legal_rag_bench", {})
-    cache_dir = Path(dataset_config.get("cache_path", "data/rag/legal_rag_bench"))
+        dataset_config = config["datasets"].get("gst_legal_rag", {})
+        cache_dir = Path(dataset_config.get("cache_path", "data/rag/gst_legal_rag"))
 
-    return load_legal_rag_bench(cache_dir=cache_dir, slice=slice_name)
+        return load_gst_legal_rag(cache_dir=cache_dir, slice=slice_name)
+    else:
+        from crucible.datasets import load_legal_rag_bench
+
+        dataset_config = config["datasets"].get("legal_rag_bench", {})
+        cache_dir = Path(dataset_config.get("cache_path", "data/rag/legal_rag_bench"))
+
+        return load_legal_rag_bench(cache_dir=cache_dir, slice=slice_name)
 
 
 @beartype
@@ -119,9 +131,16 @@ def _run_phoenix_native(args: Any, config: dict) -> None:
     output_dir = Path("results") / "eval_rag" / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get dataset config
-    dataset_config = config["datasets"].get("legal_rag_bench", {})
-    corpus_dir = Path(dataset_config.get("path", "data/rag/legal_rag_bench/corpus_files"))
+    # Get dataset config based on slice prefix
+    if args.slice.startswith("gst_"):
+        dataset_key = "gst_legal_rag"
+        dataset_name_prefix = "gst-legal-rag"
+    else:
+        dataset_key = "legal_rag_bench"
+        dataset_name_prefix = "legal-rag-bench"
+
+    dataset_config = config["datasets"].get(dataset_key, {})
+    corpus_dir = Path(dataset_config.get("path", f"data/rag/{dataset_key}/corpus_files"))
 
     # Create shared embedder
     embeddings_config = dataset_config.get("embeddings", {})
@@ -168,7 +187,7 @@ def _run_phoenix_native(args: Any, config: dict) -> None:
         corpus_dir=corpus_dir,
         endpoint=phoenix_endpoint,
         slice_name=args.slice,
-        experiment_name=f"legal-rag-bench-{args.slice}",
+        experiment_name=f"{dataset_name_prefix}-{args.slice}",
         judge_model=judge_model,
     )
 
@@ -200,9 +219,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--slice",
-        choices=["pico", "nano", "full"],
+        choices=["pico", "nano", "full", "gst_pico", "gst_nano", "gst_mini", "gst_full"],
         default="pico",
-        help="Dataset slice (pico=2 queries, nano=10 queries, full=100 queries)",
+        help=(
+            "Dataset slice: "
+            "pico=2, nano=10, full=100 (Legal RAG Bench); "
+            "gst_pico=2, gst_nano=10, gst_mini=20, gst_full=76 (GST Legal RAG)"
+        ),
     )
     parser.add_argument(
         "--rag",
@@ -295,12 +318,20 @@ def main() -> None:
         args.output_dir = Path("results") / "eval_rag" / timestamp
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load Legal RAG Bench dataset
-    dataset_config = config["datasets"].get("legal_rag_bench", {})
-    print(f"Loading Legal RAG Bench dataset ({args.slice} slice)")
+    # Get dataset config based on slice prefix
+    if args.slice.startswith("gst_"):
+        dataset_key = "gst_legal_rag"
+        dataset_display_name = "GST Legal RAG"
+    else:
+        dataset_key = "legal_rag_bench"
+        dataset_display_name = "Legal RAG Bench"
+
+    # Load dataset
+    dataset_config = config["datasets"].get(dataset_key, {})
+    print(f"Loading {dataset_display_name} dataset ({args.slice} slice)")
     dataset = load_dataset(args.slice, config)
 
-    corpus_dir = Path(dataset_config.get("path", "data/rag/legal_rag_bench/corpus_files"))
+    corpus_dir = Path(dataset_config.get("path", f"data/rag/{dataset_key}/corpus_files"))
 
     # Create shared embedder (used by both RAG retrieval and DeepEval)
     try:
@@ -388,7 +419,7 @@ def main() -> None:
     # Run evaluation within Phoenix eval_run span (if enabled)
     if phoenix_adapter:
         eval_run_ctx = phoenix_adapter.eval_run_span(
-            run_name=f"legal-rag-bench-{args.slice}",
+            run_name=f"{dataset_key}-{args.slice}",
             num_questions=num_queries,
             metadata={"slice": args.slice, "rag": args.rag, "top_k": args.top_k},
         )
