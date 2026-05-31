@@ -1,0 +1,26 @@
+version: "3.8"
+
+# Observability override for docker-compose.yml
+# Run with: docker-compose -f docker-compose.yml -f docker-compose.observability.yml up
+
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: phoenix
+    ports:
+      - "6006:6006"  # UI
+      - "4317:4317"  # OTLP gRPC
+    environment:
+      - PHOENIX_SQLITE_DB_DIR=/tmp/phoenix
+    volumes:
+      - phoenix-data:/tmp/phoenix
+    restart: unless-stopped
+
+  crucible:
+    environment:
+      - PHOENIX_ENDPOINT=http://phoenix:6006
+    depends_on:
+      - phoenix
+
+volumes:
+  phoenix-data:

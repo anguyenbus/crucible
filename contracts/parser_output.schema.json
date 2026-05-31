@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internal.example.com/schemas/parser_output.schema.json",
+  "title": "ParserOutput",
+  "description": "Structured output produced by the ingestion team's document parser. One JSON document per source file. The eval harness consumes this format; the ingestion team's parser must conform to it. Bump $version on any breaking change.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "parser_version",
+    "source",
+    "pages",
+    "elements"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Semver of this schema. Eval harness will refuse outputs with an incompatible major version.",
+      "const": "1.0.0"
+    },
+    "parser_version": {
+      "type": "string",
+      "description": "Semver of the parser that produced this output. Required so regression reports can attribute changes to a specific parser release."
+    },
+    "parsed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC ISO-8601 timestamp of when this output was generated."
+    },
+    "source": {
+      "type": "object",
+      "description": "Provenance of the source document.",
+      "required": ["doc_id", "filename", "mime_type", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "doc_id": {
+          "type": "string",
+          "description": "Stable identifier for the source document. Eval harness joins on this field."
+        },
+        "filename": { "type": "string" },
+        "mime_type": {
+          "type": "string",
+          "examples": ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/html"]
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 of the raw source bytes. Used to detect when re-parsing is needed."
+        },
+        "page_count": { "type": "integer", "minimum": 0 },
+        "language": {
+          "type": "string",
+          "description": "BCP-47 language tag, e.g. 'en', 'en-US'.",
+          "default": "en"
+        }
+      }
+    },
+    "pages": {
+      "type": "array",
+      "description": "Per-page metadata. Index in array = page_index used by elements.",
+      "items": {
+        "type": "object",
+        "required": ["page_index", "width", "height"],
+        "additionalProperties": false,
+        "properties": {
+          "page_index": { "type": "integer", "minimum": 0 },
+          "width": { "type": "number", "description": "Page width in points (PDF) or pixels (image)." },
+          "height": { "type": "number" },
+          "rotation": { "type": "integer", "enum": [0, 90, 180, 270], "default": 0 }
+        }
+      }
+    },
+    "elements": {
+      "type": "array",
+      "description": "Ordered list of structural elements extracted from the document. Order MUST reflect intended reading order; eval will score reading-order fidelity against this.",
+      "items": { "$ref": "#/$defs/Element" }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "Non-fatal parser warnings (e.g. low-confidence OCR regions). Optional but encouraged.",
+      "items": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string", "examples": ["LOW_OCR_CONFIDENCE", "TABLE_STRUCTURE_GUESSED"] },
+          "message": { "type": "string" },
+          "element_id": { "type": "string", "description": "Optional reference to the element this warning concerns." }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "Element": {
+      "type": "object",
+      "description": "A single structural element. The 'type' field discriminates the subtype-specific fields under 'content'.",
+      "required": ["element_id", "type", "page_index", "char_span", "text", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "element_id": {
+          "type": "string",
+          "description": "Stable, unique-within-document identifier. The eval harness uses this as the citation anchor."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "heading",
+            "paragraph",
+            "list",
+            "list_item",
+            "table",
+            "figure",
+            "caption",
+            "footnote",
+            "header",
+            "footer",
+            "page_number",
+            "code_block",
+            "equation"
+          ]
+        },
+        "level": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6,
+          "description": "Heading level (1-6). Required when type == 'heading'."
+        },
+        "parent_id": {
+          "type": ["string", "null"],
+          "description": "element_id of the parent (e.g. list_item's parent list, caption's parent figure). Null for top-level."
+        },
+        "page_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Index into pages[]. For elements spanning multiple pages, this is the starting page; use pages_spanned for the full range."
+        },
+        "pages_spanned": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "description": "Optional. All page indices this element occupies, for tables/figures crossing page breaks."
+        },
+        "bbox": {
+          "type": "object",
+          "description": "Bounding box on page_index, in the same coordinate system as pages[].width/height. Optional but required for layout scoring.",
+          "required": ["x0", "y0", "x1", "y1"],
+          "properties": {
+            "x0": { "type": "number" },
+            "y0": { "type": "number" },
+            "x1": { "type": "number" },
+            "y1": { "type": "number" }
+          }
+        },
+        "char_span": {
+          "type": "array",
+          "description": "[start, end) character offsets of this element's text within the document's full concatenated text. Critical for citation evaluation — the eval harness uses character spans as the canonical evidence locator.",
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "text": {
+          "type": "string",
+          "description": "Plain-text content of this element. For tables, this is a readable rendering (e.g. markdown). For figures, this is the caption or alt text."
+        },
+        "content": {
+          "type": "object",
+          "description": "Type-specific structured content. Schema varies by element type — see $defs below.",
+          "oneOf": [
+            { "$ref": "#/$defs/TextContent" },
+            { "$ref": "#/$defs/TableContent" },
+            { "$ref": "#/$defs/FigureContent" },
+            { "$ref": "#/$defs/ListContent" }
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Parser's confidence in this element (e.g. OCR confidence). Optional."
+        }
+      }
+    },
+    "TextContent": {
+      "type": "object",
+      "description": "For heading, paragraph, caption, footnote, header, footer, page_number, code_block, equation.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "text" }
+      },
+      "required": ["kind"]
+    },
+    "TableContent": {
+      "type": "object",
+      "description": "For tables. Cells are addressed by zero-indexed (row, col). Spanning cells use row_span/col_span.",
+      "additionalProperties": false,
+      "required": ["kind", "rows", "cols", "cells"],
+      "properties": {
+        "kind": { "const": "table" },
+        "rows": { "type": "integer", "minimum": 1 },
+        "cols": { "type": "integer", "minimum": 1 },
+        "header_rows": { "type": "integer", "minimum": 0, "default": 1 },
+        "cells": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["row", "col", "text"],
+            "properties": {
+              "row": { "type": "integer", "minimum": 0 },
+              "col": { "type": "integer", "minimum": 0 },
+              "row_span": { "type": "integer", "minimum": 1, "default": 1 },
+              "col_span": { "type": "integer", "minimum": 1, "default": 1 },
+              "text": { "type": "string" },
+              "is_header": { "type": "boolean", "default": false }
+            }
+          }
+        }
+      }
+    },
+    "FigureContent": {
+      "type": "object",
+      "description": "For figures and images.",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "const": "figure" },
+        "image_uri": {
+          "type": "string",
+          "description": "Optional. URI or relative path to extracted image asset."
+        },
+        "alt_text": { "type": "string" },
+        "caption_element_id": {
+          "type": "string",
+          "description": "If a separate caption element exists, its element_id."
+        }
+      }
+    },
+    "ListContent": {
+      "type": "object",
+      "description": "For list containers. Individual items are separate elements of type 'list_item' with parent_id pointing to this list's element_id.",
+      "additionalProperties": false,
+      "required": ["kind", "ordered"],
+      "properties": {
+        "kind": { "const": "list" },
+        "ordered": { "type": "boolean" }
+      }
+    }
+  }
+}

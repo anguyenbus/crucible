@@ -1,0 +1,39 @@
+# Evaluation configuration for crucible
+
+datasets:
+  legal_rag_bench:
+    # Path to Legal RAG Bench corpus (optional if using HuggingFace dataset)
+    path: ${DATA_DIR:-data/rag}/legal_rag_bench
+
+    # Cache directory for HuggingFace dataset
+    cache_path: ${CACHE_DIR:-data/rag}/legal_rag_bench
+
+    # Embedder configuration for retrieval
+    embeddings:
+      provider: huggingface  # or openai
+      model: sentence-transformers/all-MiniLM-L6-v2
+
+    # DeepEval LLM-judge configuration
+    deepeval:
+      enabled: true
+      judge_model: gpt-4o-mini
+      judge_model_provider: openai  # or bedrock
+      temperature: 0.0
+      max_concurrent: 10
+
+metrics:
+  # RAG quality metrics (computed by DeepEval)
+  - faithfulness
+  - contextual_precision
+  - contextual_recall
+  - answer_relevancy
+
+models:
+  # Generator model for RAG answer generation
+  generator:
+    model: gpt-4o-mini
+    provider: openai
+
+  # Optional: Bedrock configuration
+  # bedrock:
+  #   region: us-east-1

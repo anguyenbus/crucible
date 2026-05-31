@@ -1,0 +1,41 @@
+# Tests and development
+tests/
+.pytest_cache/
+.ruff_cache/
+.coverage
+*.pyc
+
+# Documentation
+docs/
+
+# Git
+.git/
+.gitignore
+
+# CI/CD
+.github/
+
+# Results
+results/
+
+# Data directories (mounted as volumes)
+data/chromadb/
+data/phoenix/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

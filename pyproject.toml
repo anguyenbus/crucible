@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "crucible"
+version = "0.1.0"
+description = "Evaluation framework for RAG systems and replay testing with Phoenix observability"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2",
+    "jsonschema>=4",
+    "pyyaml",
+    "chromadb",
+    "huggingface-hub",
+    "python-dotenv",
+    "sentence-transformers>=5.5.0",
+    "openai>=1.0.0",
+    "deepeval>=2.0.0",
+    "datasets",
+    "polars>=1.41.0",
+    "rich",
+    "beartype",
+]
+
+[project.optional-dependencies]
+observability = [
+    "arize-phoenix>=4.0.0",
+    "openinference-instrumentation-openai>=0.1.0",
+]
+replay = [
+    "arize-phoenix>=4.0.0",
+    "openinference-semantic-conventions>=0.1.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "click>=8.0.0",
+    "aiohttp",
+    "scipy",
+]
+bedrock = [
+    "boto3>=1.0.0",
+]
+
+[project.scripts]
+crucible = "crucible.cli:main"
+eval-rag = "crucible.runners.run_rag_eval:main"
+generate-spans = "crucible.runners.generate_spans:main"
+eval-replay = "crucible.runners.run_replay_eval:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=4",
+    "ruff>=0.8",
+    "icontract",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "D"]
+ignore = ["D203", "D212"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "scripts"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
