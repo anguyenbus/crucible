@@ -17,7 +17,11 @@ dependencies = [
     "python-dotenv",
     "sentence-transformers>=5.5.0",
     "openai>=1.0.0",
-    "deepeval>=2.0.0",
+    # EXACT pin: deepeval is the judge "ruler". A bump can shift metric prompts and
+    # reintroduce judge drift, so any future change is a deliberate re-baseline EVENT
+    # (see agent-os/specs/2026-06-02-bedrock-default-provider/runbook.md), never a
+    # routine dependabot merge. Do NOT loosen to >=/~=.
+    "deepeval==4.0.5",
     "datasets",
     "polars>=1.41.0",
     "rich",
@@ -40,6 +44,8 @@ replay = [
 ]
 bedrock = [
     "boto3>=1.0.0",
+    # Required by DeepEval's AmazonBedrockModel (the LLM-judge on Bedrock).
+    "aiobotocore>=2.0.0",
 ]
 
 [project.scripts]

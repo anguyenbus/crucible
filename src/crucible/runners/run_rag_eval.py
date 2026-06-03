@@ -8,7 +8,9 @@ NOTE: The stub-local RAG option uses a ChromaDB-based reference implementation
 for demonstration purposes. It is not intended for production use.
 
 DeepEval LLM-judge metrics (Faithfulness, ContextualPrecision, ContextualRecall,
-AnswerRelevancy) are enabled by default and require OPENAI_API_KEY to be set.
+AnswerRelevancy) are enabled by default. The judge runs on AWS Bedrock by default
+(set AWS_REGION + credentials and grant model access); set CRUCIBLE_JUDGE_PROVIDER=
+openai with OPENAI_API_KEY to use OpenAI instead.
 """
 
 from __future__ import annotations
@@ -93,9 +95,7 @@ def get_rag(
     from crucible.stubs.rag.chromadb_query import query as chromadb_query
 
     # Wrap in adapter with config
-    def chromadb_wrapper(
-        question: str, corpus_dir: Path, embedder: Any = None
-    ) -> dict[str, Any]:
+    def chromadb_wrapper(question: str, corpus_dir: Path, embedder: Any = None) -> dict[str, Any]:
         return chromadb_query(
             question=question,
             corpus_dir=corpus_dir,
@@ -145,9 +145,7 @@ def _run_phoenix_native(args: Any, config: dict) -> None:
     # Create shared embedder
     embeddings_config = dataset_config.get("embeddings", {})
     embedder_provider = embeddings_config.get("provider", "huggingface")
-    embedder_model = embeddings_config.get(
-        "model", "sentence-transformers/all-MiniLM-L6-v2"
-    )
+    embedder_model = embeddings_config.get("model", "sentence-transformers/all-MiniLM-L6-v2")
 
     embedder = get_embedder(provider=embedder_provider, model=embedder_model)
     print(f"Shared embedder: {embedder_provider}/{embedder_model}")
@@ -194,7 +192,9 @@ def _run_phoenix_native(args: Any, config: dict) -> None:
     # Get experiment name from object or dict
     exp_name = getattr(experiment, "experiment_name", experiment.get("experiment_name", "unknown"))
     print(f"Experiment complete: {exp_name}")
-    print(f"  Duration: {experiment.get('duration_ms', 0) if isinstance(experiment, dict) else 'N/A'}")
+    print(
+        f"  Duration: {experiment.get('duration_ms', 0) if isinstance(experiment, dict) else 'N/A'}"
+    )
 
     # Export results
     export_result = export_experiment_results(experiment, output_dir)
@@ -231,10 +231,7 @@ def main() -> None:
         "--rag",
         required=True,
         choices=["stub-local"],
-        help=(
-            "RAG system to use. Options: stub-local "
-            "(ChromaDB-backed reference implementation)"
-        ),
+        help=("RAG system to use. Options: stub-local (ChromaDB-backed reference implementation)"),
     )
     parser.add_argument(
         "--config",
@@ -275,6 +272,19 @@ def main() -> None:
         sys.exit(1)
     except ValueError as e:
         print(f"ERROR: {e}")
+        sys.exit(1)
+
+    # Bedrock startup preflight: when the resolved generator provider is bedrock,
+    # make ONE cheap bedrock-runtime call to fail fast and loud on missing creds,
+    # an unset/mismatched region, or model access not granted -- so a broken
+    # Bedrock plumbing path is never mistaken for a low-quality score. No-op when
+    # the provider is not bedrock (e.g. an OpenAI opt-in run).
+    try:
+        from crucible.cli.check import bedrock_preflight
+
+        bedrock_preflight()
+    except Exception as e:
+        print(f"ERROR: Bedrock preflight failed: {e}")
         sys.exit(1)
 
     # Phoenix Native mode - use Phoenix experiment API
@@ -337,9 +347,7 @@ def main() -> None:
     try:
         embeddings_config = dataset_config.get("embeddings", {})
         embedder_provider = embeddings_config.get("provider", "huggingface")
-        embedder_model = embeddings_config.get(
-            "model", "sentence-transformers/all-MiniLM-L6-v2"
-        )
+        embedder_model = embeddings_config.get("model", "sentence-transformers/all-MiniLM-L6-v2")
 
         embedder = get_embedder(provider=embedder_provider, model=embedder_model)
         print(f"Shared embedder: {embedder_provider}/{embedder_model}")
@@ -348,6 +356,7 @@ def main() -> None:
         sys.exit(1)
 
     # Initialize DeepEval evaluator (always enabled)
+    llm_provider = None
     try:
         from crucible.adapters.deepeval_adapter import DeepEvalEvaluator
 
@@ -369,7 +378,15 @@ def main() -> None:
         print(f"Max concurrent evaluations: {max_concurrent}")
     except Exception as e:
         print(f"ERROR: Could not initialize DeepEval evaluator: {e}")
-        print("DeepEval metrics are required. Please set OPENAI_API_KEY.")
+        if llm_provider == "openai":
+            print("The OpenAI judge requires OPENAI_API_KEY to be set.")
+        else:
+            print(
+                "The Bedrock judge requires: AWS credentials on the default chain, "
+                "AWS_REGION set, granted model access, and the `aiobotocore` package "
+                "(installed via the `bedrock` extra: `uv sync --extra bedrock`). "
+                "Run `crucible check bedrock` to diagnose."
+            )
         sys.exit(1)
 
     # Get RAG system
@@ -435,9 +452,8 @@ def main() -> None:
                 # RAG query span (if Phoenix enabled)
                 if phoenix_adapter:
                     query_ctx = phoenix_adapter.rag_query_span(question=query_text)
-                    trace_id = query_ctx.__enter__()
+                    query_ctx.__enter__()
                 else:
-                    trace_id = None
                     query_ctx = None
 
                 # Query RAG system
@@ -454,9 +470,7 @@ def main() -> None:
                 )
 
                 # Compute metrics with full reasoning (DeepEval)
-                metric_result = evaluator.compute_metrics_with_reasoning(
-                    output, gold_answer
-                )
+                metric_result = evaluator.compute_metrics_with_reasoning(output, gold_answer)
 
                 metric_scores = metric_result["scores"]
                 faithfulness = metric_scores.get("faithfulness", 0.0)
@@ -514,7 +528,7 @@ def main() -> None:
     csv_file.close()
 
     # Summary
-    print(f"\nEvaluation complete:")
+    print("\nEvaluation complete:")
     print(f"  Success: {success_count}")
     print(f"  Errors: {error_count}")
     print(f"  Results saved to: {csv_path}")

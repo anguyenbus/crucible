@@ -1,9 +1,7 @@
 """Tests for GST loader exports and config loading."""
 
-from pathlib import Path
 import tempfile
-
-import pytest
+from pathlib import Path
 
 from crucible import datasets
 from crucible.config import load_config
@@ -46,7 +44,8 @@ def test_eval_config_has_gst_block():
     assert gst_config["path"] == "data/rag/gst_legal_rag"
     assert gst_config["cache_path"] == "data/rag/gst_legal_rag"
     assert "embeddings" in gst_config
-    assert "deepeval" in gst_config
+    # The judge ("deepeval") config is no longer per-dataset: it now lives in the
+    # top-level global `judge:` block (see eval_config.yaml / get_deepeval_config).
 
 
 def test_gst_in_all_export_list():

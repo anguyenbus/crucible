@@ -221,8 +221,11 @@ class DeepEvalEvaluator:
                 results["faithfulness"] = float(metric.score)
             except Exception as e:
                 import sys
+
                 print(f"[ERROR] faithfulness failed: {e}", file=sys.stderr)
-                results["faithfulness"] = 0.0
+                # Plumbing failure (creds/region/throttle): record None,
+                # NOT 0.0. None is distinguishable from a real low score.
+                results["faithfulness"] = None
 
         # Compute ContextualPrecision
         if "context_precision" in self._metrics:
@@ -233,8 +236,11 @@ class DeepEvalEvaluator:
                 results["context_precision"] = float(metric.score)
             except Exception as e:
                 import sys
+
                 print(f"[ERROR] context_precision failed: {e}", file=sys.stderr)
-                results["context_precision"] = 0.0
+                # Plumbing failure (creds/region/throttle): record None,
+                # NOT 0.0. None is distinguishable from a real low score.
+                results["context_precision"] = None
 
         # Compute ContextualRecall
         if "context_recall" in self._metrics:
@@ -245,8 +251,11 @@ class DeepEvalEvaluator:
                 results["context_recall"] = float(metric.score)
             except Exception as e:
                 import sys
+
                 print(f"[ERROR] context_recall failed: {e}", file=sys.stderr)
-                results["context_recall"] = 0.0
+                # Plumbing failure (creds/region/throttle): record None,
+                # NOT 0.0. None is distinguishable from a real low score.
+                results["context_recall"] = None
 
         # Compute AnswerRelevancy
         if "answer_relevancy" in self._metrics:
@@ -257,8 +266,11 @@ class DeepEvalEvaluator:
                 results["answer_relevancy"] = float(metric.score)
             except Exception as e:
                 import sys
+
                 print(f"[ERROR] answer_relevancy failed: {e}", file=sys.stderr)
-                results["answer_relevancy"] = 0.0
+                # Plumbing failure (creds/region/throttle): record None,
+                # NOT 0.0. None is distinguishable from a real low score.
+                results["answer_relevancy"] = None
 
         return results
 
@@ -380,9 +392,17 @@ class DeepEvalEvaluator:
 
             except Exception as e:
                 import sys
+
                 print(f"[ERROR] faithfulness failed: {e}", file=sys.stderr)
-                scores["faithfulness"] = 0.0
-                reasoning["faithfulness"] = {"reason": f"ERROR: {e}", "verdicts": []}
+                # Plumbing failure: score is None (NOT 0.0) so it is
+                # distinguishable from a real low score; reasoning carries
+                # an explicit error marker.
+                scores["faithfulness"] = None
+                reasoning["faithfulness"] = {
+                    "reason": f"ERROR: {e}",
+                    "verdicts": [],
+                    "error": str(e),
+                }
 
         # Compute ContextualPrecision with reasoning
         if "context_precision" in self._metrics:
@@ -400,11 +420,14 @@ class DeepEvalEvaluator:
 
             except Exception as e:
                 import sys
+
                 print(f"[ERROR] context_precision failed: {e}", file=sys.stderr)
-                scores["context_precision"] = 0.0
+                # Plumbing failure: None (NOT 0.0), error marker recorded.
+                scores["context_precision"] = None
                 reasoning["context_precision"] = {
                     "reason": f"ERROR: {e}",
                     "verdicts": [],
+                    "error": str(e),
                 }
 
         # Compute ContextualRecall with reasoning
@@ -422,9 +445,15 @@ class DeepEvalEvaluator:
 
             except Exception as e:
                 import sys
+
                 print(f"[ERROR] context_recall failed: {e}", file=sys.stderr)
-                scores["context_recall"] = 0.0
-                reasoning["context_recall"] = {"reason": f"ERROR: {e}", "verdicts": []}
+                # Plumbing failure: None (NOT 0.0), error marker recorded.
+                scores["context_recall"] = None
+                reasoning["context_recall"] = {
+                    "reason": f"ERROR: {e}",
+                    "verdicts": [],
+                    "error": str(e),
+                }
 
         # Compute AnswerRelevancy with reasoning
         if "answer_relevancy" in self._metrics:
@@ -440,8 +469,13 @@ class DeepEvalEvaluator:
 
             except Exception as e:
                 import sys
+
                 print(f"[ERROR] answer_relevancy failed: {e}", file=sys.stderr)
-                scores["answer_relevancy"] = 0.0
-                reasoning["answer_relevancy"] = {"reason": f"ERROR: {e}"}
+                # Plumbing failure: None (NOT 0.0), error marker recorded.
+                scores["answer_relevancy"] = None
+                reasoning["answer_relevancy"] = {
+                    "reason": f"ERROR: {e}",
+                    "error": str(e),
+                }
 
         return {"scores": scores, "reasoning": reasoning}

@@ -19,9 +19,30 @@ COLLECTION_NAME: Final[str] = "legal_rag_bench"
 EMBEDDING_MODEL: Final[str] = "sentence-transformers/all-MiniLM-L6-v2"
 EMBEDDING_DIM: Final[int] = 384
 
-# Generator model configuration (set via RAG_GENERATOR_MODEL env var)
-# Supports: openai models (gpt-4o-mini, gpt-4o-mini), bedrock models, etc.
-GENERATOR_MODEL: Final[str] = os.getenv("RAG_GENERATOR_MODEL", "gpt-4o-mini")
+# Generator model configuration (set via CRUCIBLE_GENERATOR_MODEL env var).
+# Bedrock-default: the default is an AU-geographic inference profile.
+# Keep the default in sync with generator.DEFAULT_GENERATOR_MODEL.
+_DEFAULT_GENERATOR_MODEL: Final[str] = "au.anthropic.claude-sonnet-4-6"
+
+
+def _resolve_generator_model() -> str:
+    """
+    Resolve the generator model ID from the CRUCIBLE_GENERATOR_MODEL env var.
+
+    Fail-loud rename (O3): if the old RAG_GENERATOR_MODEL is set while
+    CRUCIBLE_GENERATOR_MODEL is unset, raise — never silently alias the old
+    var or fall back to a default.
+    """
+    if os.getenv("RAG_GENERATOR_MODEL") is not None and (
+        os.getenv("CRUCIBLE_GENERATOR_MODEL") is None
+    ):
+        raise ValueError(
+            "RAG_GENERATOR_MODEL is renamed to CRUCIBLE_GENERATOR_MODEL; update your config."
+        )
+    return os.getenv("CRUCIBLE_GENERATOR_MODEL", _DEFAULT_GENERATOR_MODEL)
+
+
+GENERATOR_MODEL: Final[str] = _resolve_generator_model()
 
 # Pipeline version tracking
 PIPELINE_VERSION: Final[str] = "0.1.0-chromadb"
