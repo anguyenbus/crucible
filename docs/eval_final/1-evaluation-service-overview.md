@@ -73,7 +73,9 @@ Work is split by cost, because the two kinds of measurement are very different:
 
 ### Keeping the AI judge honest
 
-A scoring system is only as trustworthy as its judge, so the judge is treated as fallible, not as ground truth:
+The good news first: a well-set-up AI judge now agrees with human reviewers about as often as two humans agree with each other — this approach has matured from experimental to mainstream. But that reliability is *earned by the setup*, not automatic, and it's measured in aggregate (the judge is least reliable exactly on borderline cases). So the judge is treated as fallible, not as ground truth:
+
+- **The judge is set up the way the research says works.** Fixed, written-down scoring steps (never improvised per run), big judgments broken into many small yes/no checks rather than one vague score, reference answers from our test set wherever they exist, and cached verdicts so the same check always returns the same answer.
 
 - **The judge is a different model from the one that generates the answers** — it never grades its own homework.
 - **We calibrate it.** On a regular schedule we compare the judge's verdicts against human-labelled examples, and we also re-check the judge against *itself* (the same question can score slightly differently when asked twice), so we can tell a real quality change from the judge simply being inconsistent.
@@ -138,7 +140,7 @@ Two things are easy to miss and matter a lot:
 
 - **Two gates stand before the code is merged — and merging is going live.** Our main branch is production *(this relies on the pipeline repo's main-is-production release model — flagged for confirmation with Ingestion; if they deploy on a separate schedule, a third "merged → deployed" step appears here, and nothing else changes)*, so a parser change isn't merged until it has cleared *both* gates. The first gate is the parsing benchmark; passing it doesn't put the parser anywhere — it just registers the change as a candidate that's *ready for the ingestion test*. **Better parsing scores do not by themselves mean better answers**, so parsing is never enough to merge on its own.
 - **The second gate, owned by Ingestion, is what makes it mergeable.** Ingestion takes the candidate, builds a **testing index** from it, and runs the RAG test there. Only if the *answers* improve does the change become mergeable — and merging it is the moment it goes live. Evaluation provides the RAG score; Ingestion owns the testing index and that gate *(this ownership is our proposal, being confirmed with the Ingestion team)*.
-- **The smoke test is a quick sanity check, not a quality gate.** It runs a few representative documents through the parser to confirm the output is **well-formed and evaluable** — that the eval pipeline can actually read and score it. It checks the plumbing, not the quality of parsing, and it never blocks. It isn't run on the PR: the full benchmark already proves the output is evaluable by scoring the whole test set, so a smoke check there would be redundant.
+- **The smoke test is a quick sanity check, not a quality gate.** It runs a few representative documents through the parser to confirm the output is **well-formed and evaluable** — that the eval pipeline can actually read and score it — and it keeps watch over a short list of *must-never-break* documents as an ever-present early alarm. It never blocks on its own: the formal gate (the full benchmark) enforces that same per-document floor as part of its pass rule, which is also why the smoke check isn't run on the PR — there the full benchmark is a superset of it.
 
 Alongside this, the online monitor automatically **raises an alert** if live quality drifts below a threshold.
 
@@ -152,7 +154,7 @@ These are policy choices the system can't make for us. They're the open items wo
 
 | Decision | Why it matters |
 |---|---|
-| **What counts as "good enough" to promote?** (the significance bar, and which metrics are non-negotiable) | Sets how strict we are. Too loose ships regressions; too strict blocks good changes. **Until this bar is agreed, the gates run in *no-regression* mode: a change must not be measurably worse on any headline metric** — so the gates are operational from day one while the policy conversation happens. |
+| **What counts as "good enough" to promote?** (the significance bar, and which metrics are non-negotiable) | Sets how strict we are. Too loose ships regressions; too strict blocks good changes. **Until this bar is agreed, the gates run in *no-regression* mode: a change must not be measurably worse on any headline metric** — so the gates are operational from day one while the policy conversation happens. And we're honest about the word *measurably*: every gate verdict publishes how small a regression that run could reliably detect, and the test set is grown until that sensitivity matches what we need — sensitivity is a budget decision we make openly, not an accident of test-set size. |
 | **Do we need our own benchmark documents?** | We currently test on public benchmarks. If our real documents (e.g. our specific domain) look different, public scores may not predict real performance. |
 | **How often do we run the expensive tests?** | Drives cost. Frequent RAG re-testing is powerful but not free. |
 | **When (if ever) do we add specialised hardware?** | Parsing runs on CPU today. Heavy OCR over a growing corpus could eventually justify a GPU — but only when the volume shows the benefit. |

@@ -1,12 +1,12 @@
-# Evaluation Service — Topology & Component Design
+# Evaluation Service — Architecture Design
 
-*Capstone synthesis. Three components, organised by one boundary, serving a two-hurdle adoption decision in which the service measures but never adopts. Supersedes the scattered topology notes in the prior docs; designed adversarially.*
+*Topology & components — capstone synthesis. Three components, organised by one boundary, serving a two-hurdle adoption decision in which the service measures but never adopts. Supersedes the scattered topology notes in the prior docs; designed adversarially.*
 
 ---
 
 ## 0. The shape, in one paragraph
 
-The Evaluation Service is **three components across two worlds**. The **deterministic world** is doc-bench (document parsing): no model, CPU, reproducible, safe as a hard gate. The **probabilistic world** is everything judge-based — RAG offline (the adoption test), online spans (the live monitor), and replay — all crucible-derived, all on Bedrock, all residency- and quota-bound. Adoption of a parser requires **two hurdles**: doc-bench is *necessary* (the parser code is sound and doesn't regress parsing), and the RAG test is *sufficient* (the answers actually improve). The service **provides both measurements and never makes the adoption decision** — Ingestion owns the testing index and the RAG gate, and because **main is production**, a change merges (goes live) only once both hurdles pass. Every topology choice below falls out of those facts.
+The Evaluation Service is **three components across two worlds**. The **deterministic world** is doc-bench (document parsing): no model, CPU, reproducible, safe as a hard gate. The **probabilistic world** is everything judge-based — RAG offline (the adoption test), online spans (the live monitor), and replay — all crucible-derived, all on Bedrock, all residency- and quota-bound. Adoption of a parser requires **two hurdles**: doc-bench is *necessary* (the parser code is sound and doesn't regress parsing), and the RAG test is *sufficient* (the answers actually improve). The service **provides both measurements and never makes the adoption decision** — Ingestion owns the testing index and the RAG gate, and because **main is production**, a change merges (goes live) only once both hurdles pass. *(Both cross-team facts — Ingestion's gate/index ownership and the main-is-production release model — are the working model and are being confirmed with Ingestion; §4 states the fallback if either differs.)* Every topology choice below falls out of those facts.
 
 ---
 
@@ -19,19 +19,21 @@ This is the single idea that makes the design legible. Sort every concern by whi
 | What it measures | parsing quality | answer quality (faithfulness, relevancy, ctx precision/recall) |
 | Model plane | **none** | **Bedrock** (au. inference profiles) |
 | Compute | CPU only | CPU (judge is remote on Bedrock) |
-| Reproducible? | yes → safe as a hard gate | no → monitoring signals, never a blocking CI gate |
+| Reproducible? | yes → safe as a hard gate | no → **absolute** judge scores are monitoring signals, never gates; the judge gates **only on paired baseline-vs-candidate deltas with significance** (Hurdle 2), where its noise hits both arms and cancels |
 | Needs token bucket / verdict cache / κ-calibration / residency? | **no** | **yes — all of it** |
 | Cost driver | parser-run wall-time (OCR) | Bedrock TPM/RPM ($ per call) |
 
 Why this matters: **every hard, expensive, risky thing — token bucket, residency, judge calibration, prompt-injection defence, PII erasure, the cost circuit breaker — lives entirely in the probabilistic world. doc-bench has none of it.** Keeping that boundary crisp is what lets doc-bench be a cheap deterministic gate and stops the judge's complexity from leaking into the parsing path. If a design decision blurs this line, it's wrong.
 
+**On judge reliability (evidence position, mid-2026):** "probabilistic" does not mean "unreliable." Current evidence puts well-engineered LLM judges at ~80–90% agreement with human annotators — on par with how often humans agree with each other (~81%) — and the techniques that get there are the ones this design adopts: **pinned evaluation steps** (G-Eval with fixed steps, so the judge never re-derives its rubric between runs), **decomposed verdicts** (claim-extraction/QAG for faithfulness and DAG decision trees, turning one fuzzy 0–1 score into many near-binary checks), **reference-based metrics offline** (the gold set supplies expected outputs — empirically one of the largest reliability levers), temperature-0 judging, and the verdict cache. The same 2026 research is equally clear on the limits — agreement is an *aggregate*; reliability is not uniform across tasks; stress-tests (RAND's Judge Reliability Harness, 2026) find high error rates on adversarial and borderline slices; the best judges' κ vs humans (~0.8) still sits below human-human (~0.96) — which is precisely why the calibration job, self-consistency re-checks, and delta-gating remain. Net posture: **engineer the judge to a measured reliability target, verify it continuously, and gate only on paired deltas where residual noise cancels** — confidence upgraded, structure unchanged.
+
 ---
 
 ## 2. Repo structure (and the debate you invited)
 
-**Position:** three repos — `contracts`, `doc-bench`, `eval-rag` — and I'd refuse to start without the first one.
+**Position:** the *contract surface* is non-negotiable; the *separate repo* is not. **[PARKED — no `contracts` repo for now; schemas stay vendored where they live.]**
 
-- **`contracts` (shared, neutral, versioned) — non-negotiable, hoist it out now.** `parser_output`, `results_v1`, the span schema, the manifest, `eval_questions`. Today these are vendored *inside* crucible, which means ingestion would have to depend on an eval repo to learn the shape it must write — the wrong coupling direction, and it lets one team silently break the boundary. All three of ingestion, doc-bench, and eval-rag consume `contracts`; nobody owns it unilaterally. This is the prerequisite for "doc-bench is part of the service" without dragging ingestion into eval's dependency graph.
+- **`contracts` (the surface, not yet a repo) — interim arrangement.** The schemas two parties must agree on are: `parser_output`, `results_v1`, the span schema, the manifest, `eval_questions`. Today `parser_output.schema.json` and `results_v1` live **in doc-bench**, and that stands: doc-bench is the de facto home of the parsing contracts, and the span schema / `eval_questions` formats live in eval-rag. What is preserved from the original argument is the part that actually matters: each schema is **versioned, and consumable as a published artifact** (the doc-bench wheel, or the schema JSON copied with its version) — Ingestion conforms to the *schema file at a pinned version*, never to the repo's internals, so the wrong-direction coupling is contained rather than structural. The residual risk is honest: a schema change is now a doc-bench/eval-rag release rather than a neutral-package release, and nothing *mechanically* stops the host repo evolving a schema unilaterally. **Revisit triggers (any one fires the hoist):** the first breaking change to a shared schema; Ingestion needing to programmatically validate against the schemas in their CI; or formalising the Hurdle-2 handoff payload (`adoption_test_request`) — at that point the hoist is a mechanical move of files that already have versions, not a redesign.
 
 - **`doc-bench` (separate) — agreed, and correct.** It's a different *kind* of thing: deterministic, CPU, no model plane, its own cadence, shipped as a **wheel** (testability + must-pass canary — see §2a) **+ image** (full-benchmark Job). Folding it into eval-rag would couple a model-free deterministic kernel to a Bedrock service for no benefit. Keep it out.
 
@@ -40,22 +42,22 @@ Why this matters: **every hard, expensive, risky thing — token bucket, residen
   - *The honest counter (now largely dissolved):* the earlier concern was mixing a production-critical *streaming* monitor with occasional batch surfaces in one repo. With the online monitor reworked as a **nightly batch Job** (§3), every surface shares one execution model — bounded Jobs on the shared platform — and there is no always-on component for batch churn to destabilise.
   - *Resolution:* keep one repo. The residual split trigger is narrow and named: carve online-spans out only if a future **sub-batch-interval freshness SLO** turns it back into a streaming service — not pre-emptively. Same YAGNI discipline as write-sharding: split when a real boundary forces it.
 
-So: `contracts` ← {`doc-bench`, `eval-rag`, ingestion}; `eval-rag` pins the `doc-bench` wheel+image.
+So, two repos for now: `doc-bench` (hosting the parsing contracts) and `eval-rag` (hosting the span/eval-questions contracts); Ingestion pins published schema versions; `eval-rag` pins the `doc-bench` wheel+image.
 
 ```mermaid
 flowchart TB
-    C["contracts (shared · versioned)<br/>parser_output · results_v1 · spans · manifest"]
     subgraph DB["doc-bench repo — DETERMINISTIC · CPU · no model plane"]
+        CP["vendored contracts: parser_output · results_v1 (versioned)"]
         W["wheel: testability + must-pass canary"]
         I["image: full benchmark (Job)"]
     end
     subgraph ER["eval-rag repo — PROBABILISTIC · Bedrock (the deployable)"]
+        CE["vendored contracts: span schema · eval_questions · manifest (versioned)"]
         K["crucible kernel: RAG metrics · judge · replay stats · spans · adapters"]
-        S["service: control plane · online-spans · adoption-test · replay · DB · IaC"]
+        S["service: online-spans · adoption-test · replay · DB · IaC"]
     end
-    C --> DB
-    C --> ER
-    C -.-> ING["Ingestion (other team)"]
+    ING["Ingestion (other team)"] -.->|conforms to pinned schema versions| CP
+    ING -.->|emits spans per pinned schema| CE
     DB -->|pinned wheel + image| ER
 ```
 
@@ -68,6 +70,8 @@ The wheel surface of doc-bench is deliberately tiny, and that is exactly why it'
 2. **A curated set of must-pass representative documents.** The wheel carries a small, deliberately-chosen set of representative PDFs/docs — the shapes the product cannot afford to parse worse (the critical, the common, and the historically-fragile: tables, multi-column, scanned, rotated, the specific domain forms we live on). **These are non-negotiable. There is no acceptable trade in which a candidate parser significantly regresses on them** — a candidacy signal, a mean improvement elsewhere, none of it buys back a break here. A significant regression on a wheel doc is a **smoke alarm: stop and look**, not a routine metric dip to be weighed against other gains.
 
 **Why this matters even though the full benchmark is the formal gate.** The full benchmark's *aggregate* statistics can mask a regression on a single critical document — a candidate that lifts the mean while breaking exactly the doc you can least afford to break. The wheel pins those documents explicitly, by name, so a must-pass regression cannot hide behind a green average. It is the **per-document floor the aggregate gate structurally cannot guarantee**, and because it's so cheap it runs *everywhere the full benchmark is too heavy to* — giving an instant, ever-present canary on the documents that matter most.
+
+**Where the floor is enforced (so "must-pass" and "never blocks" don't collide).** The wheel *alarms*; the *gate* enforces. Hurdle 1's pass rule includes **per-document checks on the named wheel documents** — a significant regression on any of them fails the gate even if the aggregate improves — which is how the floor blocks on the PR without the wheel itself ever being a gatekeeper. Outside the PR (local, pre-commit, fast CI), the wheel runs the same named-document floor in seconds and raises the stop-and-look alarm; the human decides.
 
 **What it is not.** The wheel is **not** the formal Hurdle-1 gate (the full benchmark is) and it is **not** a gatekeeper that runs on the PR — there the full benchmark is a superset, so the wheel would be redundant. Its job is to be the fast, omnipresent alarm in every context the full benchmark is too slow for, holding the line on the documents that must never break.
 
@@ -198,7 +202,8 @@ flowchart TB
 
 The load-bearing reframes from the adversarial debate, now built in:
 - **Hurdle 1 registers a candidate; it does not merge it.** doc-bench passing means "this parser is sound and ready for the ingestion RAG test," recorded in the registry as the eval→Ingestion handoff. It is a **correctness + evaluability + regression-floor** gate, *not* a "parsing must improve" gate — a strict improvement gate both blocks RAG-helpful changes (boilerplate strippers that lower text metrics) and waves through parsing-better/RAG-worse ones. Parsing-improvement is a *candidacy signal*, never a merge verdict.
-- **Hurdle 2 is what makes it mergeable, and merging is adoption.** Ingestion reingests the candidate into a testing index it owns and runs the RAG judge there; eval supplies the RAG measurement. Only when the RAG judge passes is the PR mergeable — and because main is production, the merge *is* the adoption. Ingestion owns the testing index and the RAG gate; eval measures; the merge is the mechanical consequence of both required checks going green. There is **no separate "config flip" and no "merged-but-not-live" state**.
+- **Hurdle 2 is what makes it mergeable, and merging is adoption.** Ingestion reingests the candidate into a testing index it owns and runs the RAG judge there; eval supplies the RAG measurement. Only when the RAG judge passes is the PR mergeable — and because main is production, the merge *is* the adoption. Ingestion owns the testing index and the RAG gate; eval measures; the merge is the mechanical consequence of both required checks going green. There is **no separate "config flip" and no "merged-but-not-live" state**. *(Ownership of the testing index and the RAG gate is our proposal, being confirmed with Ingestion. Main-is-production is the pipeline repo's release model, also flagged for confirmation — if they deploy on a separate schedule, a "merged → deployed" step appears after the merge and nothing else in this flow changes.)*
+- **Until the significance bar and metric policy are agreed (§6), both gates run in *no-regression* mode:** a candidate must not be measurably worse on any headline metric (with the faithfulness floor always hard). The gates are operational from day one; the open policy decision only tunes how *strict* they are, not whether they exist.
 - **The registry is the connective tissue** between two hurdles and two owners: `registered / awaiting-RAG → RAG-passed / mergeable → merged`, or rejected at either gate. Under GitLab CI/CD this **is the MR's own state** — required checks + labels + the merge itself — so there's no bespoke registry service on day one; add a small read-model later only if you need cross-MR dashboards.
 - **The two hurdles run on different corpora** (benchmark gold vs production-representative), so the parser runs twice and Hurdle 1 is a doubly-weak predictor (different metric *and* different distribution) — the standing argument for a domain gold set.
 
@@ -209,7 +214,7 @@ The load-bearing reframes from the adversarial debate, now built in:
 1. **A parsing pass must be structurally incapable of reading as an adoption signal** — separate stores, separate dashboards, separate gates; the only thing that makes a change mergeable (and main is production) is a passing Hurdle-2 RAG test on the testing index. The entire failure mode is "parsing improved, so we shipped it."
 2. **doc-bench never touches Bedrock, residency, the token bucket, or calibration.** If it does, the deterministic/probabilistic boundary has been violated.
 3. **The online monitor gets a reserved Bedrock quota share.** A discretionary experiment (adoption test / replay) must never be able to starve the production early-warning system.
-4. **`contracts` is shared and external.** No schema the producer (ingestion) must conform to may live inside an eval repo.
+4. **The contract surface is versioned and consumable independently of any repo's internals.** Ingestion conforms to pinned schema versions (published artifacts), never to doc-bench/eval-rag source; consumers reject unknown major versions loudly. The neutral `contracts` repo is the end state, parked until a revisit trigger fires (§2) — but version discipline on the schemas is in force from day one, repo or no repo.
 5. **Eval measures; Ingestion owns the testing index and the RAG gate.** The service builds no production index and owns no reingest; adoption is the **merge to main (= production)**, gated by both hurdles. Eval never merges and never decides.
 
 ---
@@ -217,15 +222,48 @@ The load-bearing reframes from the adversarial debate, now built in:
 ## 6. Open decisions I'd force before building (adversarial)
 
 - **Replay Case A/B ownership.** Does eval own retrieval-invariant span replay (prompt/generator/judge — Case A; query-params — Case B)? Index-affecting replay (Case C) is Ingestion's reingest. If eval owns neither, **eval builds no OpenSearch index at all** and its vector-store role collapses to read-only querier — a materially simpler design. Decide this first; it's the biggest remaining fork.
+- **doc-bench results → Phoenix mapping.** Do deterministic parsing scores land in Phoenix as experiments alongside the judge scores (one pane of glass, but Phoenix's experiment model is trace-shaped), or only in Postgres/S3 (cleaner boundary, two places to look)? The Part 1/Part 2 fork — resolve before the data-model consolidation pass.
 - **Does the candidate registry need to be more than the MR?** By default the MR *is* the registry (checks + labels + merge), which spans both teams for free. Only build a separate read-model if you need cross-MR queries ("everything queued for the ingestion test," "candidates older than N days") — and even then it's a table fed by GitLab webhooks + RDS, not an orchestration service.
 - **Domain gold set for Hurdle 1.** Public benchmarks → production parsing → production RAG is two lossy hops; a domain gold set closes the first.
 - **Online cadence — PINNED: nightly (product decision).** Drift detection runs up to ~24h behind live; accepted because the pre-merge gates are the primary protection and the monitor is the backstop. The cadence is **a cron line, not architecture** — escalate to intraday micro-batches if an incident ever shows nightly is too slow, with zero design change; a queue returns only at sub-batch-interval SLOs (§3 note).
 - **Orchestrator integration (§3b)** — the four questions for the platform team: which engine (decides whether the claims-table migration gate fires), what "reusing Ingestion" means mechanically (could settle replay A/B), schedule/report-back ownership, and whether the Hurdle-2 handoff moves to workflow composition. These refine the design; none block the build.
+- **GPU for parser runs — PARKED: CPU-only (volume doesn't justify it).** Every surface, including the doc-bench full benchmark, runs on CPU (Karpenter + Spot); no GPU node group, no CUDA image, nothing provisioned on spec. **Un-park trigger:** an OCR-heavy candidate parser whose full-benchmark wall time on the CPU Indexed Job — *after* sharding (`completions`/parallelism) — exceeds the acceptable MR feedback window, or a corpus growth that does the same. Even then it's a node decision, not an architecture change: the same Indexed Job gets a `nodeSelector`/toleration onto a tainted Spot GPU node group and a CUDA build target; nothing upstream or downstream moves.
+- **Control-plane API — PARKED: eval has no callers an API would serve.** Ingestion needs an API because its callers are end users through a UI (untrusted, high-cadence, request/response — hence JWT, scopes, polling). Eval's callers are team members (→ GitLab manual pipelines, with auth/RBAC/audit free), Ingestion's pipeline (→ multi-project trigger + `strategy: depend`; the verdict *is* the pipeline status), and the clock (→ CronJob); results are read in Phoenix and Postgres/Athena. An API would re-implement GitLab's auth and job model for callers already inside GitLab — and would reintroduce the always-on Deployment this topology promises doesn't exist. **Return triggers:** (a) a non-GitLab machine consumer needing verdicts synchronously *and* unable to use a read-only view/Athena; (b) eval-as-a-service for a second GenAI product (arrives together with promoting `claims` to a platform primitive); (c) the registry read-model growing past webhooks→table→dashboard.
 - **The claims table (§3a)** — flagged for review: first time this team holds paid-work coordination state. The alternatives survey is written precisely so reviewers can attack it line by line; the open platform question is whether this graduates to a shared idempotency/budget primitive when a second GenAI app needs it.
 
 ---
 
 ## 7. Honest build state (so the plan isn't fiction)
 
-- **doc-bench integration, the adoption-test surface, online-spans, and replay are net-new, plus the contracts hoist.** crucible today has the RAG-judge kernel (Bedrock judge works) and the replay *statistics*, but no service surfaces, no deterministic lane, no spans pipeline, and the contracts are still vendored inside it. **Orchestration is *not* net-new — it's GitLab CI/CD** (the gates, the cross-team handoff, the merge gating), so there's nothing bespoke to build or defend there; the candidate registry is the MR's own state.
-- Sequence the build so the **measurement-provider boundary and the `contracts` hoist land first** (everything else depends on them), then Hurdle 1 (doc-bench gate as a GitLab pipeline launching the Indexed Job), then the online monitor, then Hurdle 2 (the cross-team adoption-test pipeline), then replay — and resolve the §6 Case A/B fork before committing to any index-building machinery.
+- **doc-bench integration, the adoption-test surface, online-spans, and replay are net-new, plus version-pinning the contract surface.** crucible today has the RAG-judge kernel (Bedrock judge works) and the replay *statistics*, but no service surfaces, no deterministic lane, and no spans pipeline; the shared schemas stay vendored (parsing contracts in doc-bench, span/eval_questions in eval-rag — the parked hoist, §2) but must gain explicit versions and published-artifact form. **Orchestration is *not* net-new — it's GitLab CI/CD** (the gates, the cross-team handoff, the merge gating), so there's nothing bespoke to build or defend there; the candidate registry is the MR's own state.
+- Sequence the build so the **measurement-provider boundary and the contract-surface version pinning land first** (everything else depends on them; the repo hoist itself stays parked per §2), then Hurdle 1 (doc-bench gate as a GitLab pipeline launching the Indexed Job), then the online monitor, then Hurdle 2 (the cross-team adoption-test pipeline), then replay — and resolve the §6 Case A/B fork before committing to any index-building machinery.
+
+---
+
+## 8. Known weakest points & shoring plan (pre-review red team)
+
+*Stated here deliberately, before a reviewer states them for us. Each entry: the attack at full strength, why the current flags are honesty rather than mitigation, and the shoring action with a deadline relative to the design review.*
+
+### 8.1 The spine runs through another team's unbuilt, unagreed work — **the structural weakness**
+
+**The attack:** Hurdle 1 is, by this design's own admission, a weak predictor of answer quality. Hurdle 2 — the only gate that can ship anything — requires from Ingestion: a per-candidate reingest pipeline, testing-index construction and teardown, acceptance of gate ownership, and (for the nightly monitor and replay) serving-path span emission to a schema they have not signed. All are marked *[being confirmed]*. Until they confirm, the only operational protection is the gate that doesn't predict the thing we care about.
+
+**Shoring (before review):** get the two smallest asks **signed, not flagged** — the span schema field profile and the `adoption_test_request` v1 handoff (Detailed Design §3.3). Both are one-page agreements.
+**Shoring (written Plan B, because one must exist):** if Ingestion declines the index-building role, the recorded fallback is: *(a)* the gate degrades to Hurdle 1 + Case-A replay (prompt/generation changes remain fully testable; parser adoption requires an explicit, named risk acceptance per merge), and *(b)* the pruned index-building machinery is re-opened as an eval-owned capability — a known, costed re-expansion, not a redesign. Naming Plan B removes the "load-bearing wall is a proposal" attack: the wall has a documented temporary support.
+
+### 8.2 The gate may be statistically toothless at launch — **the technical weakness**
+
+**The attack:** "no-regression mode" passes anything *not measurably worse*; with ~100 gold questions and a noisy judge, the minimum detectable effect is plausibly ~5 points — so low power works in the candidate's favour, and the gate is a rubber stamp with a p-value.
+
+**Shoring (done — Detailed Design §4.3b):** sensitivity is now an engineered, *published* property: one-sided paired tests; σ_d measured from already-cached baseline scores and self-consistency runs; the achieved **MDE stored in `comparison_reports` and printed on every MR verdict**; and a sizing rule that turns "we need 2-point sensitivity" into a gold-set n and a dollar figure. The gold set's size becomes a budget decision with a formula behind it, not a default.
+
+### 8.3 The money ledger rides on an observability tool's database
+
+**The attack:** `claims` protects real spend, and it lives on "the instance Phoenix already requires" — chosen by colocation convenience. If that instance is a container-local Postgres with casual ops, the spend lock has weaker durability than the spend it guards.
+
+**Shoring:** rung 1 of the data-tier ladder now carries a **precondition**: the Phoenix instance must be a managed, backed-up Postgres (RDS-class: automated backups, PITR, an owner who is paged). Verify those four facts with the platform team; if any fails, **rung 3 (claims → DynamoDB) becomes the default**, not the fallback. One paragraph of homework closes this entirely.
+
+### 8.4 Runners-up (real, smaller, named)
+
+- **Hurdle-2 latency & bypass pressure.** A per-MR reingest means merge feedback in hours and parser MRs queueing for testing indexes — which is social pressure to bypass the gate. Mitigations: gate only parser-touching MRs (already true via `rules:changes`), batch candidate testing windows if MR volume grows, and treat a bypass request as the incident it is. Watch the metric: time-from-MR-to-verdict.
+- **Human-label supply for κ calibration.** The calibration loop assumes a continuing stream of human-labelled examples nobody has budgeted. Shoring: make it a standing budget line (N labels/quarter, named owner) before the first κ number is promised on a dashboard.
