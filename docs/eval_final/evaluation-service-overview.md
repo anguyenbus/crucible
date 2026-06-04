@@ -6,7 +6,7 @@
 
 ## In one paragraph
 
-The Evaluation Service measures the quality of our document-RAG system so we can tell, with evidence, whether a change makes things **better or worse before we ship it**. It scores two things: how well we **parse documents** (turning PDFs into clean, structured text) and how well the **RAG answers** are (are they faithful to the source, relevant, complete). It runs in three situations — **when the team changes any part of the pipeline** (a pull request, gated before merge), **nightly** over a small sample of the day's live traffic, and **on demand** when the team wants to test or investigate something. Importantly, it is a **measurement provider, not a release manager**: it produces the scores and verdicts, but the workflow of actually adopting a change stays with the parser developer and the Ingestion team. It never modifies production data; it reads, scores, and records. All AI processing stays in-region, so our Australian legal data is processed in Australia.
+The Evaluation Service measures the quality of our document-RAG system so we can tell, with evidence, whether a change makes things **better or worse before we ship it**. It scores two things: how well we **parse documents** (turning uploaded documents into clean, structured text) and how well the **RAG answers** are (are they faithful to the source, relevant, complete). It runs in three situations — **when the team changes any part of the pipeline** (a pull request, gated before merge), **nightly** over a small sample of the day's live traffic, and **on demand** when the team wants to test or investigate something. Importantly, it is a **measurement provider, not a release manager**: it produces the scores and verdicts, but the workflow of actually adopting a change stays with the parser developer and the Ingestion team. It never modifies production data; it reads, scores, and records. All AI processing stays in-region, so our Australian legal data is processed in Australia.
 
 ---
 
@@ -62,8 +62,6 @@ sequenceDiagram
 
 Which evaluations run is routed by **what the PR touches**: a parser change runs the parsing benchmark and then the RAG test; a prompt-only change skips straight to the answer-quality test against recorded traffic. The team doesn't choose gates; the change does.
 
-*(Earlier drafts had two more moving parts here: a message queue (SQS) between events and workers, and an automatic event path (EventBridge) where ingestion finishing a batch would page evaluation by itself. Both were removed. The recorded data already sits durably in storage, so the queue was a second delivery path — and once RAG evaluation became PR-gated and bulk checks became team-initiated, the automatic event path had no remaining caller. The contract between Ingestion and Evaluation is now just data at rest: the document artifacts and the traffic recordings, nothing event-driven.)*
-
 ---
 
 ## 2. What happens during evaluation
@@ -71,7 +69,7 @@ Which evaluations run is routed by **what the PR touches**: a parser change runs
 Work is split by cost, because the two kinds of measurement are very different:
 
 - **Cheap, exact, repeatable checks** — document-parsing metrics and basic retrieval accuracy. Same input always gives the same score. These are cheap enough to run often and safe to use as automatic pass/fail gates.
-- **Expensive, AI-judged checks** — using a model (on AWS Bedrock) to judge whether an answer is faithful and relevant. These cost money per check and aren't perfectly repeatable, so we treat them as monitoring signals, not hard gates, and we cache results so we never pay twice for the same check.
+- **Expensive, AI-judged checks** — using a model (on AWS Bedrock) to judge whether an answer is faithful and relevant. These cost money per check and aren't perfectly repeatable, so on their own we treat them as monitoring signals, not hard gates, and we cache results so we never pay twice for the same check. The one place an AI-judged check *does* gate — the change test in §4 — it never gates on an absolute score: the judge scores the **current and proposed versions on the same questions**, and the gate reads the *difference*, statistically tested. The judge's inconsistency hits both sides of the comparison equally, so it washes out of the verdict.
 
 ### Keeping the AI judge honest
 
@@ -87,7 +85,7 @@ There is a **single shared budget across all the AI work** — judging, test-tim
 
 ### Right-sized infrastructure *(a clarification worth stating)*
 
-Evaluation runs on the **company's shared Kubernetes platform on AWS** — the same platform the ingestion system and the orchestrator run on — rather than operating any infrastructure of its own. It's a deliberately *light* tenant of that platform: its workload is small and predictable (a run is on the order of a hundred questions or a few hundred documents, at known times — a code change, the nightly check, a manual run), and it executes as short bursts that scale up from zero and back to nothing. Two consequences worth knowing: evaluation adds essentially no standing cost between runs, and because it reuses the platform's machinery and parts of the ingestion system instead of duplicating them, the team maintains one set of infrastructure, not two. The open coordination item is how evaluation plugs into the platform's orchestrator — being worked through with that team now; it refines the integration but doesn't change anything described in this document.
+Evaluation runs on the **company's shared Kubernetes platform on AWS** — the same platform the ingestion system and the orchestrator run on — rather than operating any infrastructure of its own. It's a deliberately *light* tenant of that platform: its workload is small and predictable (a run is on the order of a hundred questions or a few hundred documents, at known times — a code change, the nightly check, a manual run), and it executes as short bursts that scale up from zero and back to nothing. Two consequences worth knowing: evaluation adds essentially no standing cost between runs, and because it reuses the platform's machinery and parts of the ingestion system instead of duplicating them, the team maintains one set of infrastructure, not two. The open coordination item is how evaluation plugs into the platform's orchestrator — being worked through with that team now; it refines the integration and isn't expected to change anything described in this document.
 
 ---
 
@@ -97,12 +95,12 @@ Evaluation writes to its **own** stores. It does not change production documents
 
 | Store | What gets written | Role in plain terms |
 |---|---|---|
-| **S3 (object storage)** | The exact documents scored, raw evaluation outputs, sampled traffic, and a permanent archive of every score | The evidence locker — every score can be traced back to exactly what was measured, forever |
+| **S3 (object storage)** | The exact documents scored, raw evaluation outputs, sampled traffic, and a permanent archive of every score | The evidence locker — every score can be traced back to exactly what was measured. Scores are kept forever; the content copies stay erasable (see below) |
 | **Phoenix (our existing evaluation workbench)** | Every individual score, organised into runs and experiments | The lab notebook — where engineers browse results next to the live traffic that produced them |
 | **A small control database (three tables)** | The "sign-out sheet" for paid checks, per-run bookkeeping (coverage, cost), and the pass/fail verdicts | The referee's ledger — prevents paying twice for the same check, and records exactly what evidence gated each decision |
 | **OpenSearch (vector search)** | *Read-only.* The production vector database is owned by Ingestion; when a change is being tested, Ingestion stands up a separate **testing index** and evaluation reads/scores against it | Evaluation queries vectors; it doesn't own or modify them |
 
-The one thing worth underlining: when a parsing or embedding change is tested, the temporary **testing index is built by Ingestion**, evaluation scores against it, and the result is recorded. **Production is never touched** — and the test environment is Ingestion's to build and tear down, not evaluation's.
+The one thing worth underlining: when a parsing or embedding change is tested, the temporary **testing index is built by Ingestion**, evaluation scores against it, and the result is recorded. **Production is never touched** — and the test environment is Ingestion's to build and tear down, not evaluation's *(this ownership split is our proposal and is being confirmed with the Ingestion team — see §4)*.
 
 ### A design choice we're flagging openly *(subject to discussion)*
 
@@ -138,8 +136,8 @@ flowchart TD
 
 Two things are easy to miss and matter a lot:
 
-- **Two gates stand before the code is merged — and merging is going live.** Our main branch is production, so a parser change isn't merged until it has cleared *both* gates. The first gate is the parsing benchmark; passing it doesn't put the parser anywhere — it just registers the change as a candidate that's *ready for the ingestion test*. **Better parsing scores do not by themselves mean better answers**, so parsing is never enough to merge on its own.
-- **The second gate, owned by Ingestion, is what makes it mergeable.** Ingestion takes the candidate, builds a **testing index** from it, and runs the RAG test there. Only if the *answers* improve does the change become mergeable — and merging it is the moment it goes live. Evaluation provides the RAG score; Ingestion owns the testing index and that gate.
+- **Two gates stand before the code is merged — and merging is going live.** Our main branch is production *(this relies on the pipeline repo's main-is-production release model — flagged for confirmation with Ingestion; if they deploy on a separate schedule, a third "merged → deployed" step appears here, and nothing else changes)*, so a parser change isn't merged until it has cleared *both* gates. The first gate is the parsing benchmark; passing it doesn't put the parser anywhere — it just registers the change as a candidate that's *ready for the ingestion test*. **Better parsing scores do not by themselves mean better answers**, so parsing is never enough to merge on its own.
+- **The second gate, owned by Ingestion, is what makes it mergeable.** Ingestion takes the candidate, builds a **testing index** from it, and runs the RAG test there. Only if the *answers* improve does the change become mergeable — and merging it is the moment it goes live. Evaluation provides the RAG score; Ingestion owns the testing index and that gate *(this ownership is our proposal, being confirmed with the Ingestion team)*.
 - **The smoke test is a quick sanity check, not a quality gate.** It runs a few representative documents through the parser to confirm the output is **well-formed and evaluable** — that the eval pipeline can actually read and score it. It checks the plumbing, not the quality of parsing, and it never blocks. It isn't run on the PR: the full benchmark already proves the output is evaluable by scoring the whole test set, so a smoke check there would be redundant.
 
 Alongside this, the online monitor automatically **raises an alert** if live quality drifts below a threshold.
@@ -154,7 +152,7 @@ These are policy choices the system can't make for us. They're the open items wo
 
 | Decision | Why it matters |
 |---|---|
-| **What counts as "good enough" to promote?** (the significance bar, and which metrics are non-negotiable) | Sets how strict we are. Too loose ships regressions; too strict blocks good changes. |
+| **What counts as "good enough" to promote?** (the significance bar, and which metrics are non-negotiable) | Sets how strict we are. Too loose ships regressions; too strict blocks good changes. **Until this bar is agreed, the gates run in *no-regression* mode: a change must not be measurably worse on any headline metric** — so the gates are operational from day one while the policy conversation happens. |
 | **Do we need our own benchmark documents?** | We currently test on public benchmarks. If our real documents (e.g. our specific domain) look different, public scores may not predict real performance. |
 | **How often do we run the expensive tests?** | Drives cost. Frequent RAG re-testing is powerful but not free. |
 | **When (if ever) do we add specialised hardware?** | Parsing runs on CPU today. Heavy OCR over a growing corpus could eventually justify a GPU — but only when the volume shows the benefit. |
