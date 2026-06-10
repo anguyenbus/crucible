@@ -1,12 +1,31 @@
 # Evaluation Service — Architecture Design
 
-*Topology & components — capstone synthesis. Three components, organised by one boundary, serving a two-hurdle adoption decision in which the service measures but never adopts. Supersedes the scattered topology notes in the prior docs; designed adversarially.*
-
----
-
 ## 0. The shape, in one paragraph
 
-The Evaluation Service is **three components across two worlds**. The **deterministic world** is doc-bench (document parsing): no model, CPU, reproducible, safe as a hard gate. The **probabilistic world** is everything judge-based — RAG offline (the adoption test), online spans (the live monitor), and replay — all crucible-derived, all on Bedrock, all residency- and quota-bound. Adoption of a parser requires **two hurdles**: doc-bench is *necessary* (the parser code is sound and doesn't regress parsing), and the RAG test is *sufficient* (the answers actually improve). The service **provides both measurements and never makes the adoption decision** — Ingestion owns the testing index and the RAG gate, and because **main is production**, a change merges (goes live) only once both hurdles pass. *(Both cross-team facts — Ingestion's gate/index ownership and the main-is-production release model — are the working model and are being confirmed with Ingestion; §4 states the fallback if either differs.)* Every topology choice below falls out of those facts.
+The Evaluation Service is **three components across two worlds**. 
+
+The **deterministic world** is doc-bench (document parsing): no model, CPU, reproducible, safe as a hard gate. 
+
+The **probabilistic world** is everything judge-based — RAG offline (the adoption test), online spans (the live monitor), and replay, all on Bedrock, all residency- and quota-bound. 
+
+Adoption of a parser requires **two hurdles**: doc-bench is *necessary* (the parser code is sound and doesn't regress parsing), and the RAG test is *sufficient* (the answers actually improve). 
+The service **provides both measurements and never makes the adoption decision** — Ingestion owns the testing index and the RAG gate, and because **main is production**, a change merges (goes live) only once both hurdles pass. *(Both cross-team facts — Ingestion's gate/index ownership and the main-is-production release model — are the working model and are being confirmed with Ingestion; §4 states the fallback if either differs.)* Every topology choice below falls out of those facts.
+
+```mermaid
+flowchart TB
+    subgraph DET["DETERMINISTIC WORLD — no model · CPU · reproducible → safe as a hard gate"]
+        DOCB["doc-bench<br/>measures parsing quality"]
+    end
+    subgraph PROB["PROBABILISTIC WORLD — Bedrock judge · residency- and quota-bound"]
+        RAGO["RAG offline<br/>the adoption test"]
+        ONL["online spans<br/>the live monitor"]
+        RPL["replay<br/>on demand"]
+    end
+    DOCB -->|"HURDLE 1 — necessary:<br/>parser sound, no regression"| DEC{"both hurdles green"}
+    RAGO -->|"HURDLE 2 — sufficient:<br/>answers actually improve"| DEC
+    DEC --> PRODN["merge to main = PRODUCTION<br/>(Ingestion decides · eval only measures)"]
+    ONL -.->|"watches post-merge quality"| PRODN
+```
 
 ---
 
@@ -19,11 +38,11 @@ This is the single idea that makes the design legible. Sort every concern by whi
 | What it measures | parsing quality | answer quality (faithfulness, relevancy, ctx precision/recall) |
 | Model plane | **none** | **Bedrock** (au. inference profiles) |
 | Compute | CPU only | CPU (judge is remote on Bedrock) |
-| Reproducible? | yes → safe as a hard gate | no → **absolute** judge scores are monitoring signals, never gates; the judge gates **only on paired baseline-vs-candidate deltas with significance** (Hurdle 2), where its noise hits both arms and cancels |
+| Reproducible? | yes → safe as a hard gate | relatively yes → **absolute** judge scores are monitoring signals, never gates; the judge gates **only on paired baseline-vs-candidate deltas with significance** (Hurdle 2), where its noise hits both arms and cancels |
 | Needs token bucket / verdict cache / κ-calibration / residency? | **no** | **yes — all of it** |
 | Cost driver | parser-run wall-time (OCR) | Bedrock TPM/RPM ($ per call) |
 
-Why this matters: **every hard, expensive, risky thing — token bucket, residency, judge calibration, prompt-injection defence, PII erasure, the cost circuit breaker — lives entirely in the probabilistic world. doc-bench has none of it.** Keeping that boundary crisp is what lets doc-bench be a cheap deterministic gate and stops the judge's complexity from leaking into the parsing path. If a design decision blurs this line, it's wrong.
+Why this matters: **every hard, expensive, risky thing — token bucket, residency, judge calibration, prompt-injection defence, PII erasure, the cost circuit breaker — lives entirely in the probabilistic world. doc-bench has none of it.** Keeping that boundary clear is what lets doc-bench be a cheap deterministic gate and supports RnD.
 
 **On judge reliability (evidence position, mid-2026):** "probabilistic" does not mean "unreliable." Current evidence puts well-engineered LLM judges at ~80–90% agreement with human annotators — on par with how often humans agree with each other (~81%) — and the techniques that get there are the ones this design adopts: **pinned evaluation steps** (G-Eval with fixed steps, so the judge never re-derives its rubric between runs), **decomposed verdicts** (claim-extraction/QAG for faithfulness and DAG decision trees, turning one fuzzy 0–1 score into many near-binary checks), **reference-based metrics offline** (the gold set supplies expected outputs — empirically one of the largest reliability levers), temperature-0 judging, and the verdict cache. The same 2026 research is equally clear on the limits — agreement is an *aggregate*; reliability is not uniform across tasks; stress-tests (RAND's Judge Reliability Harness, 2026) find high error rates on adversarial and borderline slices; the best judges' κ vs humans (~0.8) still sits below human-human (~0.96) — which is precisely why the calibration job, self-consistency re-checks, and delta-gating remain. Net posture: **engineer the judge to a measured reliability target, verify it continuously, and gate only on paired deltas where residual noise cancels** — confidence upgraded, structure unchanged.
 
@@ -31,16 +50,12 @@ Why this matters: **every hard, expensive, risky thing — token bucket, residen
 
 ## 2. Repo structure (and the debate you invited)
 
-**Position:** the *contract surface* is non-negotiable; the *separate repo* is not. **[PARKED — no `contracts` repo for now; schemas stay vendored where they live.]**
+- **`contracts` (the surface, not yet a repo, subjecto to discussion) — interim arrangement.** The schemas two parties must agree on are: `parser_output`, `results_v1`, the span schema, the manifest, `eval_questions`. Today `parser_output.schema.json` and `results_v1` live **in doc-bench**, and that stands: doc-bench is the de facto home of the parsing contracts, and the span schema / `eval_questions` formats live in eval-rag. What is preserved from the original argument is the part that actually matters: each schema is **versioned, and consumable as a published artifact** (the doc-bench wheel, or the schema JSON copied with its version) — Ingestion conforms to the *schema file at a pinned version*, never to the repo's internals, so the wrong-direction coupling is contained rather than structural. The residual risk is honest: a schema change is now a doc-bench/eval-rag release rather than a neutral-package release, and nothing *mechanically* stops the host repo evolving a schema unilaterally. **Revisit triggers (any one fires the hoist):** the first breaking change to a shared schema; Ingestion needing to programmatically validate against the schemas in their CI; or formalising the Hurdle-2 handoff payload (`adoption_test_request`) — at that point the hoist is a mechanical move of files that already have versions, not a redesign.
 
-- **`contracts` (the surface, not yet a repo) — interim arrangement.** The schemas two parties must agree on are: `parser_output`, `results_v1`, the span schema, the manifest, `eval_questions`. Today `parser_output.schema.json` and `results_v1` live **in doc-bench**, and that stands: doc-bench is the de facto home of the parsing contracts, and the span schema / `eval_questions` formats live in eval-rag. What is preserved from the original argument is the part that actually matters: each schema is **versioned, and consumable as a published artifact** (the doc-bench wheel, or the schema JSON copied with its version) — Ingestion conforms to the *schema file at a pinned version*, never to the repo's internals, so the wrong-direction coupling is contained rather than structural. The residual risk is honest: a schema change is now a doc-bench/eval-rag release rather than a neutral-package release, and nothing *mechanically* stops the host repo evolving a schema unilaterally. **Revisit triggers (any one fires the hoist):** the first breaking change to a shared schema; Ingestion needing to programmatically validate against the schemas in their CI; or formalising the Hurdle-2 handoff payload (`adoption_test_request`) — at that point the hoist is a mechanical move of files that already have versions, not a redesign.
-
-- **`doc-bench` (separate) — agreed, and correct.** It's a different *kind* of thing: deterministic, CPU, no model plane, its own cadence, shipped as a **wheel** (testability + must-pass canary — see §2a) **+ image** (full-benchmark Job). Folding it into eval-rag would couple a model-free deterministic kernel to a Bedrock service for no benefit. Keep it out.
+- **`doc-bench` (separate) — the examiner** It's a different *kind* of thing: deterministic, CPU, no model plane, its own cadence, shipped as a **wheel** (testability + must-pass canary — see §2a) **+ image** (full-benchmark Job). Folding it into eval-rag would couple a model-free deterministic kernel to a Bedrock service for no benefit. Keep it out.
 
 - **`eval-rag` (the deployable) — one repo for RAG-offline + online-spans + replay. This is the debatable one; here's my argument for one, not two.**
   - *For one repo:* all three surfaces are the **same crucible kernel** (RAG metrics, judge orchestration, replay statistics, span handling, adapters) plus the **same Bedrock plumbing** (token bucket, verdict cache, residency, calibration). Splitting online-spans into its own repo duplicates the hardest-won, most safety-critical code. They differ only in *trigger and cadence* (nightly schedule vs Ingestion-triggered vs on-demand) — different **entrypoints into one image**, all bounded scale-from-zero Jobs, not different repos.
-  - *The honest counter (now largely dissolved):* the earlier concern was mixing a production-critical *streaming* monitor with occasional batch surfaces in one repo. With the online monitor reworked as a **nightly batch Job** (§3), every surface shares one execution model — bounded Jobs on the shared platform — and there is no always-on component for batch churn to destabilise.
-  - *Resolution:* keep one repo. The residual split trigger is narrow and named: carve online-spans out only if a future **sub-batch-interval freshness SLO** turns it back into a streaming service — not pre-emptively. Same YAGNI discipline as write-sharding: split when a real boundary forces it.
 
 So, two repos for now: `doc-bench` (hosting the parsing contracts) and `eval-rag` (hosting the span/eval-questions contracts); Ingestion pins published schema versions; `eval-rag` pins the `doc-bench` wheel+image.
 
@@ -73,6 +88,15 @@ The wheel surface of doc-bench is deliberately tiny, and that is exactly why it'
 
 **Where the floor is enforced (so "must-pass" and "never blocks" don't collide).** The wheel *alarms*; the *gate* enforces. Hurdle 1's pass rule includes **per-document checks on the named wheel documents** — a significant regression on any of them fails the gate even if the aggregate improves — which is how the floor blocks on the PR without the wheel itself ever being a gatekeeper. Outside the PR (local, pre-commit, fast CI), the wheel runs the same named-document floor in seconds and raises the stop-and-look alarm; the human decides.
 
+```mermaid
+flowchart LR
+    MUST["mustpass.yaml<br/>named must-pass docs + per-doc floors<br/>ONE versioned list"]
+    MUST --> WHEEL["WHEEL · runs in seconds, no network<br/>local · pre-commit · fast CI"]
+    MUST --> FULL["FULL BENCHMARK · Indexed Job<br/>on the PR (Hurdle 1)"]
+    WHEEL -->|"per-doc floor breached"| ALARM["STOP-AND-LOOK alarm<br/>a human decides · never blocks"]
+    FULL -->|"per-doc floor breached"| GATE["GATE FAILS the PR<br/>even if the aggregate improves"]
+```
+
 **What it is not.** The wheel is **not** the formal Hurdle-1 gate (the full benchmark is) and it is **not** a gatekeeper that runs on the PR — there the full benchmark is a superset, so the wheel would be redundant. Its job is to be the fast, omnipresent alarm in every context the full benchmark is too slow for, holding the line on the documents that must never break.
 
 ---
@@ -91,6 +115,8 @@ The key realisation: **orchestration is owned by GitLab CI/CD plus the cluster's
 | **eval-rag adoption test** (Hurdle 2) | Ingestion pipeline (post-reingest) | **Job**, Karpenter + Spot | CPU | Bedrock |
 | **replay** (retrieval-invariant) | on demand | **Job**, Karpenter + Spot | CPU | Bedrock |
 
+> **[Karpenter — blocked in env 3, per Kamal]** Kamal has informed us that **Karpenter still has a permission issue and is not available in environment 3.** The "Karpenter + Spot" column above is therefore the *intended* steady state, not the day-one reality in 3. Until the permissions are resolved, eval's Jobs schedule onto the cluster's existing (pre-provisioned / managed) node capacity — no behavioural change to any surface, only how nodes are sourced; every workload is still a bounded, scale-from-zero Job. **Action:** track the Karpenter permission fix as a dependency for env 3; revisit autoscaling/Spot economics once it lands. Nothing in the topology, triggers, or data tier depends on Karpenter specifically — it is a node-provisioning detail.
+
 ## 3b. Execution model — the shared Kubernetes platform on AWS **[DECIDED — org alignment; decision trail recorded]**
 
 > **Decision:** evaluation executes as bounded Kubernetes workloads (Jobs, one Indexed Job, one CronJob) on the **company's shared EKS platform** — the same platform Ingestion and the orchestrator run on. Eval is a small tenant of it: bursty, scale-from-zero, nothing always-on.
@@ -101,22 +127,26 @@ The key realisation: **orchestration is owned by GitLab CI/CD plus the cluster's
 
 **What held through every execution-model revision** — evidence the load-bearing parts were placed at the right layer: the trigger model and the merge-blocking semantic; the data tier (claims on Phoenix's Postgres, scores in Phoenix, evidence in S3); the **spend lock** (Spot interruption is identical from inside a Job or a runner); the token bucket; the data-at-rest contract with Ingestion.
 
-**Open questions for the platform/orchestrator team — these refine the design, they don't block it:**
-1. **What is the orchestrator?** Argo Workflows / Flyte / Temporal / custom. If Flyte or Temporal, the **claims-table migration gate (§3a) fires** — claims moves into the platform's native cache and the table retires. If Argo Workflows or custom, claims stands (the memoization-granularity analysis in §3a applies).
-2. **What does "reusing Ingestion" mean mechanically?** Are parse/reingest steps callable workflow units eval composes? (Intersects the measurement-provider boundary, and could finally settle the replay Case A/B fork.)
-3. **Schedule and report-back:** does the nightly live as the CronJob or an orchestrator schedule, and how does an orchestrator-executed gate report pass/fail to the MR so merge-blocking survives?
-4. **Hurdle-2 handoff:** stays GitLab multi-project + `strategy: depend`, or moves to orchestrator-native workflow composition if both teams share one engine.
-
 One-liner: *"Evaluation is a small, bursty tenant of the shared platform: a container image, a handful of bounded Jobs, three tables, and a token bucket — nothing it runs is long-lived, and nothing it owns is infrastructure."*
 
 A useful side-effect of the nightly cadence: the online run executes off-peak, so it never competes with daytime gate runs for Bedrock quota — the token bucket's online-reserved share remains as a guarantee, but in practice it's rarely contended.
 
-> **[SQS — removed, with the conditions to bring it back.]** Earlier drafts fed the online monitor through an SQS queue consumed by a long-lived KEDA Deployment. Removed because the **S3 span store — already a hard requirement for replay — is the durable buffer**: scheduled micro-batches over a trace store are the conventional pattern for online LLM eval, a queue would be a *second delivery channel* for data already landing durably, and sampling deterministically **at read time** from the store is *more* robust under load than sampling at the edge (nothing can ever be dropped). Reintroduce SQS + a KEDA-scaled consumer only if **(a)** a pinned freshness SLO demands drift detection faster than the batch interval, or **(b)** ingestion starts emitting completion events at high frequency. Until one of those is true, the queue is by-default architecture — exactly what this design prunes.
+> **[SQS — subbject to discussion]** Earlier drafts fed the online monitor through an SQS queue consumed by a long-lived KEDA Deployment. Removed because the **S3 span store — already a hard requirement for replay — is the durable buffer**: scheduled micro-batches over a trace store are the conventional pattern for online LLM eval, a queue would be a *second delivery channel* for data already landing durably, and sampling deterministically **at read time** from the store is *more* robust under load than sampling at the edge (nothing can ever be dropped). Reintroduce SQS + a KEDA-scaled consumer only if **(a)** a pinned freshness SLO demands drift detection faster than the batch interval, or **(b)** ingestion starts emitting completion events at high frequency. Until one of those is true, the queue is by-default architecture — exactly what this design prunes.
 
 **Shared state:** Postgres — three control tables riding on Phoenix's required instance (`claims` spend lock, slim `eval_runs` provenance, `comparison_reports` verdicts); S3 (evidence/raw/snapshots/spans + Parquet score archive); Phoenix (runs, experiments, per-item scores). Full rationale and alternatives survey in §3a. The **parser-candidate registry remains the MR itself.**
 
 **Cross-cutting (probabilistic world only):**
 - **Bedrock token bucket** — ElastiCache/Redis Lua, **per-model**, **shared by online + adoption-test + replay**, token-metered (not request-metered). Critically, the **online monitor holds a reserved share**; adoption-test and replay are preemptible against the remainder so a big experiment can't starve the production early-warning system.
+
+```mermaid
+flowchart LR
+    Q["Bedrock per-model quota<br/>token-metered (TPM/RPM)"] --> RES["reserved_online<br/>guaranteed share"]
+    Q --> GEN["general pool<br/>preemptible remainder"]
+    RES --> MON["online nightly monitor<br/>production early-warning — never starved"]
+    GEN --> AD["adoption test"]
+    GEN --> RP["replay"]
+```
+
 - **repro-key idempotency** (Postgres `claims` conditional insert + lease — authoritative before any Bedrock spend; §3a), **VPC interface/gateway endpoints** (the in-VPC claim is false without them), **residency** (au. profiles for anything that ships spans/legal context to a model), **dead-man's switch** (scheduled-run-missed, zero-spans-in-window, and **span-store staleness** alarms — silence must page, not read as green).
 
 ```mermaid
@@ -155,6 +185,27 @@ flowchart TB
 
 **The tier, after consolidation** (control plane → GitLab; queue → span store; DynamoDB → Postgres; per-item results → Phoenix):
 
+```mermaid
+flowchart LR
+    subgraph NAIVE["What a naive design would BUILD"]
+        X1["bespoke control plane"]
+        X2["SQS queue"]
+        X3["DynamoDB"]
+        X4["per-item results DB"]
+    end
+    subgraph REUSE["What this design REUSES — already in the stack"]
+        Y1["GitLab CI/CD"]
+        Y2["S3 span store"]
+        Y3["Postgres — 3 tables<br/>on Phoenix's instance"]
+        Y4["Phoenix"]
+    end
+    X1 --> Y1
+    X2 --> Y2
+    X3 --> Y3
+    X4 --> Y4
+```
+
+
 | Store | Holds | Why it's the right home |
 |---|---|---|
 | **S3** | artifacts, spans, raw verdicts, Parquet score archive | immutable evidence; already mandatory for replay |
@@ -164,6 +215,10 @@ flowchart TB
 Scale honesty: ~3M rows/year, ~99% of them in `claims`, ~0.5 GB — no partitioning machinery; the only hygiene is pruning claims of retired `eval_spec_version`s.
 
 **Why `claims` must exist — four conditions, all of which hold here:** (1) redone work costs real dollars; (2) thousands of items share one run on Spot compute, so partial progress matters; (3) verdicts are cached *across* runs — the baseline is computed once, ever, and every MR reuses it; (4) no broker provides a lease — **when SQS was removed (§3 note), its visibility timeout — which *is* a claim-and-lease mechanism — went with it, and the function moved here.** Workloads missing any one of these conditions don't need this table, which is why most batch systems don't have one.
+
+**In plain terms:** think of `claims` as a **sign-out sheet for paid work**. Every quality check costs real money, and the work runs on cheap "interruptible" machines that can be taken away mid-run — so before any check is paid for, a worker signs its name against it, and once it's done the answer is kept on file. That gives us three things: two workers never pay for the same check at the same time; if a machine is yanked away halfway through a thousand checks, the next one picks up exactly where it left off instead of paying for all thousand again; and the slow-to-compute "before" baseline that every change is measured against is paid for **once, ever**, then reused by every future change. We built this small piece ourselves only because nothing we already use offers a "sign out this paid item and don't lose it" guarantee — most systems never need it because their work is free to repeat.
+
+**Concrete example.** A parser MR fires `rag-gate`, which launches the `adoption` Job over a gold set of ~100 questions × 4 metrics (faithfulness, answer_relevancy, ctx_precision, ctx_recall) — ~400 paid judge evaluations per arm, each a temperature-0 Bedrock call. For every `(item, metric)` the worker computes a `repro_key` (a hash of the question+context+answer, the dated judge `model_id`, the pinned `prompt_version`, and `eval_spec_version`) and does a conditional `INSERT … ON CONFLICT` into `claims`: a fresh row is `leased` to the pod with a 10-minute `lease_expires_at`; a row that's already `done` returns its cached `score` with **zero Bedrock spend**. The **baseline arm** (the current production parser) is almost entirely `done` cache hits — it was computed once on the first MR ever and every subsequent MR reuses it — so this run only pays for the **candidate arm**. Now suppose Spot reclaims the node at item 270: SIGTERM lets in-flight evaluations finish, the 269 already-`finalize`d rows stay `done`, and the ~3 rows still `leased` simply let their lease expire. GitLab's `backoffLimit` retry starts a new pod, which **steals** the expired leases and resumes — re-billing only those few items, not all 270. When all items resolve, the worker writes the paired `wilcoxon_p`, `cliffs_delta`, and `mde` into `comparison_reports`, and the Job's exit code becomes the gate verdict on the MR. Without `claims`, that same Spot reclaim would have re-bought 270 paid calls, and every MR would re-buy the entire baseline arm from scratch.
 
 **Alternatives examined — this list is the defense; challenge any line:**
 
@@ -178,7 +233,6 @@ Scale honesty: ~3M rows/year, ~99% of them in `claims`, ~0.5 GB — no partition
 | **S3 conditional writes + Athena** | create-if-absent yes; leases, atomic steal, transactional finalize no — a hand-rolled lock manager protecting money; Athena is read-only analytics |
 | **DynamoDB** | would genuinely work; not chosen because Postgres free-rides on Phoenix's mandatory instance. **Written fallback:** if that instance ever stops existing, `claims` → DynamoDB (conditional writes + native TTL), the other two tables → S3 |
 
-**Prior art** (the pattern is standard; only the composition is ours): DeepEval's result cache (`-c` / `CacheConfig` — local-only, hence promoted to a shared store); Langfuse external eval pipelines (batched, checkpointed); Procrastinate / Oban / pg-boss / River (production Postgres claim-and-lease frameworks); Kubernetes Job docs + AWS Spot guidance (idempotent item tracking, checkpoint on SIGTERM); Stripe idempotency keys (deterministic key per paid API call). Full annotated references in the appendix.
 
 **Platform trajectory [for discussion]:** today this is deliberately *one table inside eval*, not a service. If a second GenAI application hits the same four conditions, the candidate move is promoting `claims` into a **shared platform primitive** — an idempotency-and-budget ledger — rather than each app growing its own. We are *not* building that now (same YAGNI discipline as everywhere else in this design), but we name the trajectory so the platform review can plan for it instead of discovering it.
 
@@ -212,7 +266,7 @@ The load-bearing reframes from the adversarial debate, now built in:
 ## 5. Non-negotiable invariants (what I'd refuse to ship without)
 
 1. **A parsing pass must be structurally incapable of reading as an adoption signal** — separate stores, separate dashboards, separate gates; the only thing that makes a change mergeable (and main is production) is a passing Hurdle-2 RAG test on the testing index. The entire failure mode is "parsing improved, so we shipped it."
-2. **doc-bench never touches Bedrock, residency, the token bucket, or calibration.** If it does, the deterministic/probabilistic boundary has been violated.
+2. **doc-bench never touches Bedrock, residency, the token bucket, or calibration.** 
 3. **The online monitor gets a reserved Bedrock quota share.** A discretionary experiment (adoption test / replay) must never be able to starve the production early-warning system.
 4. **The contract surface is versioned and consumable independently of any repo's internals.** Ingestion conforms to pinned schema versions (published artifacts), never to doc-bench/eval-rag source; consumers reject unknown major versions loudly. The neutral `contracts` repo is the end state, parked until a revisit trigger fires (§2) — but version discipline on the schemas is in force from day one, repo or no repo.
 5. **Eval measures; Ingestion owns the testing index and the RAG gate.** The service builds no production index and owns no reingest; adoption is the **merge to main (= production)**, gated by both hurdles. Eval never merges and never decides.
