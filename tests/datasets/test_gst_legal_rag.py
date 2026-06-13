@@ -1,19 +1,17 @@
 """Tests for GST Legal RAG dataset loader."""
 
 from pathlib import Path
-import tempfile
 
 import pytest
 
-from crucible.datasets.gst_legal_rag import (
+from crucible.service.datasets.gst_legal_rag import (
     DATASET_NAME,
-    DEFAULT_CACHE_DIR,
     SLICE_FULL,
     SLICE_MINI,
     SLICE_NANO,
     SLICE_PICO,
-    _get_gst_slice_limit,
     _ensure_cache_dir,
+    _get_gst_slice_limit,
     load_gst_legal_rag,
 )
 
@@ -21,7 +19,6 @@ from crucible.datasets.gst_legal_rag import (
 def test_constants():
     """Test module constants."""
     assert DATASET_NAME == "gst-legal-rag"
-    assert DEFAULT_CACHE_DIR == Path("data/rag/gst_legal_rag/")
     assert SLICE_PICO == 2
     assert SLICE_NANO == 10
     assert SLICE_MINI == 20

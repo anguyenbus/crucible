@@ -141,9 +141,7 @@ def prepare_corpus(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Prepare GST Legal RAG corpus for ChromaDB"
-    )
+    parser = argparse.ArgumentParser(description="Prepare GST Legal RAG corpus for ChromaDB")
     parser.add_argument(
         "--cache-dir",
         type=Path,

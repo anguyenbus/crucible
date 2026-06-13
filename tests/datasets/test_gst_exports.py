@@ -3,12 +3,12 @@
 import tempfile
 from pathlib import Path
 
-from crucible import datasets
-from crucible.config import load_config
+from crucible.service import datasets
+from crucible.service.config import load_config
 
 
 def test_gst_loader_accessible_from_datasets():
-    """Test that GST loader is accessible from crucible.datasets."""
+    """Test that GST loader is accessible from crucible.service.datasets."""
     assert hasattr(datasets, "load_gst_legal_rag")
     assert callable(datasets.load_gst_legal_rag)
 
@@ -16,7 +16,6 @@ def test_gst_loader_accessible_from_datasets():
 def test_gst_constants_exported():
     """Test that GST constants are exported."""
     assert hasattr(datasets, "GST_DATASET_NAME")
-    assert hasattr(datasets, "GST_DEFAULT_CACHE_DIR")
     assert hasattr(datasets, "GST_SLICE_PICO")
     assert hasattr(datasets, "GST_SLICE_NANO")
     assert hasattr(datasets, "GST_SLICE_MINI")
@@ -26,7 +25,6 @@ def test_gst_constants_exported():
 def test_gst_constants_values():
     """Test GST constant values."""
     assert datasets.GST_DATASET_NAME == "gst-legal-rag"
-    assert datasets.GST_DEFAULT_CACHE_DIR == Path("data/rag/gst_legal_rag/")
     assert datasets.GST_SLICE_PICO == 2
     assert datasets.GST_SLICE_NANO == 10
     assert datasets.GST_SLICE_MINI == 20
@@ -50,12 +48,11 @@ def test_eval_config_has_gst_block():
 
 def test_gst_in_all_export_list():
     """Test that GST exports are in __all__ list."""
-    from crucible.datasets import __all__
+    from crucible.service.datasets import __all__
 
     expected_exports = [
         "load_gst_legal_rag",
         "GST_DATASET_NAME",
-        "GST_DEFAULT_CACHE_DIR",
         "GST_SLICE_PICO",
         "GST_SLICE_NANO",
         "GST_SLICE_MINI",
@@ -68,7 +65,7 @@ def test_gst_in_all_export_list():
 
 def test_load_gst_legal_rag_from_export():
     """Test loading GST data through exported module."""
-    from crucible.datasets import load_gst_legal_rag
+    from crucible.service.datasets import load_gst_legal_rag
 
     # Create mock questions.jsonl
     with tempfile.TemporaryDirectory() as tmp:

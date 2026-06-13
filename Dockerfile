@@ -4,7 +4,7 @@
 # ============================================================================
 # BUILDER STAGE - Install dependencies
 # ============================================================================
-FROM python:3.13-slim AS builder
+FROM python:3.12-slim AS builder
 
 # Build-time environment
 ENV UV_COMPILE_BYTECODE=1 \
@@ -30,7 +30,7 @@ RUN mv .venv /opt/venv
 # ============================================================================
 # DATASETS STAGE - Download datasets
 # ============================================================================
-FROM python:3.13-slim AS datasets
+FROM python:3.12-slim AS datasets
 
 WORKDIR /opt/crucible
 
@@ -58,7 +58,7 @@ RUN test -d /opt/crucible/data/rag/legal_rag_bench || \
 # ============================================================================
 # RUNTIME STAGE - Minimal final image
 # ============================================================================
-FROM python:3.13-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 # Runtime environment
 ENV PYTHONUNBUFFERED=1 \

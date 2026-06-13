@@ -34,9 +34,7 @@ def prepare_corpus(
     try:
         from datasets import load_dataset
     except ImportError as err:
-        raise ImportError(
-            "datasets library not installed. Install with: uv add datasets"
-        ) from err
+        raise ImportError("datasets library not installed. Install with: uv add datasets") from err
 
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -89,9 +87,7 @@ def prepare_corpus(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Prepare Legal RAG Bench corpus for ChromaDB"
-    )
+    parser = argparse.ArgumentParser(description="Prepare Legal RAG Bench corpus for ChromaDB")
     parser.add_argument(
         "--output-dir",
         type=Path,

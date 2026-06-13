@@ -2,12 +2,10 @@
 
 import os
 from pathlib import Path
-import tempfile
 
 import pytest
-import yaml
 
-from crucible.config import (
+from crucible.service.config import (
     REQUIRED_SECTIONS,
     expand_env_vars,
     load_config,

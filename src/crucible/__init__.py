@@ -18,19 +18,11 @@ Typical usage:
     uv run crucible check config
 """
 
-import os
-
-# ====================================================================
-# SECURITY: DISABLE THIRD-PARTY TELEMETRY (executed on package import)
-# ====================================================================
-# DO NOT REMOVE OR MODIFY. Applies to ALL uses of this package.
-#
-# This disables DeepEval telemetry (analytics, usage stats) globally.
-# Setting it here ensures it's applied before any DeepEval code runs.
-#
-# Why: Privacy, security, compliance, cost. See .env.example for details.
-# Reference: https://docs.confident-ai.com/docs/telemetry-opt-out
-# ====================================================================
-os.environ["DEEPEVAL_TELEMETRY_OPT_OUT"] = "YES"
+# NOTE: Phase 4 removed the import-time DEEPEVAL_TELEMETRY_OPT_OUT write that
+# used to live here. `import crucible` pulls NO deepeval (deepeval is not in
+# sys.modules afterward), so this top-level write opened no ordering gap and
+# violated the "import mutates nothing" invariant. The opt-out now lives in
+# exactly two allowlisted package __init__ sites: crucible.kernel.rag_metrics
+# and crucible.service.deepeval -- each set before its package imports deepeval.
 
 __version__ = "0.1.0"

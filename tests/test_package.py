@@ -1,7 +1,5 @@
 """Tests for package structure and metadata."""
 
-import pytest
-
 
 def test_package_importable():
     """Test that crucible package can be imported."""

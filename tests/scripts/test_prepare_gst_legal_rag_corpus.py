@@ -1,13 +1,10 @@
 """Tests for GST Legal RAG corpus preparation script."""
 
 from pathlib import Path
-import tempfile
-
-import pytest
 
 from scripts.prepare_gst_legal_rag_corpus import (
-    _sanitize_filename,
     _build_corpus_content,
+    _sanitize_filename,
     prepare_corpus,
 )
 
@@ -72,11 +69,7 @@ def test_build_corpus_content_minimal():
     )
 
     # When title is empty, only ID and text
-    expected = (
-        "ID: minimal_doc\n"
-        "\n"
-        "Text only.\n"
-    )
+    expected = "ID: minimal_doc\n\nText only.\n"
     assert content == expected
 
 
@@ -107,7 +100,8 @@ def test_prepare_corpus_file_content(tmp_path: Path):
     """Test corpus preparation file content format."""
     documents_file = tmp_path / "documents.jsonl"
     documents_file.write_text(
-        '{"id": "test_doc", "title": "Test Title", "text": "Test text content.", "footnotes": null}\n'
+        '{"id": "test_doc", "title": "Test Title", '
+        '"text": "Test text content.", "footnotes": null}\n'
     )
 
     output_dir = tmp_path / "corpus_files"
@@ -116,12 +110,7 @@ def test_prepare_corpus_file_content(tmp_path: Path):
     # Read and verify content
     content = (output_dir / "test_doc.txt").read_text(encoding="utf-8")
 
-    expected = (
-        "ID: test_doc\n"
-        "Title: Test Title\n"
-        "\n"
-        "Test text content.\n"
-    )
+    expected = "ID: test_doc\nTitle: Test Title\n\nTest text content.\n"
     assert content == expected
 
 

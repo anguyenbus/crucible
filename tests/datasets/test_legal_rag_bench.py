@@ -1,11 +1,11 @@
 """Tests for Legal RAG Bench dataset loader."""
 
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 import pytest
 
-from crucible.datasets.legal_rag_bench import (
+from crucible.service.datasets.legal_rag_bench import (
     DATASET_NAME,
     HF_TOKEN_ENV,
     SLICE_NANO,
@@ -36,7 +36,6 @@ def test_get_hf_token_from_env():
 
 def test_get_hf_token_from_file(tmp_path: Path):
     """Test HF token resolution from file."""
-    import os
 
     # Create temporary token file
     hf_dir = tmp_path / ".huggingface"
@@ -45,7 +44,8 @@ def test_get_hf_token_from_file(tmp_path: Path):
     token_file.write_text("file-token")
 
     # Temporarily replace default path
-    from crucible.datasets import legal_rag_bench
+    from crucible.service.datasets import legal_rag_bench
+
     original_path = legal_rag_bench.DEFAULT_HF_TOKEN_PATH
     legal_rag_bench.DEFAULT_HF_TOKEN_PATH = token_file
 
@@ -65,8 +65,7 @@ def test_get_hf_token_not_found():
         del os.environ["HF_TOKEN"]
 
     # Mock home directory to avoid real token file
-    from crucible.datasets import legal_rag_bench
-    import tempfile
+    from crucible.service.datasets import legal_rag_bench
 
     with tempfile.TemporaryDirectory() as tmp:
         original_path = legal_rag_bench.DEFAULT_HF_TOKEN_PATH
@@ -107,7 +106,7 @@ def test_get_slice_limit_invalid():
 
 def test_ensure_cache_dir(tmp_path: Path):
     """Test cache directory creation."""
-    from crucible.datasets.legal_rag_bench import _ensure_cache_dir
+    from crucible.service.datasets.legal_rag_bench import _ensure_cache_dir
 
     cache_dir = tmp_path / "cache" / "nested"
     _ensure_cache_dir(cache_dir)
