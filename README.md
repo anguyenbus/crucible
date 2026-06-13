@@ -325,6 +325,7 @@ docker-compose run crucible eval-rag --slice gst_pico --rag stub-local
 
 ## Documentation
 
+- **Migrating to the monorepo:** [docs/MIGRATION.md](docs/MIGRATION.md) — the tested runbook for moving into `genai-backend/services/eval/`
 - Guides: [RAG evaluation](docs/guides/rag-evaluation.md), [replay testing](docs/guides/replay-testing.md), [GST corpus generation](docs/guides/gst-corpus-generation.md)
 - Refactor / migration plan: `docs/eval_final/9-refactor-plan.md`
 - Evaluation service design + API: `docs/eval_final/2-evaluation-design.md`, `docs/eval_final/7-api.md`
