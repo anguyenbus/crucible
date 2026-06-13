@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internal.example.com/schemas/eval_questions.schema.json",
+  "title": "EvalQuestions",
+  "description": "Schema for declaring evaluation questions used by the eval harness. Inspired by the judge_questions.json pattern from the AI Coach project (declared required_content, binary expected_answer), adapted for RFI document Q&A and integration with Phoenix datasets/experiments. Two kinds of evaluators are supported: 'deterministic' (computed from ground truth, e.g. Precision@k) and 'llm_judge' (binary Yes/No from an LLM-as-judge prompt). The harness uses deterministic evaluators for anything backed by gold spans, and LLM judges for the qualitative criteria that cannot be measured directly.",
+  "type": "object",
+  "required": ["schema_version", "questions"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "questions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Question" }
+    }
+  },
+  "$defs": {
+    "Question": {
+      "type": "object",
+      "required": [
+        "question_id",
+        "pillar",
+        "criterion",
+        "evaluator",
+        "required_content",
+        "scope_guardrail"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "question_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$",
+          "description": "Stable identifier. Used as the Phoenix annotation_name when results are written back."
+        },
+        "pillar": {
+          "type": "string",
+          "enum": ["parsing", "retrieval", "faithfulness", "citation"],
+          "description": "Top-level grouping. Parallels the AI Coach four-pillar taxonomy but adapted: 'parsing' replaces 'safety' (we're evaluating document extraction, not a chatbot); 'retrieval' is unchanged; 'faithfulness' subsumes truthfulness and quality (does the answer reflect the retrieved evidence?); 'citation' covers whether cited spans actually support the cited claim."
+        },
+        "criterion": {
+          "type": "string",
+          "description": "Short human-readable name, e.g. 'span_overlap', 'no_hallucinated_facts'."
+        },
+        "description": {
+          "type": "string",
+          "description": "What this question tests. Shown in reports and Phoenix UI."
+        },
+        "evaluator": {
+          "oneOf": [
+            { "$ref": "#/$defs/DeterministicEvaluator" },
+            { "$ref": "#/$defs/LLMJudgeEvaluator" }
+          ]
+        },
+        "required_content": {
+          "type": "array",
+          "description": "Fields this question needs to be evaluable. The harness will skip this question for any row missing a required field and record the skip rather than silently passing. Borrowed directly from the AI Coach judge_questions.json pattern.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "query_text",
+              "parser_output",
+              "retrieved_chunks",
+              "answer_text",
+              "answer_citations",
+              "gold_spans",
+              "gold_answer_text",
+              "gold_parser_elements"
+            ]
+          },
+          "minItems": 1
+        },
+        "scope_guardrail": {
+          "type": "string",
+          "description": "Plain-English statement of what this evaluator should NOT penalize, to prevent the eval itself from drifting. For LLM judges this is injected into the prompt; for deterministic evaluators it is documentation. Borrowed from the AI Coach 'STRICTLY CONFINE YOUR EVALUATION' principle."
+        },
+        "applies_to": {
+          "type": "object",
+          "description": "Optional filter — only run this question on rows matching these conditions. Lets you, e.g., only run citation evals on rows where the system claimed answer_supported=true.",
+          "properties": {
+            "query_metadata": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "Match on fields in RagQueryOutput.query.metadata."
+            },
+            "answer_supported": { "type": "boolean" }
+          }
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["blocker", "major", "minor"],
+          "default": "major",
+          "description": "Used by CI regression check to decide whether a regression should fail the build."
+        }
+      }
+    },
+    "DeterministicEvaluator": {
+      "type": "object",
+      "description": "Evaluator implemented in code, computed against ground truth. Output is numeric (score) plus optional pass/fail (label) based on threshold.",
+      "required": ["kind", "metric"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "deterministic" },
+        "metric": {
+          "type": "string",
+          "enum": [
+            "precision_at_k",
+            "recall_at_k",
+            "mrr",
+            "span_overlap_f1",
+            "char_level_f1",
+            "table_teds",
+            "reading_order_kendall_tau",
+            "exact_match",
+            "rouge_l"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "description": "Metric-specific parameters, e.g. {k: 5} for precision_at_k.",
+          "additionalProperties": true,
+          "examples": [
+            { "k": 5 },
+            { "k": 10 },
+            { "iou_threshold": 0.5 }
+          ]
+        },
+        "threshold": {
+          "type": "object",
+          "description": "Optional pass/fail threshold. If absent, the metric is reported as a number only.",
+          "required": ["operator", "value"],
+          "properties": {
+            "operator": { "type": "string", "enum": [">=", ">", "<=", "<", "=="] },
+            "value": { "type": "number" }
+          }
+        }
+      }
+    },
+    "LLMJudgeEvaluator": {
+      "type": "object",
+      "description": "Evaluator implemented as an LLM-as-judge call. Binary Yes/No output with declared expected_answer for automated scoring, matching the AI Coach pattern. Compatible with phoenix.evals.ClassificationEvaluator.",
+      "required": ["kind", "model", "prompt_template", "expected_answer"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "llm_judge" },
+        "model": {
+          "type": "string",
+          "description": "Judge model identifier. Pin a specific version — judge drift between model versions is a real source of eval noise.",
+          "examples": ["claude-opus-4-7", "gpt-4o-2024-11-20"]
+        },
+        "prompt_template": {
+          "type": "string",
+          "description": "Jinja2 template. Available variables match required_content fields. MUST instruct the model to return ONLY 'Yes' or 'No' on the final line. Should embed the scope_guardrail."
+        },
+        "expected_answer": {
+          "type": "string",
+          "enum": ["Yes", "No"],
+          "description": "The answer that means the system passed this criterion. The AI Coach plan uses this to automate scoring without flipping logic per question."
+        },
+        "temperature": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+        "max_tokens": { "type": "integer", "minimum": 1, "default": 256 }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "questions": [
+        {
+          "question_id": "retrieval_recall_at_5",
+          "pillar": "retrieval",
+          "criterion": "recall_at_k",
+          "description": "Does at least one of the top-5 retrieved chunks overlap a gold span?",
+          "evaluator": {
+            "kind": "deterministic",
+            "metric": "recall_at_k",
+            "params": { "k": 5 },
+            "threshold": { "operator": ">=", "value": 0.7 }
+          },
+          "required_content": ["retrieved_chunks", "gold_spans"],
+          "scope_guardrail": "Do not penalize the retriever for ranking when at least one relevant chunk is in top-k. Rank quality is measured separately by MRR.",
+          "severity": "blocker"
+        },
+        {
+          "question_id": "retrieval_precision_at_5",
+          "pillar": "retrieval",
+          "criterion": "precision_at_k",
+          "description": "What fraction of the top-5 retrieved chunks overlap a gold span?",
+          "evaluator": {
+            "kind": "deterministic",
+            "metric": "precision_at_k",
+            "params": { "k": 5 }
+          },
+          "required_content": ["retrieved_chunks", "gold_spans"],
+          "scope_guardrail": "Precision under 1.0 is acceptable if recall is high — the generator can filter noise. Use this metric for trend tracking, not pass/fail.",
+          "severity": "minor"
+        },
+        {
+          "question_id": "faithfulness_no_unsupported_claims",
+          "pillar": "faithfulness",
+          "criterion": "no_unsupported_claims",
+          "description": "Does every factual claim in the answer trace to text actually present in retrieved_chunks?",
+          "evaluator": {
+            "kind": "llm_judge",
+            "model": "claude-opus-4-7",
+            "prompt_template": "You are evaluating whether a RAG system's answer is faithful to its retrieved evidence.\n\nQUESTION: {{ query_text }}\n\nANSWER:\n{{ answer_text }}\n\nRETRIEVED CHUNKS:\n{% for c in retrieved_chunks %}--- chunk {{ c.chunk_id }} ---\n{{ c.text }}\n{% endfor %}\n\nSCOPE: {{ scope_guardrail }}\n\nDoes every factual claim in ANSWER appear in RETRIEVED CHUNKS? Reply with reasoning, then on the final line reply only 'Yes' or 'No'.",
+            "expected_answer": "Yes",
+            "temperature": 0
+          },
+          "required_content": ["query_text", "answer_text", "retrieved_chunks"],
+          "scope_guardrail": "Do not penalize stylistic paraphrasing, summarization, or reasonable inference from explicit facts. Penalize only NEW factual claims that have no basis in the retrieved chunks. Do not penalize the answer for being incomplete — completeness is a separate criterion.",
+          "applies_to": { "answer_supported": true },
+          "severity": "blocker"
+        },
+        {
+          "question_id": "citation_spans_support_claims",
+          "pillar": "citation",
+          "criterion": "spans_support_claims",
+          "description": "For each citation in the answer, does the cited chunk actually contain the information used in the claim?",
+          "evaluator": {
+            "kind": "llm_judge",
+            "model": "claude-opus-4-7",
+            "prompt_template": "You are evaluating whether each citation in a RAG answer correctly points to supporting evidence.\n\nQUESTION: {{ query_text }}\n\nFor each (claim, cited_chunk) pair below, decide whether the cited chunk supports the claim.\n\n{% for cit in answer_citations %}CLAIM: {{ cit.claim_text }}\nCITED CHUNK ({{ cit.chunk_id }}): {{ cit.chunk_text }}\n\n{% endfor %}\n\nSCOPE: {{ scope_guardrail }}\n\nDo ALL citations correctly support their claims? Reply with reasoning, then on the final line reply only 'Yes' or 'No'.",
+            "expected_answer": "Yes",
+            "temperature": 0
+          },
+          "required_content": ["query_text", "answer_text", "answer_citations", "retrieved_chunks"],
+          "scope_guardrail": "Citation is correct if the cited chunk contains information that supports the claim, even if the claim paraphrases. Penalize only when the cited chunk does not actually contain the cited information.",
+          "applies_to": { "answer_supported": true },
+          "severity": "major"
+        },
+        {
+          "question_id": "answer_correctness",
+          "pillar": "faithfulness",
+          "criterion": "matches_gold_answer",
+          "description": "Does the generated answer convey the same factual content as the gold reference answer?",
+          "evaluator": {
+            "kind": "llm_judge",
+            "model": "claude-opus-4-7",
+            "prompt_template": "You are comparing a RAG answer to a reference answer.\n\nQUESTION: {{ query_text }}\n\nGENERATED ANSWER: {{ answer_text }}\n\nREFERENCE ANSWER: {{ gold_answer_text }}\n\nSCOPE: {{ scope_guardrail }}\n\nDoes the GENERATED answer convey the same factual content as the REFERENCE? Reply with reasoning, then on the final line reply only 'Yes' or 'No'.",
+            "expected_answer": "Yes",
+            "temperature": 0
+          },
+          "required_content": ["query_text", "answer_text", "gold_answer_text"],
+          "scope_guardrail": "Ignore differences in style, length, ordering, and phrasing. Penalize only factual mismatches or material omissions of information present in the reference.",
+          "severity": "major"
+        },
+        {
+          "question_id": "parsing_text_fidelity",
+          "pillar": "parsing",
+          "criterion": "char_level_f1",
+          "description": "Character-level F1 between extracted text and gold text for the document.",
+          "evaluator": {
+            "kind": "deterministic",
+            "metric": "char_level_f1",
+            "threshold": { "operator": ">=", "value": 0.95 }
+          },
+          "required_content": ["parser_output", "gold_parser_elements"],
+          "scope_guardrail": "Normalize whitespace and unicode before comparison. Do not penalize header/footer differences if the gold set excludes them.",
+          "severity": "major"
+        },
+        {
+          "question_id": "parsing_table_extraction",
+          "pillar": "parsing",
+          "criterion": "table_teds",
+          "description": "Tree Edit Distance Similarity for tables — measures structural and content fidelity.",
+          "evaluator": {
+            "kind": "deterministic",
+            "metric": "table_teds",
+            "threshold": { "operator": ">=", "value": 0.85 }
+          },
+          "required_content": ["parser_output", "gold_parser_elements"],
+          "scope_guardrail": "Compare only tables present in both predicted and gold. Missing tables are counted separately via structure_recall.",
+          "severity": "major"
+        }
+      ]
+    }
+  ]
+}

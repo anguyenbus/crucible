@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internal.example.com/schemas/rag_query_output.schema.json",
+  "title": "RagQueryOutput",
+  "description": "Structured output produced by the ingestion team's RAG query API for a single question. The eval harness consumes this format. Critical principle: every claim in the answer must be traceable to retrieved_chunks; every retrieved_chunk must be traceable to a parser element via element_id and char_span. This is what makes citation evaluation possible.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "system_version",
+    "query",
+    "answer",
+    "retrieved_chunks"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "system_version": {
+      "type": "object",
+      "description": "Version pins for every component that affects output. Required so regression reports can attribute changes to a specific component.",
+      "required": ["pipeline_version"],
+      "properties": {
+        "pipeline_version": { "type": "string", "description": "Overall RAG pipeline version (semver)." },
+        "parser_version": { "type": "string" },
+        "chunker_version": { "type": "string" },
+        "embedder_model": { "type": "string", "examples": ["text-embedding-3-large", "voyage-3"] },
+        "retriever_version": { "type": "string" },
+        "reranker_model": { "type": ["string", "null"] },
+        "generator_model": { "type": "string", "examples": ["claude-opus-4-7", "gpt-4o-2024-11-20"] }
+      }
+    },
+    "query": {
+      "type": "object",
+      "required": ["query_id", "text"],
+      "properties": {
+        "query_id": {
+          "type": "string",
+          "description": "Stable identifier for the query. Eval harness joins on this field to ground truth."
+        },
+        "text": { "type": "string" },
+        "metadata": {
+          "type": "object",
+          "description": "Optional. E.g. RFI category, expected answer type. Passed through from the eval dataset.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "answer": {
+      "type": "object",
+      "required": ["text", "citations"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Final generated answer. May be empty string if the system determined no answer is supported by the corpus."
+        },
+        "answer_supported": {
+          "type": "boolean",
+          "description": "System's self-assessment of whether the corpus contains a supporting answer. Distinguishes 'I don't know' from a hallucinated guess."
+        },
+        "citations": {
+          "type": "array",
+          "description": "Per-claim citations. Each citation links a span of answer.text to one or more retrieved_chunks.",
+          "items": {
+            "type": "object",
+            "required": ["claim_span", "chunk_ids"],
+            "properties": {
+              "claim_span": {
+                "type": "array",
+                "description": "[start, end) character offsets into answer.text identifying the cited claim.",
+                "items": { "type": "integer", "minimum": 0 },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "chunk_ids": {
+                "type": "array",
+                "description": "chunk_ids from retrieved_chunks[] that support this claim. At least one.",
+                "items": { "type": "string" },
+                "minItems": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "retrieved_chunks": {
+      "type": "array",
+      "description": "All chunks the retriever surfaced for this query, in rank order (rank 0 = highest). Even chunks not used in the answer must be listed — eval needs the full retrieved set to compute recall and precision.",
+      "items": {
+        "type": "object",
+        "required": ["chunk_id", "rank", "score", "doc_id", "text", "char_span"],
+        "additionalProperties": false,
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "description": "Unique within this response. Referenced from answer.citations[].chunk_ids."
+          },
+          "rank": { "type": "integer", "minimum": 0 },
+          "score": {
+            "type": "number",
+            "description": "Final retrieval score after any reranking. Higher = more relevant."
+          },
+          "retrieval_stage": {
+            "type": "string",
+            "enum": ["initial", "reranked"],
+            "description": "Optional. Distinguishes initial retrieval from post-rerank results when both are reported."
+          },
+          "doc_id": {
+            "type": "string",
+            "description": "Joins back to parser_output.source.doc_id."
+          },
+          "element_ids": {
+            "type": "array",
+            "description": "element_ids from parser_output.elements[] that this chunk overlaps. Optional but strongly recommended — enables structure-aware eval.",
+            "items": { "type": "string" }
+          },
+          "char_span": {
+            "type": "array",
+            "description": "[start, end) character offsets into the source document's full text. This is the canonical evidence locator — it joins directly against LegalBench-RAG-style gold spans.",
+            "items": { "type": "integer", "minimum": 0 },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "page_indices": {
+            "type": "array",
+            "description": "Optional. Page indices this chunk covers, for human-readable display.",
+            "items": { "type": "integer", "minimum": 0 }
+          },
+          "text": {
+            "type": "string",
+            "description": "Verbatim text of the chunk as passed to the generator. Eval will measure overlap with gold spans against this."
+          }
+        }
+      }
+    },
+    "trace": {
+      "type": "object",
+      "description": "Optional. OpenInference / OTel span context for cross-referencing with Phoenix traces.",
+      "properties": {
+        "trace_id": { "type": "string" },
+        "span_id": { "type": "string" },
+        "phoenix_project": { "type": "string" }
+      }
+    },
+    "timings_ms": {
+      "type": "object",
+      "description": "Optional. Per-stage latency in milliseconds, for cost/latency dashboards.",
+      "additionalProperties": { "type": "number", "minimum": 0 },
+      "examples": [
+        { "retrieval": 145, "rerank": 89, "generation": 1820, "total": 2054 }
+      ]
+    }
+  }
+}

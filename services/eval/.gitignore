@@ -1,0 +1,6 @@
+# Staged migration artifact: app/ and tests/ ARE committed source here (unlike the
+# rehearsal skeleton). Only the resolved venv and caches are ignored.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

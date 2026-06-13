@@ -1,0 +1,64 @@
+[build-system]
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+[project]
+name = "eval"
+version = "0.1.0"
+description = "Migration-rehearsal skeleton: the monorepo destination for crucible's kernel + service as the app package."
+requires-python = ">=3.12"
+# Derived from crucible's pyproject (Phase 5). Core deps are copied VERBATIM so the
+# skeleton resolves exactly what the import-pure kernel needs; bedrock + phoenix
+# extras are lifted unchanged. demo/replay are deliberately NOT carried: the copied
+# tests/kernel + tests/service subset is hermetic (embedding tests exercise only
+# lazy-init + empty-input short-circuits; openai arrives transitively via deepeval).
+dependencies = [
+    "pydantic>=2",
+    "jsonschema>=4",
+    "pyyaml",
+    # EXACT pin: deepeval is the judge "ruler". A bump can shift metric prompts and
+    # reintroduce judge drift, so any future change is a deliberate re-baseline EVENT,
+    # never a routine dependabot merge. Do NOT loosen to >=/~=.
+    "deepeval==4.0.5",
+    # scipy is a kernel dependency (app.kernel.replay_stats.comparison imports
+    # scipy.stats.wilcoxon unconditionally), so it must resolve with zero extras.
+    "scipy",
+    "polars>=1.41.0",
+    "beartype",
+]
+
+[project.optional-dependencies]
+phoenix = [
+    "arize-phoenix>=4.0.0",
+    "openinference-semantic-conventions>=0.1.0",
+]
+bedrock = [
+    "boto3>=1.0.0",
+    # Required by DeepEval's AmazonBedrockModel (the LLM-judge on Bedrock).
+    "aiobotocore>=2.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+# uv_build packages the module tree into the wheel; source-include makes the 4
+# in-package schema JSONs an EXPLICIT, non-regressing guarantee. After the migration
+# rewrite the kernel validator anchors on app.contracts via importlib.resources, so
+# app/contracts/*.json must ship (re-pointed from src/crucible/contracts/*.json).
+[tool.uv.build-backend]
+# The package is `app` at the project ROOT (not the default src/<name> layout):
+# crucible's kernel + service children flatten into app/ on migration, so point
+# uv_build at module `app` with an empty module-root.
+module-name = "app"
+module-root = ""
+source-include = ["app/contracts/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
+markers = [
+    "phoenix_integration: live Phoenix write-back tests; require a reachable PHOENIX_ENDPOINT and are skipped by default (run with -m phoenix_integration).",
+]
