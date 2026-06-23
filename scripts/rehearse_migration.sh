@@ -6,7 +6,7 @@
 # migrating buckets (kernel/, the service children, contracts/) into a fresh app/
 # package, applies the four import-rewrite rules, ASSERTS zero surviving dotted
 # `crucible.` reference and no `import crucible` statement, resolves against the
-# skeleton's own committed lockfile, import-smokes every app.* module, and runs the
+# scaffold's own committed lockfile, import-smokes every app.* module, and runs the
 # mirrored test suite. "Green end-to-end" is the migration proven by construction.
 #
 # Scope: PR evidence + required pre-merge gate (alongside check_kernel_clean.sh
@@ -15,8 +15,10 @@
 #
 #     bash scripts/rehearse_migration.sh [DEST]
 #
-# DEST defaults to skeleton/services/eval. The script is idempotent: it rm -rf's
-# the generated app/ subdirs + copied tests first, so a re-run is a clean rebuild.
+# DEST defaults to services/eval (crucible's single migration scaffold; only its
+# committed pyproject.toml/uv.lock/app/__init__.py seed the build -- the generated
+# app/ + tests are gitignored). The script is idempotent: it rm -rf's the generated
+# app/ subdirs + copied tests first, so a re-run is a clean rebuild.
 #
 # Known pre-existing flake: test_chromadb_collection_exists is in tests/local (NOT
 # copied), so it cannot appear here. The rehearsal suite must be fully green.
@@ -25,7 +27,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-DEST="${1:-skeleton/services/eval}"
+DEST="${1:-services/eval}"
 # Self-contained: the judge != generator invariant resolves without Bedrock.
 export CRUCIBLE_GENERATOR_MODEL=gpt-4o
 
@@ -36,7 +38,7 @@ echo "[rehearse] REPO_ROOT=${REPO_ROOT}"
 echo "[rehearse] DEST=${DEST}"
 
 if [[ ! -f "${DEST}/pyproject.toml" || ! -f "${DEST}/uv.lock" ]]; then
-    echo "[rehearse] ERROR: ${DEST} is not a locked skeleton (missing pyproject.toml or uv.lock)" >&2
+    echo "[rehearse] ERROR: ${DEST} is not a locked scaffold (missing pyproject.toml or uv.lock)" >&2
     exit 1
 fi
 
@@ -155,7 +157,7 @@ fi
 echo "[rehearse] OK: zero dotted crucible. and no import crucible statement"
 
 # ---------------------------------------------------------------------------
-# (e) Resolve against the skeleton's committed lock (validates deps + uv_build
+# (e) Resolve against the scaffold's committed lock (validates deps + uv_build
 #     packaging of app/contracts/*.json).
 # ---------------------------------------------------------------------------
 echo "[rehearse] (e) uv sync --frozen --extra bedrock --extra phoenix in ${DEST}"
@@ -163,17 +165,17 @@ uv sync --frozen --extra bedrock --extra phoenix --project "${DEST}"
 
 VENV_PY="${DEST}/.venv/bin/python"
 if [[ ! -x "${VENV_PY}" ]]; then
-    echo "[rehearse] ERROR: skeleton venv python not found at ${VENV_PY}" >&2
+    echo "[rehearse] ERROR: scaffold venv python not found at ${VENV_PY}" >&2
     exit 1
 fi
 
 # ---------------------------------------------------------------------------
 # (f) Import-smoke every app.* module via pkgutil.walk_packages. Confirms the
 #     kernel validator resolves app.contracts via importlib.resources in the
-#     skeleton venv after the rewrite. A genuinely-optional-extra ImportError is
+#     scaffold venv after the rewrite. A genuinely-optional-extra ImportError is
 #     tolerated (skipped + reported); anything else is FATAL.
 # ---------------------------------------------------------------------------
-echo "[rehearse] (f) import-smoking every app.* module in the skeleton venv"
+echo "[rehearse] (f) import-smoking every app.* module in the scaffold venv"
 ( cd "${DEST}" && CRUCIBLE_GENERATOR_MODEL=gpt-4o ./.venv/bin/python - <<'PYSMOKE'
 import importlib
 import pkgutil

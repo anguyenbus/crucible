@@ -279,13 +279,15 @@ After the rewrite, **zero dotted `crucible.` references** may survive (the prope
 noun "Crucible" in prose is fine — the assertion is dotted).
 
 `scripts/rehearse_migration.sh` proves this continuously: it copies the three
-buckets into a fresh `app/` under `skeleton/services/eval/`, applies the rewrites,
-asserts zero `crucible.`, runs `uv sync --frozen` against the skeleton's lockfile,
-import-smokes every `app.*` module, and runs the mirrored test suite. **Green = the
-migration is proven by construction.**
+buckets into a fresh `app/` under `services/eval/` (the committed scaffold), applies
+the rewrites, asserts zero `crucible.`, runs `uv sync --frozen` against the scaffold's
+lockfile, import-smokes every `app.*` module, and runs the mirrored test suite. The
+generated `app/` packages + copied tests are gitignored (reproduced on demand from
+`src/`); only the scaffold is committed. **Green = the migration is proven by
+construction.**
 
 ```bash
-bash scripts/rehearse_migration.sh            # rehearse into skeleton/services/eval
+bash scripts/rehearse_migration.sh            # rehearse into services/eval (the scaffold)
 bash scripts/rehearse_migration.sh <DEST>     # rehearse into a real destination on migration day
 ```
 

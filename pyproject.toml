@@ -98,9 +98,9 @@ source-include = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-# skeleton/ is the migration-destination sub-project (its own pyproject + uv.lock);
-# crucible's tooling must not lint it. Its app/ + copied tests are rehearsal-generated.
-extend-exclude = ["skeleton"]
+# services/eval/ is the migration scaffold (its own pyproject + uv.lock); crucible's
+# tooling must not lint it. Its app/ + copied tests are rehearsal-generated from src/.
+extend-exclude = ["services/eval"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "D"]

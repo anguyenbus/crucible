@@ -36,13 +36,15 @@ Two artifacts already exist in this repo and prove the migration end-to-end:
 - **`scripts/rehearse_migration.sh`** — copies the three buckets into a fresh `app/`,
   applies the rewrite, asserts zero surviving `crucible.` references, resolves the
   destination lockfile, import-smokes every module, and runs the mirrored suite.
-- **`services/eval/`** — a committed, rehearsal-green *snapshot* of the migrated
-  service (the real destination layout, already rewritten), with worked end-to-end
-  driver scripts under `services/eval/scripts/`.
+- **`services/eval/`** — the committed migration *scaffold* (`pyproject.toml`, `uv.lock`,
+  `app/__init__.py`) plus worked end-to-end driver scripts under `services/eval/scripts/`.
+  The rehearsal regenerates `app/` + the mirrored tests into it on demand; those generated
+  trees are **gitignored** (reproduced from the current `src/`, never hand-maintained), so
+  there is exactly one source of truth — `src/crucible/`.
 
 The canonical migration method is to **re-run the rehearsal against the real
-monorepo path** (always fresh from crucible's current `src/`), not to copy the
-snapshot. The snapshot is a preview/fallback.
+monorepo path** (always fresh from crucible's current `src/`). Run it locally with no
+argument to regenerate `services/eval/app` for a preview/smoke.
 
 ## 1. Prerequisites
 
@@ -69,14 +71,14 @@ git push -u origin <refactor-branch>       # PR → review → merge to crucible
 ### Step 2 — Seed the destination in the monorepo
 
 Create the service directory and seed the *scaffold* (not the generated code) from
-crucible's skeleton:
+crucible's committed `services/eval/` scaffold:
 
 ```bash
 # in the genai-backend checkout
 mkdir -p services/eval
-cp <crucible>/skeleton/services/eval/pyproject.toml  services/eval/
-cp <crucible>/skeleton/services/eval/uv.lock         services/eval/
-mkdir -p services/eval/app && cp <crucible>/skeleton/services/eval/app/__init__.py services/eval/app/
+cp <crucible>/services/eval/pyproject.toml  services/eval/
+cp <crucible>/services/eval/uv.lock         services/eval/
+mkdir -p services/eval/app && cp <crucible>/services/eval/app/__init__.py services/eval/app/
 ```
 
 Then **adapt `services/eval/pyproject.toml` to monorepo house style** — preserving
@@ -109,8 +111,9 @@ the copy is correct by construction.
 
 ### Step 4 — Commit the generated code as monorepo source
 
-In the rehearsal skeleton the generated `app/` + tests are gitignored (throwaway). In
-the **real destination they are source** — drop that ignore and commit them:
+In crucible's `services/eval/` scaffold the generated `app/` + tests are gitignored
+(throwaway, reproduced from `src/`). In the **real destination they are source** — drop
+that ignore and commit them:
 
 ```bash
 # in genai-backend/services/eval
