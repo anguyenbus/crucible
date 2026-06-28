@@ -17,7 +17,7 @@ real generation + the four DeepEval LLM-judge metrics + the Phoenix experiment
 round-trip, with NO `local`/`demo`/ChromaDB code (none migrates).
 
 The judge runs on AWS Bedrock (resolved via env: CRUCIBLE_JUDGE_PROVIDER=bedrock,
-CRUCIBLE_JUDGE_MODEL=<bedrock inference-profile id>). OpenAI was removed.
+CRUCIBLE_JUDGE_MODEL=<bedrock inference-profile id>).
 
 Usage (from services/eval, with its venv + env from crucible/.env):
 

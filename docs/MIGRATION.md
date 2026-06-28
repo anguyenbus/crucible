@@ -236,9 +236,9 @@ Then an **end-to-end eval** against a real RAG, traced to Phoenix — see
    invalidates historical comparisons — treat it as a deliberate re-baseline event with its
    own runbook, never a routine `uv lock --upgrade`.
 8. **Judge ≠ generator, and provider/model must agree.** The config refuses same-model
-   self-grading and a provider/model mismatch (fail-loud). Local: OpenAI (`gpt-4o` judge /
-   `gpt-4o-mini` generator). Prod: Bedrock `au.*` (Sydney residency). Set
-   `OPENAI_API_KEY` / AWS creds in the environment, never in committed config.
+   self-grading and a provider/model mismatch (fail-loud). Bedrock-only: judge and
+   generator both run on Bedrock `au.*` (Sydney residency). Set AWS creds in the
+   environment via the standard credential chain, never in committed config.
 9. **Telemetry opt-out ordering survives the copy** — it lives at two allowlisted sites
    (`app/kernel/rag_metrics/__init__.py`, `app/deepeval/__init__.py`) that fire before any
    `deepeval` import. Don't relocate it.
@@ -265,7 +265,7 @@ The eval service is a *library*, driven by injecting a RAG. The three scripts in
 
 - **`smoke_phoenix.py`** — minimal: a fake (gold-context) RAG → `run_golden_set` → Phoenix
   **traces**. Proves the pipeline runs with no external RAG.
-- **`eval_rag_real.py`** — a *real* RAG (injected ChromaDB stub, real retrieval + OpenAI
+- **`eval_rag_real.py`** — a *real* RAG (injected ChromaDB stub, real retrieval + Bedrock
   generation) → `run_golden_set` → Phoenix **traces**.
 - **`eval_rag_phoenix_native.py`** — the same real RAG → `run_phoenix_native` → a scored
   **dataset + experiment** under **Datasets & Experiments**.
@@ -302,7 +302,7 @@ Run the smoke against a local Phoenix from the crucible checkout:
 
 ```bash
 docker-compose -f docker-compose.yml -f docker-compose.observability.yml up -d
-set -a; . .env; set +a   # OPENAI_API_KEY + CRUCIBLE_JUDGE_*/GENERATOR_* + PHOENIX_ENDPOINT
+set -a; . .env; set +a   # AWS creds/region + CRUCIBLE_JUDGE_*/GENERATOR_* + PHOENIX_ENDPOINT
 GST_CORPUS_DIR=data/rag/gst_legal_rag SLICE=gst_pico \
   PYTHONPATH=$PWD/src services/eval/.venv/bin/python \
   services/eval/scripts/eval_rag_phoenix_native.py

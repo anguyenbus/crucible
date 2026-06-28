@@ -88,7 +88,7 @@ def test_demo_only_deps_not_in_core():
     """Demo-only deps must NOT leak into core [project.dependencies] (Phase 5).
 
     `pip install crucible` (no extras) must install a kernel-grade core; chromadb,
-    openai, sentence-transformers, and datasets are demo-only and live in `demo`.
+    sentence-transformers, and datasets are demo-only and live in `demo`.
     """
     core = _dep_names(_project_dependencies())
     for dep in DEMO_ONLY_DEPS:

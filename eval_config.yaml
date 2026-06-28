@@ -16,7 +16,7 @@
 # AWS_REGION / AWS_DEFAULT_REGION (see .env.example).
 judge:
   enabled: true
-  provider: bedrock  # "bedrock" (default) or "openai"
+  provider: bedrock  # "bedrock" (the only supported provider)
   model: au.anthropic.claude-sonnet-4-5-20250929-v1:0  # judge model ID (au.* inference profile)
   temperature: 0.0
   max_concurrent: 10
@@ -31,7 +31,7 @@ datasets:
 
     # Embedder configuration for retrieval
     embeddings:
-      provider: huggingface  # or openai
+      provider: huggingface
       model: sentence-transformers/all-MiniLM-L6-v2
 
   gst_legal_rag:
@@ -43,7 +43,7 @@ datasets:
 
     # Embedder configuration for retrieval
     embeddings:
-      provider: huggingface  # or openai
+      provider: huggingface
       model: sentence-transformers/all-MiniLM-L6-v2
 
 metrics:
@@ -59,7 +59,7 @@ metrics:
 # This `models:` block is retained only as a required-section placeholder; it
 # is NOT read by the generator. The RAG generator provider/model is configured
 # via the CRUCIBLE_* environment variables (see .env.example):
-#   CRUCIBLE_GENERATOR_PROVIDER  (bedrock | openai; default bedrock)
+#   CRUCIBLE_GENERATOR_PROVIDER  (bedrock; the only supported provider)
 #   CRUCIBLE_GENERATOR_MODEL     (e.g. au.anthropic.claude-sonnet-4-6)
 # AWS region/credentials come from AWS_REGION / the standard credential chain.
 # Do NOT add authoritative-looking model config here — env wins.

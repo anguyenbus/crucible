@@ -9,9 +9,10 @@ This guide shows how to use crucible to evaluate RAG systems on the Legal RAG Be
    uv sync --all-extras --dev
    ```
 
-2. Set up your OpenAI API key (required for DeepEval metrics):
+2. Configure AWS Bedrock access for the DeepEval judge (credential chain only):
    ```bash
-   export OPENAI_API_KEY=your-key-here
+   export AWS_REGION=ap-southeast-2   # must match your inference-profile geography
+   # AWS credentials come from the standard chain (env / profile / role)
    ```
 
 3. Set up HuggingFace token (required for Legal RAG Bench dataset):

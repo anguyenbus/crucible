@@ -72,8 +72,8 @@ def bedrock_preflight() -> None:
     """
     Run the Bedrock startup preflight when the generator provider is bedrock.
 
-    No-op when the resolved provider is not bedrock (e.g. an OpenAI opt-in run);
-    OpenAI has no equivalent cheap-call preflight in this spec.
+    No-op when the resolved provider is not bedrock; no other provider has an
+    equivalent cheap-call preflight in this spec.
 
     Reuses the existing region + credential-chain wiring from the generator:
     _resolve_generator_provider_and_model, _resolve_region, and the no-creds
@@ -96,7 +96,7 @@ def bedrock_preflight() -> None:
 
     provider, model = _resolve_generator_provider_and_model()
     if provider != "bedrock":
-        # No-op for non-bedrock providers (OpenAI opt-in path).
+        # No-op for non-bedrock providers.
         return
 
     import boto3

@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 # Phase 5: kernel-grade core. `pip install crucible` (no extras) installs only
 # what the import-pure kernel needs; demo-only deps (chromadb, sentence-
-# transformers, openai, datasets, huggingface-hub, rich, python-dotenv) are
+# transformers, datasets, huggingface-hub, rich, python-dotenv) are
 # quarantined into the `demo` extra. They are imported LAZILY inside functions
 # in service code, so `import crucible.kernel.*` / `import crucible.service.*`
 # resolves with zero extras; only RUNNING those paths needs `demo`.

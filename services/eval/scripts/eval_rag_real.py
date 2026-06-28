@@ -11,7 +11,7 @@ under Phoenix's Datasets & Experiments tab.
 Flow B (Datasets & Experiments) is now the only Phoenix path: the legacy
 span-tracing path has been retired. The judge runs on AWS Bedrock,
 resolved via env (CRUCIBLE_JUDGE_PROVIDER=bedrock, CRUCIBLE_JUDGE_MODEL=<bedrock
-inference-profile id>); OpenAI was removed from this project.
+inference-profile id>).
 
 The injected RAG (`crucible.local.stubs`) does NOT migrate; it is wired in here
 exactly as a CLI shell would in crucible -- the eval service (`app`) never imports

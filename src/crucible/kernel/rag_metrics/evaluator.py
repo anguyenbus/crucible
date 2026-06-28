@@ -6,7 +6,7 @@ INVERTED the constructor: it now receives an already-constructed metrics dict
 (``DeepEvalEvaluator(metrics=...)``) and NEVER imports the service config. The
 service builds the metrics (via
 ``crucible.service.deepeval.bedrock_provider.create_deepeval_metrics``) and
-injects them, keeping the kernel pure (no boto3/openai/config reach-in).
+injects them, keeping the kernel pure (no boto3/config reach-in).
 
 Tracing suppression is also INJECTED: the kernel must not import ``phoenix``, so
 the phoenix-aware ``suppress_tracing`` factory is passed in by the impure

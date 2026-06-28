@@ -40,7 +40,7 @@ class JudgeProvider(Protocol):
     A JudgeProvider builds the DeepEval metric objects the kernel evaluator
     consumes. Phase 2 injects an already-built metrics dict into
     ``DeepEvalEvaluator``; the concrete provider implementation (resolving the
-    bedrock/openai judge backend) is monorepo work. Defined here so the kernel
+    bedrock judge backend) is monorepo work. Defined here so the kernel
     can type against the boundary without importing any infra.
     """
 

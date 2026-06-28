@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 # skeleton resolves exactly what the import-pure kernel needs; bedrock + phoenix
 # extras are lifted unchanged. demo/replay are deliberately NOT carried: the copied
 # tests/kernel + tests/service subset is hermetic (embedding tests exercise only
-# lazy-init + empty-input short-circuits; openai arrives transitively via deepeval).
+# lazy-init + empty-input short-circuits).
 dependencies = [
     "pydantic>=2",
     "jsonschema>=4",

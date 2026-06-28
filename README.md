@@ -79,34 +79,31 @@ uv sync --all-extras --dev
 
 The core install (`pip install crucible`, no extras) is deliberately
 **kernel-grade** — `pydantic`, `jsonschema`, `pyyaml`, `deepeval==4.0.5`, `scipy`,
-`polars`, `beartype` — and pulls in no ChromaDB / sentence-transformers / OpenAI.
+`polars`, `beartype` — and pulls in no ChromaDB / sentence-transformers.
 Everything else lives behind extras you opt into:
 
 ```bash
-# Run the demo stub RAG locally with the OpenAI judge, traced to Phoenix:
-uv sync --extra demo --extra phoenix
-
-# Run with the default AWS Bedrock judge + the demo stub, traced to Phoenix:
+# Run the demo stub RAG locally with the AWS Bedrock judge, traced to Phoenix:
 uv sync --extra demo --extra bedrock --extra phoenix
 ```
 
 > The demo stub (`--rag stub-local`) needs the **`demo`** extra (ChromaDB +
-> sentence-transformers for retrieval, plus the OpenAI client). The **`bedrock`**
-> extra (`boto3` + `aiobotocore`) is required only for the default Bedrock judge;
-> **`phoenix`** adds the Arize Phoenix client for tracing/experiments.
+> sentence-transformers for retrieval). The **`bedrock`** extra (`boto3` +
+> `aiobotocore`) is required for the Bedrock judge; **`phoenix`** adds the Arize
+> Phoenix client for tracing/experiments.
 
 ## Configuration
 
-Crucible defaults the RAG generator and the DeepEval judge to **AWS Bedrock**
+Crucible runs the RAG generator and the DeepEval judge on **AWS Bedrock**
 using AU-geographic inference profiles (`au.*`), so Australian legal/PII data
-stays in `ap-southeast-2`. **OpenAI is a first-class opt-in** for local testing.
+stays in `ap-southeast-2`. Bedrock is the only supported provider.
 
 Configuration is read from the environment (a git-ignored `.env` is loaded by the
 CLI shells and by `service.config.load_config(..., from_dotenv=True)`). The
 **judge model must differ from the generator model** — a same-model collision or a
 provider/model mismatch fails loud.
 
-**AWS Bedrock (default):**
+**AWS Bedrock:**
 
 ```bash
 CRUCIBLE_GENERATOR_PROVIDER=bedrock
@@ -114,16 +111,6 @@ CRUCIBLE_GENERATOR_MODEL=au.anthropic.claude-sonnet-4-6
 CRUCIBLE_JUDGE_PROVIDER=bedrock
 CRUCIBLE_JUDGE_MODEL=au.anthropic.claude-opus-4-6   # must differ from generator
 AWS_REGION=ap-southeast-2                            # credential chain only — no keys in .env
-```
-
-**OpenAI (local opt-in — the recipe this repo is tested with locally):**
-
-```bash
-OPENAI_API_KEY=sk-...            # in .env (git-ignored); never commit it
-CRUCIBLE_GENERATOR_PROVIDER=openai
-CRUCIBLE_GENERATOR_MODEL=gpt-4o-mini
-CRUCIBLE_JUDGE_PROVIDER=openai
-CRUCIBLE_JUDGE_MODEL=gpt-4o       # must differ from generator
 PHOENIX_ENDPOINT=http://localhost:6006
 ```
 
@@ -225,12 +212,12 @@ silent fallback).
 | `bedrock` | `boto3`, `aiobotocore` | default Bedrock generator + judge (`AmazonBedrockModel` needs `aiobotocore`) |
 | `phoenix` | `arize-phoenix`, `openinference-semantic-conventions` | native Datasets & Experiments flow |
 | `replay` | `fastapi`, `uvicorn`, `click`, `aiohttp` | replay testing + the Zvec stub service |
-| `demo` | `chromadb`, `sentence-transformers`, `openai`, `datasets`, `huggingface-hub`, `rich`, `python-dotenv`, `openinference-instrumentation-openai` | the local stub RAG + OpenAI path; **never migrates** |
+| `demo` | `chromadb`, `sentence-transformers`, `datasets`, `huggingface-hub`, `rich`, `python-dotenv` | the local stub RAG; **never migrates** |
 | `dev` (group) | `pytest`, `pytest-cov`, `ruff`, `icontract`, `import-linter` | development tooling |
 
 ```bash
 uv sync --all-extras --dev      # everything
-uv sync --extra demo --extra phoenix    # local OpenAI + tracing
+uv sync --extra demo --extra bedrock --extra phoenix    # local stub + Bedrock judge + tracing
 uv sync --extra bedrock         # minimal Bedrock judge
 ```
 
@@ -311,7 +298,7 @@ Phoenix integration tests are marked `phoenix_integration` and skipped by defaul
 (they need a reachable `PHOENIX_ENDPOINT`); run them with `-m phoenix_integration`.
 
 > Hermetic note: the unit suite mocks all LLM/Bedrock/Phoenix calls. Set
-> `CRUCIBLE_GENERATOR_MODEL=gpt-4o` (or any non-default) when a stale `.env` would
+> `CRUCIBLE_GENERATOR_MODEL=au.anthropic.claude-sonnet-4-6` (or any non-default) when a stale `.env` would
 > otherwise trip the renamed-var guard. A single ChromaDB test-ordering flake
 > (`test_chromadb_collection_exists`) passes in isolation.
 

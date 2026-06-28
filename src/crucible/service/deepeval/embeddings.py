@@ -9,8 +9,8 @@ Supports multiple backends:
 - huggingface: Local sentence-transformers (dev/test)
 - bedrock: AWS Bedrock Titan embeddings (future)
 
-This project is Bedrock-only for LLMs; OpenAI was removed. Retrieval embeddings
-run locally via sentence-transformers (no external API).
+This project is Bedrock-only for LLMs. Retrieval embeddings run locally via
+sentence-transformers (no external API).
 """
 
 from __future__ import annotations

@@ -16,7 +16,7 @@ A running Phoenix server is REQUIRED for ``eval-rag``; ``crucible check phoenix`
 is the fail-fast preflight. There is no offline/no-server CLI scoring path.
 
 NOTE: stub-local uses a ChromaDB reference implementation for demonstration only.
-The judge runs on AWS Bedrock only (OpenAI/gpt-4o was removed from this project).
+The judge runs on AWS Bedrock only.
 """
 
 from __future__ import annotations

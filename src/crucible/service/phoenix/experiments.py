@@ -43,9 +43,9 @@ def _build_judge(judge_model: str) -> Any:
     """
     Build the AWS Bedrock judge instance for the experiment evaluators.
 
-    DeepEval routes a bare model *string* to its OpenAI ``GPTModel``, so the
-    Bedrock judge MUST be passed as an ``AmazonBedrockModel`` *instance*. This
-    project is Bedrock-only (OpenAI/gpt-4o removed).
+    DeepEval routes a bare model *string* to a default external judge model, so
+    the Bedrock judge MUST be passed as an ``AmazonBedrockModel`` *instance*. This
+    project is Bedrock-only.
     """
     from crucible.service.deepeval.bedrock_provider import get_deepeval_llm
 
@@ -183,7 +183,7 @@ def run_phoenix_experiment(
     task = create_rag_task(rag_adapter, corpus_dir)
 
     # Create evaluators. Build the judge ONCE: for Bedrock ids this returns an
-    # AmazonBedrockModel instance (DeepEval treats a bare string as OpenAI).
+    # AmazonBedrockModel instance (DeepEval treats a bare string as an external model).
     judge = _build_judge(judge_model)
     evaluators = [
         create_faithfulness_evaluator(judge_model=judge),

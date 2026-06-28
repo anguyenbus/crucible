@@ -41,8 +41,8 @@ from crucible.kernel.rag_metrics.metric_specs import (
 )
 
 # Constants (impure / service-side resolvers' configuration).
-# This project is BEDROCK-ONLY: OpenAI/gpt-4o was removed. The judge always runs
-# on AWS Bedrock; there is no OpenAI provider, key, or default model.
+# This project is BEDROCK-ONLY. The judge always runs on AWS Bedrock; there is no
+# other provider, key, or default model.
 DEEPEVAL_MAX_CONCURRENT_ENV: Final[str] = "DEEPEVAL_MAX_CONCURRENT"
 
 # Re-exported for back-compat (these now originate in the kernel metric_specs).
@@ -104,8 +104,8 @@ def _resolve_judge_provider_and_model(
 
     if provider != "bedrock":
         raise ValueError(
-            f"Unsupported judge provider: {provider!r}. This project is Bedrock-only "
-            "(OpenAI/gpt-4o removed); use 'bedrock'."
+            f"Unsupported judge provider: {provider!r}. This project is Bedrock-only; "
+            "use 'bedrock'."
         )
 
     # FAIL LOUD if the model id does not look like a Bedrock inference profile.
@@ -160,8 +160,8 @@ def get_deepeval_llm(
     """
     Get the AWS Bedrock LLM backend for DeepEval evaluation.
 
-    This project is Bedrock-only (OpenAI/gpt-4o removed). ``provider`` is kept for
-    config-shape compatibility but must be ``"bedrock"``.
+    This project is Bedrock-only. ``provider`` is kept for config-shape
+    compatibility but must be ``"bedrock"``.
 
     Args:
         provider: Must be "bedrock".
@@ -177,8 +177,8 @@ def get_deepeval_llm(
     """
     if provider != "bedrock":
         raise ValueError(
-            f"Unsupported provider: {provider!r}. This project is Bedrock-only "
-            "(OpenAI/gpt-4o removed); use 'bedrock'."
+            f"Unsupported provider: {provider!r}. This project is Bedrock-only; "
+            "use 'bedrock'."
         )
     from deepeval.models import AmazonBedrockModel
 
@@ -272,7 +272,7 @@ def get_deepeval_config(
     writes this block into eval_config.yaml):
         judge:
           enabled: bool          # default True
-          provider: str          # "bedrock" (default) or "openai"
+          provider: str          # "bedrock" (the only supported provider)
           model: str             # judge model ID (inference-profile for bedrock)
           temperature: float     # default 0.0
           max_concurrent: int    # default 10

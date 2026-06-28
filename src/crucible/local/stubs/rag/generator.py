@@ -37,7 +37,7 @@ DEFAULT_GENERATOR_PROVIDER: Final[str] = "bedrock"
 DEFAULT_GENERATOR_MODEL: Final[str] = "au.anthropic.claude-sonnet-4-6"
 
 # Geographic inference-profile prefixes (cross-region routing). Recognising
-# these keeps au.anthropic... from being misclassified as OpenAI by the
+# these keeps au.anthropic... from being misclassified as non-Bedrock by the
 # dev-only prefix sniff in _is_bedrock_model.
 _BEDROCK_GEO_PREFIXES: Final[tuple[str, ...]] = (
     "us.",
@@ -115,7 +115,7 @@ def _is_bedrock_model(model: str) -> bool:
     correctness path. This sniff recognises both bare family prefixes
     (anthropic., amazon., ...) AND geographic inference-profile prefixes
     (us., eu., apac., au., global.) so that profile IDs like
-    au.anthropic.claude-sonnet-4-6 are not misclassified as OpenAI.
+    au.anthropic.claude-sonnet-4-6 are not misclassified as non-Bedrock.
     """
     return model.startswith(_BEDROCK_GEO_PREFIXES + _BEDROCK_FAMILY_PREFIXES)
 
@@ -156,15 +156,15 @@ def _resolve_generator_provider_and_model(
     if model is None:
         model = os.getenv("CRUCIBLE_GENERATOR_MODEL", DEFAULT_GENERATOR_MODEL)
 
-    # Resolve provider: explicit env > default. This project is BEDROCK-ONLY
-    # (OpenAI/gpt-4o removed), so the only valid provider is "bedrock".
+    # Resolve provider: explicit env > default. This project is BEDROCK-ONLY,
+    # so the only valid provider is "bedrock".
     explicit_provider = os.getenv("CRUCIBLE_GENERATOR_PROVIDER")
     if explicit_provider is not None:
         provider = explicit_provider.strip().lower()
         if provider != "bedrock":
             raise ValueError(
                 f"Unsupported CRUCIBLE_GENERATOR_PROVIDER: {explicit_provider!r}. "
-                "This project is Bedrock-only (OpenAI/gpt-4o removed); use 'bedrock'."
+                "This project is Bedrock-only; use 'bedrock'."
             )
 
     # FAIL LOUD if the model id does not look like a Bedrock inference profile.
@@ -217,8 +217,8 @@ class LLMGenerator:
 
     Attributes:
         _model: Model identifier.
-        _provider: "openai" or "bedrock".
-        _api_key: API key (for OpenAI).
+        _provider: Always "bedrock" (Bedrock-only project).
+        _api_key: Unused; Bedrock uses the AWS credential chain.
         _deterministic_mode: Whether to use deterministic generation (temp=0).
 
     Example:
