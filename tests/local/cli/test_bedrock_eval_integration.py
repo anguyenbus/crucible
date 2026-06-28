@@ -230,7 +230,7 @@ def test_provider_switch_to_openai_via_env(monkeypatch):
     monkeypatch.setenv("CRUCIBLE_JUDGE_MODEL", "gpt-4o-mini")
 
     # A YAML judge block defaulting to bedrock must be overridden by the env.
-    config = {"judge": {"provider": "bedrock", "model": "au.anthropic.claude-opus-4-6"}}
+    config = {"judge": {"provider": "bedrock", "model": "au.anthropic.claude-haiku-4-5-20251001-v1:0"}}
     result = get_deepeval_config(config)
 
     assert result["judge_model_provider"] == "openai"

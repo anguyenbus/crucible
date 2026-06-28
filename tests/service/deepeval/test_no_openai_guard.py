@@ -55,7 +55,7 @@ class _HermeticBedrockJudge(AmazonBedrockModel):
     instances so each metric can complete measure() with no network call.
     """
 
-    def __init__(self, model: str = "au.anthropic.claude-opus-4-6", **_: object) -> None:
+    def __init__(self, model: str = "au.anthropic.claude-haiku-4-5-20251001-v1:0", **_: object) -> None:
         # Deliberately do NOT call super().__init__: that requires aiobotocore and
         # would build a real Bedrock client. We only need a native-typed model.
         self.model_id = model
@@ -120,7 +120,7 @@ def test_no_openai_client_constructed_across_all_four_metrics(monkeypatch):
 
     metrics = create_deepeval_metrics(
         llm_provider="bedrock",
-        judge_model="au.anthropic.claude-opus-4-6",
+        judge_model="au.anthropic.claude-haiku-4-5-20251001-v1:0",
     )
 
     # The whole configured set is present.
@@ -166,5 +166,5 @@ def test_bedrock_judge_construction_never_touches_openai_api_key(monkeypatch):
         get_deepeval_llm(provider="openai", model="gpt-4o-mini")
 
     # bedrock branch: builds fine with the key unset and OpenAI patched to raise.
-    judge = get_deepeval_llm(provider="bedrock", model="au.anthropic.claude-opus-4-6")
+    judge = get_deepeval_llm(provider="bedrock", model="au.anthropic.claude-haiku-4-5-20251001-v1:0")
     assert is_native_model(judge) is True

@@ -1,1 +1,1 @@
-"""Phoenix observability, experiments, evaluators, annotations, replay client."""
+"""Phoenix observability: span-tracing adapter, native experiments, evaluators."""

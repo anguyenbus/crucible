@@ -60,7 +60,7 @@ def test_eval_config_has_top_level_judge_block():
     judge = config["judge"]
     # Shape consumed by get_deepeval_config (region is NOT in this block).
     assert judge["provider"] == "bedrock"
-    assert judge["model"] == DEFAULT_JUDGE_MODEL == "au.anthropic.claude-opus-4-6"
+    assert judge["model"] == DEFAULT_JUDGE_MODEL == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert judge["enabled"] is True
     assert judge["temperature"] == 0.0
     assert judge["max_concurrent"] == 10
@@ -87,7 +87,7 @@ def test_get_deepeval_config_reads_actual_yaml_judge_block(monkeypatch):
 
     assert result["enabled"] is True
     assert result["judge_model_provider"] == "bedrock"
-    assert result["judge_model"] == "au.anthropic.claude-opus-4-6"
+    assert result["judge_model"] == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert result["temperature"] == 0.0
     assert result["max_concurrent"] == 10
     assert result["region"] == "ap-southeast-2"
@@ -107,4 +107,4 @@ def test_get_deepeval_config_ignores_per_dataset_deepeval(monkeypatch):
 
     # The top-level judge: block wins; the per-dataset block is ignored.
     assert result["judge_model_provider"] == "bedrock"
-    assert result["judge_model"] == "au.anthropic.claude-opus-4-6"
+    assert result["judge_model"] == "au.anthropic.claude-haiku-4-5-20251001-v1:0"

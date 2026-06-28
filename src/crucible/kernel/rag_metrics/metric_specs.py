@@ -28,7 +28,7 @@ from beartype.typing import Final
 # generator model ID -- no same-model self-grading. The two defaults below are
 # Opus (judge) vs Sonnet (generator) precisely to satisfy this.
 DEFAULT_JUDGE_PROVIDER: Final[str] = "bedrock"
-DEFAULT_JUDGE_MODEL: Final[str] = "au.anthropic.claude-opus-4-6"
+DEFAULT_JUDGE_MODEL: Final[str] = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 # Kept in sync with the demo generator's default model.
 # Used only to enforce the judge != generator invariant locally without
@@ -114,6 +114,6 @@ def assert_distinct(judge_id: str, generator_id: str) -> None:
         raise ValueError(
             f"Judge model ({judge_id!r}) must not equal the generator model "
             f"({generator_id!r}); same-model self-grading is not allowed. "
-            "Use a different judge model (e.g. au.anthropic.claude-opus-4-6 as "
+            "Use a different judge model (e.g. au.anthropic.claude-haiku-4-5-20251001-v1:0 as "
             "judge with au.anthropic.claude-sonnet-4-6 as generator)."
         )

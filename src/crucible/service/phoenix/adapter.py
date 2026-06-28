@@ -10,7 +10,6 @@ span's context, it automatically becomes a child.
 
 from __future__ import annotations
 
-import os
 import time
 import uuid
 from contextlib import contextmanager
@@ -24,16 +23,14 @@ if TYPE_CHECKING:
 
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 
-# OpenInference span kind values
+# OpenInference span kind values. Only CHAIN is used: the runner emits the
+# eval_run -> rag_query chain. The RETRIEVER/LLM/EVALUATOR child-span methods
+# were never wired into any runner and were removed (see docs/phoenix-audit.md).
 CHAIN = OpenInferenceSpanKindValues.CHAIN
-RETRIEVER = OpenInferenceSpanKindValues.RETRIEVER
-LLM = OpenInferenceSpanKindValues.LLM
-EVALUATOR = OpenInferenceSpanKindValues.EVALUATOR
 
 # Constants
 DEFAULT_ENDPOINT: Final[str] = "http://localhost:6006"
 DEFAULT_PROJECT_NAME: Final[str] = "crucible"
-PHOENIX_ENDPOINT_ENV: Final[str] = "PHOENIX_ENDPOINT"
 
 
 @beartype
@@ -270,93 +267,6 @@ class PhoenixAdapter:
         else:
             yield trace_id
 
-    @beartype
-    def start_retrieval_span(
-        self,
-        trace_id: str,
-        query_text: str,
-        chunks: list[dict[str, Any]],
-        k: int,
-        timing_ms: float = 0.0,
-    ) -> None:
-        """
-        Record a retrieval span (non-context-manager version).
-
-        Args:
-            trace_id: Unique trace identifier.
-            query_text: Original query text.
-            chunks: Retrieved chunk documents.
-            k: Number of chunks retrieved.
-            timing_ms: Retrieval latency in milliseconds.
-
-        """
-        if self._tracer and self._active_root_span:
-            with self._tracer.start_as_current_span(
-                name="retrieval", openinference_span_kind=RETRIEVER
-            ) as span:
-                span.set_attribute("query", query_text)
-                span.set_attribute("retrieval.k", k)
-                span.set_attribute("retrieval.timing_ms", timing_ms)
-                span.set_attribute("output", str(chunks))
-
-    @beartype
-    def start_generation_span(
-        self,
-        trace_id: str,
-        model: str,
-        prompt: str,
-        tokens: int = 0,
-        timing_ms: float = 0.0,
-    ) -> None:
-        """
-        Record a generation span (non-context-manager version).
-
-        Args:
-            trace_id: Unique trace identifier.
-            model: Model name used for generation.
-            prompt: Generation prompt.
-            tokens: Number of tokens generated.
-            timing_ms: Generation latency in milliseconds.
-
-        """
-        if self._tracer and self._active_root_span:
-            with self._tracer.start_as_current_span(
-                name="generation", openinference_span_kind=LLM
-            ) as span:
-                span.set_attribute("model", model)
-                span.set_attribute("input", prompt)
-                span.set_attribute("output.tokens", tokens)
-                span.set_attribute("llm.timing_ms", timing_ms)
-
-    @beartype
-    def start_evaluation_span(
-        self,
-        trace_id: str,
-        scores: dict[str, Any],
-        verdict: str = "PASS",
-        reasoning: dict[str, Any] | None = None,
-    ) -> None:
-        """
-        Record an evaluation span with metric scores.
-
-        Args:
-            trace_id: Unique trace identifier.
-            scores: Dictionary of metric scores (faithfulness, etc.).
-            verdict: Overall verdict (PASS/NEEDS_REVIEW/ERROR).
-            reasoning: Optional reasoning dictionary per metric.
-
-        """
-        if self._tracer and self._active_root_span:
-            with self._tracer.start_as_current_span(
-                name="evaluation", openinference_span_kind=EVALUATOR
-            ) as span:
-                span.set_attribute("evaluation.verdict", verdict)
-                for metric_name, score in scores.items():
-                    span.set_attribute(f"evaluation.{metric_name}", str(score))
-
-                if reasoning:
-                    span.set_attribute("evaluation.reasoning", str(reasoning))
-
 
 @contextmanager
 def _noop_suppression() -> Any:
@@ -384,65 +294,3 @@ def suppress_tracing_if_available() -> Any:
         return suppress_tracing()
     except (ImportError, AttributeError):
         return _noop_suppression()
-
-
-def get_phoenix_config(
-    config: dict[str, Any],
-    cli_enabled: bool | None = None,
-    cli_endpoint: str | None = None,
-) -> dict[str, Any]:
-    """
-    Get Phoenix configuration from multiple sources with precedence.
-
-    Precedence order (highest to lowest):
-    1. CLI arguments (cli_* parameters)
-    2. Environment variables (PHOENIX_ENDPOINT)
-    3. YAML config (phoenix section from config dict)
-    4. Defaults
-
-    Args:
-        config: Loaded configuration dictionary from eval_config.yaml.
-        cli_enabled: CLI flag for enabling/disabling Phoenix.
-        cli_endpoint: CLI-specified Phoenix endpoint.
-
-    Returns:
-        Dictionary with Phoenix configuration keys:
-            - enabled: bool
-            - endpoint: str
-            - project_name: str
-            - mode: str ("spans" or "native")
-            - export_path: str
-
-    """
-    # Get phoenix section from YAML config
-    phoenix_config = config.get("phoenix", {})
-
-    # Resolve enabled flag (CLI > YAML > default)
-    if cli_enabled is not None:
-        enabled = cli_enabled
-    else:
-        enabled = phoenix_config.get("enabled", False)
-
-    # Resolve endpoint (CLI > env var > YAML > default)
-    if cli_endpoint is not None:
-        endpoint = cli_endpoint
-    else:
-        # Check environment variable first
-        env_endpoint = os.environ.get(PHOENIX_ENDPOINT_ENV)
-        if env_endpoint:
-            endpoint = env_endpoint
-        else:
-            endpoint = phoenix_config.get("endpoint", DEFAULT_ENDPOINT)
-
-    # Resolve other config values
-    project_name = phoenix_config.get("project_name", "crucible")
-    mode = phoenix_config.get("mode", "spans")
-    export_path = phoenix_config.get("export_path", "data/phoenix/spans.parquet")
-
-    return {
-        "enabled": enabled,
-        "endpoint": endpoint,
-        "project_name": project_name,
-        "mode": mode,
-        "export_path": export_path,
-    }

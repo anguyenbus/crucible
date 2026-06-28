@@ -47,7 +47,7 @@ def test_constants():
     assert DEFAULT_MAX_CONCURRENT == 10
     # Bedrock-default: DEFAULT_BEDROCK_MODEL is now the resolved au.-profile
     # judge default (was the bare-family anthropic.claude-3-5-sonnet ID).
-    assert DEFAULT_BEDROCK_MODEL == "au.anthropic.claude-opus-4-6"
+    assert DEFAULT_BEDROCK_MODEL == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
 def test_get_openai_api_key_missing(monkeypatch):
@@ -87,7 +87,7 @@ def test_get_deepeval_llm_bedrock_passes_region_no_credentials(monkeypatch):
     with mock.patch.dict("sys.modules", {"deepeval.models": fake_module}):
         result = get_deepeval_llm(
             provider="bedrock",
-            model="au.anthropic.claude-opus-4-6",
+            model="au.anthropic.claude-haiku-4-5-20251001-v1:0",
             temperature=0.0,
         )
 
@@ -109,7 +109,7 @@ def test_get_deepeval_config_reads_top_level_judge_block(monkeypatch):
         "judge": {
             "enabled": True,
             "provider": "bedrock",
-            "model": "au.anthropic.claude-opus-4-6",
+            "model": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
             "temperature": 0.0,
             "max_concurrent": 5,
         },
@@ -126,7 +126,7 @@ def test_get_deepeval_config_reads_top_level_judge_block(monkeypatch):
 
     result = get_deepeval_config(config)
 
-    assert result["judge_model"] == "au.anthropic.claude-opus-4-6"
+    assert result["judge_model"] == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert result["judge_model_provider"] == "bedrock"
     assert result["max_concurrent"] == 5
     assert result["region"] == "ap-southeast-2"
@@ -143,7 +143,7 @@ def test_get_deepeval_config_global_for_gst_and_legal_rag(monkeypatch):
     judge_block = {
         "judge": {
             "provider": "bedrock",
-            "model": "au.anthropic.claude-opus-4-6",
+            "model": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
         }
     }
     config_legal = {
@@ -160,7 +160,7 @@ def test_get_deepeval_config_global_for_gst_and_legal_rag(monkeypatch):
 
     # Same judge config for both slices (per-dataset blocks ignored).
     assert result_legal == result_gst
-    assert result_gst["judge_model"] == "au.anthropic.claude-opus-4-6"
+    assert result_gst["judge_model"] == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert result_gst["judge_model_provider"] == "bedrock"
 
 
@@ -183,7 +183,7 @@ def test_get_deepeval_config_env_wins_over_yaml(monkeypatch):
     assert result["judge_model"] == "au.anthropic.claude-sonnet-4-5"
 
 
-def test_get_deepeval_config_defaults_to_bedrock_opus(monkeypatch):
+def test_get_deepeval_config_defaults_to_bedrock_haiku(monkeypatch):
     """With nothing set, judge defaults to bedrock + the O1 judge model ID."""
     monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
     config = {}  # no judge: block, no env overrides
@@ -191,15 +191,15 @@ def test_get_deepeval_config_defaults_to_bedrock_opus(monkeypatch):
     result = get_deepeval_config(config)
 
     assert result["judge_model_provider"] == "bedrock"
-    assert result["judge_model"] == DEFAULT_JUDGE_MODEL == "au.anthropic.claude-opus-4-6"
+    assert result["judge_model"] == DEFAULT_JUDGE_MODEL == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert result["region"] == "ap-southeast-2"
 
 
 def test_get_deepeval_config_cli_overrides_env_and_yaml(monkeypatch):
     """CLI args win over env and YAML (top of the precedence stack)."""
     monkeypatch.setenv("CRUCIBLE_JUDGE_PROVIDER", "bedrock")
-    monkeypatch.setenv("CRUCIBLE_JUDGE_MODEL", "au.anthropic.claude-opus-4-6")
-    config = {"judge": {"provider": "bedrock", "model": "au.anthropic.claude-opus-4-6"}}
+    monkeypatch.setenv("CRUCIBLE_JUDGE_MODEL", "au.anthropic.claude-haiku-4-5-20251001-v1:0")
+    config = {"judge": {"provider": "bedrock", "model": "au.anthropic.claude-haiku-4-5-20251001-v1:0"}}
 
     result = get_deepeval_config(
         config,

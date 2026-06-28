@@ -38,6 +38,28 @@ RanExperiment = PhoenixRanExperiment | dict[str, Any] | None
 # Constants
 DEFAULT_EXPERIMENT_NAME: Final[str] = "rag-evaluation"
 
+# AWS Bedrock inference-profile id prefixes (geo-routed). A bare model STRING is
+# treated by DeepEval as an OpenAI model, so Bedrock judges must be passed as an
+# AmazonBedrockModel INSTANCE -- see ``_build_judge`` below.
+_BEDROCK_PREFIXES: Final[tuple[str, ...]] = ("au.", "us.", "apac.", "eu.", "global.", "anthropic.")
+
+
+@beartype
+def _build_judge(judge_model: str) -> Any:
+    """
+    Resolve the DeepEval judge for the experiment evaluators.
+
+    DeepEval routes a bare model *string* to its OpenAI ``GPTModel``. For Bedrock
+    inference-profile ids (``au.*`` etc., this project's judge) we must build an
+    ``AmazonBedrockModel`` *instance* instead, or the evaluators fail demanding an
+    ``OPENAI_API_KEY``. Non-Bedrock ids pass through unchanged (OpenAI path).
+    """
+    if judge_model.startswith(_BEDROCK_PREFIXES):
+        from crucible.service.deepeval.bedrock_provider import get_deepeval_llm
+
+        return get_deepeval_llm(provider="bedrock", model=judge_model)
+    return judge_model
+
 
 @beartype
 def create_phoenix_client(
@@ -169,12 +191,14 @@ def run_phoenix_experiment(
     # Create task function
     task = create_rag_task(rag_adapter, corpus_dir)
 
-    # Create evaluators
+    # Create evaluators. Build the judge ONCE: for Bedrock ids this returns an
+    # AmazonBedrockModel instance (DeepEval treats a bare string as OpenAI).
+    judge = _build_judge(judge_model)
     evaluators = [
-        create_faithfulness_evaluator(judge_model=judge_model),
-        create_context_precision_evaluator(judge_model=judge_model),
-        create_context_recall_evaluator(judge_model=judge_model),
-        create_answer_relevancy_evaluator(judge_model=judge_model),
+        create_faithfulness_evaluator(judge_model=judge),
+        create_context_precision_evaluator(judge_model=judge),
+        create_context_recall_evaluator(judge_model=judge),
+        create_answer_relevancy_evaluator(judge_model=judge),
     ]
 
     # Run experiment

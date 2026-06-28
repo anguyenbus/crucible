@@ -35,7 +35,7 @@ def test_assert_distinct_allows_different_judge_and_generator() -> None:
 
 def test_assert_distinct_rejects_self_grading() -> None:
     """Equal judge and generator IDs raise (no same-model self-grading)."""
-    same = "au.anthropic.claude-opus-4-6"
+    same = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
     with pytest.raises(ValueError):
         assert_distinct(same, same)
 
@@ -43,7 +43,7 @@ def test_assert_distinct_rejects_self_grading() -> None:
 def test_au_defaults_are_in_country_inference_profiles() -> None:
     """Judge and generator defaults are au.* inference profiles, judge != generator."""
     assert DEFAULT_JUDGE_PROVIDER == "bedrock"
-    assert DEFAULT_JUDGE_MODEL == "au.anthropic.claude-opus-4-6"
+    assert DEFAULT_JUDGE_MODEL == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert DEFAULT_GENERATOR_MODEL == "au.anthropic.claude-sonnet-4-6"
     # DEFAULT_BEDROCK_MODEL is the resolved au.* judge default.
     assert DEFAULT_BEDROCK_MODEL == DEFAULT_JUDGE_MODEL

@@ -37,7 +37,7 @@
         "reranker_model": { "type": ["string", "null"] },
         "generator_model": {
           "type": "string",
-          "examples": ["claude-opus-4-7", "gpt-4o-2024-11-20"]
+          "examples": ["claude-sonnet-4-5", "gpt-4o-2024-11-20"]
         }
       }
     },

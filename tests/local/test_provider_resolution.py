@@ -75,7 +75,7 @@ def test_defaults_resolve_to_bedrock_and_o1_model_ids():
     assert gen_model == DEFAULT_GENERATOR_MODEL
 
     assert judge_provider == "bedrock"
-    assert judge_model == "au.anthropic.claude-opus-4-6"
+    assert judge_model == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert judge_model == DEFAULT_JUDGE_MODEL
     # Replaced constant + export flows the au.-profile judge default.
     assert DEFAULT_BEDROCK_MODEL == DEFAULT_JUDGE_MODEL
@@ -91,7 +91,7 @@ def test_env_beats_yaml_for_judge_provider_model_and_region():
         AWS_REGION="ap-southeast-2",
     ):
         provider, model = _resolve_judge_provider_and_model(
-            yaml_provider="bedrock", yaml_model="au.anthropic.claude-opus-4-6"
+            yaml_provider="bedrock", yaml_model="au.anthropic.claude-haiku-4-5-20251001-v1:0"
         )
         region = _resolve_bedrock_region()
 
@@ -139,8 +139,8 @@ def test_region_unset_on_bedrock_run_fails_loud():
 def test_judge_equals_generator_model_is_rejected():
     """HARD INVARIANT: judge model ID must not equal the generator model ID."""
     with _patched_env(
-        CRUCIBLE_GENERATOR_MODEL="au.anthropic.claude-opus-4-6",
-        CRUCIBLE_JUDGE_MODEL="au.anthropic.claude-opus-4-6",
+        CRUCIBLE_GENERATOR_MODEL="au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        CRUCIBLE_JUDGE_MODEL="au.anthropic.claude-haiku-4-5-20251001-v1:0",
     ):
         with pytest.raises(ValueError, match="must not equal the generator model"):
             _resolve_judge_provider_and_model()

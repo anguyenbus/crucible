@@ -104,7 +104,7 @@ def _suppress_tracing_if_available() -> Any:
 
 @beartype
 def create_faithfulness_evaluator(
-    judge_model: str = DEFAULT_JUDGE_MODEL,
+    judge_model: Any = DEFAULT_JUDGE_MODEL,
     embedder: Any = None,
 ) -> Callable:
     """
@@ -214,7 +214,7 @@ def create_faithfulness_evaluator(
 
 @beartype
 def create_context_precision_evaluator(
-    judge_model: str = DEFAULT_JUDGE_MODEL,
+    judge_model: Any = DEFAULT_JUDGE_MODEL,
     embedder: Any = None,
 ) -> Callable:
     """
@@ -329,7 +329,7 @@ def create_context_precision_evaluator(
 
 @beartype
 def create_context_recall_evaluator(
-    judge_model: str = DEFAULT_JUDGE_MODEL,
+    judge_model: Any = DEFAULT_JUDGE_MODEL,
     embedder: Any = None,
 ) -> Callable:
     """
@@ -444,7 +444,7 @@ def create_context_recall_evaluator(
 
 @beartype
 def create_answer_relevancy_evaluator(
-    judge_model: str = DEFAULT_JUDGE_MODEL,
+    judge_model: Any = DEFAULT_JUDGE_MODEL,
     embedder: Any = None,
 ) -> Callable:
     """
