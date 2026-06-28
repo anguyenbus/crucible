@@ -50,12 +50,10 @@ bedrock = [
 demo = [
     "chromadb",
     "sentence-transformers>=5.5.0",
-    "openai>=1.0.0",
     "huggingface-hub",
     "datasets",
     "rich",
     "python-dotenv",
-    "openinference-instrumentation-openai>=0.1.0",
 ]
 
 [project.scripts]

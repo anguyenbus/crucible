@@ -148,7 +148,7 @@
         "model": {
           "type": "string",
           "description": "Judge model identifier. Pin a specific version — judge drift between model versions is a real source of eval noise.",
-          "examples": ["claude-sonnet-4-5", "gpt-4o-2024-11-20"]
+          "examples": ["claude-sonnet-4-5"]
         },
         "prompt_template": {
           "type": "string",

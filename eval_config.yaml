@@ -17,7 +17,7 @@
 judge:
   enabled: true
   provider: bedrock  # "bedrock" (default) or "openai"
-  model: au.anthropic.claude-haiku-4-5-20251001-v1:0  # judge model ID (au.* inference profile)
+  model: au.anthropic.claude-sonnet-4-5-20250929-v1:0  # judge model ID (au.* inference profile)
   temperature: 0.0
   max_concurrent: 10
 

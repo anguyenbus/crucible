@@ -41,9 +41,9 @@ from crucible.kernel.rag_metrics.metric_specs import (
 )
 
 # Constants (impure / service-side resolvers' configuration).
-OPENAI_API_KEY_ENV: Final[str] = "OPENAI_API_KEY"
+# This project is BEDROCK-ONLY: OpenAI/gpt-4o was removed. The judge always runs
+# on AWS Bedrock; there is no OpenAI provider, key, or default model.
 DEEPEVAL_MAX_CONCURRENT_ENV: Final[str] = "DEEPEVAL_MAX_CONCURRENT"
-DEFAULT_OPENAI_MODEL: Final[str] = "gpt-4o-mini"
 
 # Re-exported for back-compat (these now originate in the kernel metric_specs).
 __all__ = [
@@ -52,35 +52,12 @@ __all__ = [
     "DEFAULT_JUDGE_MODEL",
     "DEFAULT_JUDGE_PROVIDER",
     "DEFAULT_MAX_CONCURRENT",
-    "DEFAULT_OPENAI_MODEL",
     "DEFAULT_TEMPERATURE",
-    "OPENAI_API_KEY_ENV",
     "DEEPEVAL_MAX_CONCURRENT_ENV",
     "create_deepeval_metrics",
     "get_deepeval_config",
     "get_deepeval_llm",
 ]
-
-
-@beartype
-def _get_openai_api_key() -> str:
-    """
-    Get OpenAI API key from environment.
-
-    Returns:
-        OpenAI API key string.
-
-    Raises:
-        ValueError: If OPENAI_API_KEY environment variable is not set.
-
-    """
-    api_key = os.environ.get(OPENAI_API_KEY_ENV)
-    if not api_key:
-        raise ValueError(
-            f"{OPENAI_API_KEY_ENV} environment variable must be set to use DeepEval. "
-            "Set it with: export OPENAI_API_KEY=your-key-here"
-        )
-    return api_key
 
 
 def _resolve_judge_provider_and_model(
@@ -92,7 +69,7 @@ def _resolve_judge_provider_and_model(
 
     The judge is the measuring instrument, so these vars are global across all
     datasets. Contract:
-    - CRUCIBLE_JUDGE_PROVIDER: "bedrock" (default) or "openai".
+    - CRUCIBLE_JUDGE_PROVIDER: "bedrock" (the only supported provider).
     - CRUCIBLE_JUDGE_MODEL: model ID (inference-profile ID for bedrock).
     - Precedence env > YAML > default for both provider and model.
     - Explicit provider WINS; FAIL LOUD on provider/model disagreement.
@@ -125,22 +102,18 @@ def _resolve_judge_provider_and_model(
     else:
         provider = DEFAULT_JUDGE_PROVIDER
 
-    if provider not in ("bedrock", "openai"):
-        raise ValueError(f"Unsupported judge provider: {provider!r}. Use 'bedrock' or 'openai'.")
+    if provider != "bedrock":
+        raise ValueError(
+            f"Unsupported judge provider: {provider!r}. This project is Bedrock-only "
+            "(OpenAI/gpt-4o removed); use 'bedrock'."
+        )
 
-    # Explicit provider WINS, but FAIL LOUD on provider/model disagreement.
-    model_looks_bedrock = _looks_like_bedrock_model(model)
-    if provider == "bedrock" and not model_looks_bedrock:
+    # FAIL LOUD if the model id does not look like a Bedrock inference profile.
+    if not _looks_like_bedrock_model(model):
         raise ValueError(
             f"Judge provider=bedrock disagrees with judge model={model!r} (does "
             "not look like a Bedrock model/inference-profile ID). Fix the model "
-            "ID or the provider; refusing to silently pick."
-        )
-    if provider == "openai" and model_looks_bedrock:
-        raise ValueError(
-            f"Judge provider=openai disagrees with judge model={model!r} (looks "
-            "like a Bedrock model ID). Fix the model ID or the provider; "
-            "refusing to silently pick."
+            "ID; this project is Bedrock-only."
         )
 
     # HARD INVARIANT: judge model != generator model (no self-grading). The pure
@@ -180,64 +153,62 @@ def _resolve_bedrock_region() -> str:
 
 @beartype
 def get_deepeval_llm(
-    provider: str = "openai",
-    model: str = DEFAULT_OPENAI_MODEL,
+    provider: str = "bedrock",
+    model: str = DEFAULT_JUDGE_MODEL,
     temperature: float = DEFAULT_TEMPERATURE,
 ) -> Any:
     """
-    Get LLM backend for DeepEval evaluation.
+    Get the AWS Bedrock LLM backend for DeepEval evaluation.
+
+    This project is Bedrock-only (OpenAI/gpt-4o removed). ``provider`` is kept for
+    config-shape compatibility but must be ``"bedrock"``.
 
     Args:
-        provider: LLM provider name ("openai" or "bedrock"). Default: "openai".
-        model: Model name. Default: gpt-4o-mini.
+        provider: Must be "bedrock".
+        model: Bedrock inference-profile id. Default: the kernel judge default.
         temperature: Sampling temperature. Default: 0.0.
 
     Returns:
-        DeepEval-compatible LLM instance.
+        A DeepEval ``AmazonBedrockModel`` instance.
 
     Raises:
-        ValueError: If provider is not supported or API key is missing.
+        ValueError: If provider is not "bedrock", or the AWS region is unset.
 
     """
-    if provider == "openai":
-        from deepeval.models import GPTModel
-
-        api_key = _get_openai_api_key()
-        return GPTModel(model=model, api_key=api_key, temperature=temperature)
-    elif provider == "bedrock":
-        from deepeval.models import AmazonBedrockModel
-
-        # Resolve the AWS region explicitly (env > YAML, fail loud if unset) and
-        # pass it to AmazonBedrockModel. No credentials are passed: the AWS
-        # default credential chain engages when creds are omitted (do NOT copy
-        # the OpenAI embedder's api_key= pattern onto Bedrock).
-        region = _resolve_bedrock_region()
-        # NOTE: AmazonBedrockModel has no `temperature` param -- extra kwargs leak
-        # into the aiobotocore client constructor (AioSession._create_client) and
-        # raise. Temperature belongs in `generation_kwargs`, which deepeval spreads
-        # into the Converse API `inferenceConfig`.
-        return AmazonBedrockModel(
-            model=model,
-            region=region,
-            generation_kwargs={"temperature": temperature},
+    if provider != "bedrock":
+        raise ValueError(
+            f"Unsupported provider: {provider!r}. This project is Bedrock-only "
+            "(OpenAI/gpt-4o removed); use 'bedrock'."
         )
-    else:
-        raise ValueError(f"Unsupported provider: {provider}. Use 'openai' or 'bedrock'.")
+    from deepeval.models import AmazonBedrockModel
+
+    # Resolve the AWS region explicitly (env > YAML, fail loud if unset) and pass
+    # it to AmazonBedrockModel. No credentials are passed: the AWS default
+    # credential chain engages when creds are omitted.
+    region = _resolve_bedrock_region()
+    # NOTE: AmazonBedrockModel has no `temperature` param -- extra kwargs leak into
+    # the aiobotocore client constructor and raise. Temperature belongs in
+    # `generation_kwargs`, which deepeval spreads into the Converse `inferenceConfig`.
+    return AmazonBedrockModel(
+        model=model,
+        region=region,
+        generation_kwargs={"temperature": temperature},
+    )
 
 
 @beartype
 def create_deepeval_metrics(
-    llm_provider: str = "openai",
-    judge_model: str = DEFAULT_OPENAI_MODEL,
+    llm_provider: str = "bedrock",
+    judge_model: str = DEFAULT_JUDGE_MODEL,
     temperature: float = DEFAULT_TEMPERATURE,
     embedder: Any = None,
 ) -> Dict[str, Any]:
     """
-    Create DeepEval metrics with configured LLM backend.
+    Create DeepEval metrics with the AWS Bedrock judge backend.
 
     Args:
-        llm_provider: LLM provider ("openai" or "bedrock"). Default: "openai".
-        judge_model: Judge model name. Default: gpt-4o-mini.
+        llm_provider: Must be "bedrock" (this project is Bedrock-only).
+        judge_model: Bedrock judge inference-profile id. Default: kernel judge default.
         temperature: Sampling temperature. Default: 0.0.
         embedder: Optional shared embedder instance (for future use).
 
@@ -245,7 +216,7 @@ def create_deepeval_metrics(
         Dictionary mapping metric names to instantiated DeepEval metric objects.
 
     Raises:
-        ValueError: If provider is not supported or API key is missing.
+        ValueError: If provider is not "bedrock", or the AWS region is unset.
 
     """
     from deepeval.metrics import (

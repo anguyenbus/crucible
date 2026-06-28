@@ -28,7 +28,7 @@
         "embedder_model": { "type": "string", "examples": ["text-embedding-3-large", "voyage-3"] },
         "retriever_version": { "type": "string" },
         "reranker_model": { "type": ["string", "null"] },
-        "generator_model": { "type": "string", "examples": ["claude-sonnet-4-5", "gpt-4o-2024-11-20"] }
+        "generator_model": { "type": "string", "examples": ["claude-sonnet-4-5"] }
       }
     },
     "query": {

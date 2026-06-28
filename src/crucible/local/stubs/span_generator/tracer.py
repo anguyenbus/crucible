@@ -2,8 +2,8 @@
 OpenTelemetry tracer setup for synthetic span generation.
 
 This module provides tracer initialization using Phoenix's OTLP exporter.
-Uses a separate tracer instance from PhoenixAdapter to maintain
-correct dependency direction.
+It uses its own standalone tracer instance to maintain correct dependency
+direction.
 """
 
 from __future__ import annotations

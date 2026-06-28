@@ -75,7 +75,7 @@ def test_defaults_resolve_to_bedrock_and_o1_model_ids():
     assert gen_model == DEFAULT_GENERATOR_MODEL
 
     assert judge_provider == "bedrock"
-    assert judge_model == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert judge_model == "au.anthropic.claude-sonnet-4-5-20250929-v1:0"
     assert judge_model == DEFAULT_JUDGE_MODEL
     # Replaced constant + export flows the au.-profile judge default.
     assert DEFAULT_BEDROCK_MODEL == DEFAULT_JUDGE_MODEL
@@ -84,10 +84,10 @@ def test_defaults_resolve_to_bedrock_and_o1_model_ids():
 
 
 def test_env_beats_yaml_for_judge_provider_model_and_region():
-    """env > YAML for provider, model, and region."""
+    """env > YAML for provider, model, and region (Bedrock-only)."""
     with _patched_env(
-        CRUCIBLE_JUDGE_PROVIDER="openai",
-        CRUCIBLE_JUDGE_MODEL="gpt-4o",
+        CRUCIBLE_JUDGE_PROVIDER="bedrock",
+        CRUCIBLE_JUDGE_MODEL="au.anthropic.claude-sonnet-4-5",
         AWS_REGION="ap-southeast-2",
     ):
         provider, model = _resolve_judge_provider_and_model(
@@ -95,23 +95,23 @@ def test_env_beats_yaml_for_judge_provider_model_and_region():
         )
         region = _resolve_bedrock_region()
 
-    assert provider == "openai"  # env wins over YAML bedrock
-    assert model == "gpt-4o"  # env wins over YAML model
+    assert provider == "bedrock"
+    assert model == "au.anthropic.claude-sonnet-4-5"  # env model wins over YAML model
     assert region == "ap-southeast-2"
 
 
 def test_explicit_provider_wins_fails_loud_on_disagreement():
-    """provider=bedrock with an OpenAI-looking model ID fails loud (no silent pick)."""
+    """provider=bedrock with a non-Bedrock model ID fails loud (no silent pick)."""
     with _patched_env(
         CRUCIBLE_GENERATOR_PROVIDER="bedrock",
-        CRUCIBLE_GENERATOR_MODEL="gpt-4o-mini",
+        CRUCIBLE_GENERATOR_MODEL="not-a-bedrock-model",
     ):
-        with pytest.raises(ValueError, match="disagrees"):
+        with pytest.raises(ValueError, match="does not look like a Bedrock"):
             _resolve_generator_provider_and_model()
 
     with _patched_env(
         CRUCIBLE_JUDGE_PROVIDER="bedrock",
-        CRUCIBLE_JUDGE_MODEL="gpt-4o-mini",
+        CRUCIBLE_JUDGE_MODEL="not-a-bedrock-model",
     ):
         with pytest.raises(ValueError, match="disagrees"):
             _resolve_judge_provider_and_model()
@@ -119,7 +119,7 @@ def test_explicit_provider_wins_fails_loud_on_disagreement():
 
 def test_old_rag_generator_model_without_crucible_raises_rename_error():
     """RAG_GENERATOR_MODEL set + CRUCIBLE_GENERATOR_MODEL unset raises; never silent."""
-    with _patched_env(RAG_GENERATOR_MODEL="gpt-4o-mini"):
+    with _patched_env(RAG_GENERATOR_MODEL="not-a-bedrock-model"):
         with pytest.raises(
             ValueError,
             match="RAG_GENERATOR_MODEL is renamed to CRUCIBLE_GENERATOR_MODEL",
@@ -146,11 +146,11 @@ def test_judge_equals_generator_model_is_rejected():
             _resolve_judge_provider_and_model()
 
 
-def test_au_profile_model_not_misclassified_as_openai():
+def test_au_profile_model_recognised_non_bedrock_rejected():
     """_is_bedrock_model recognises au.* geo-profile prefixes (dev-only sniff)."""
     from crucible.local.stubs.rag.generator import _is_bedrock_model
 
     assert _is_bedrock_model("au.anthropic.claude-sonnet-4-6") is True
     assert _is_bedrock_model("us.anthropic.claude-3-5-sonnet") is True
     assert _is_bedrock_model("global.anthropic.claude") is True
-    assert _is_bedrock_model("gpt-4o-mini") is False
+    assert _is_bedrock_model("not-a-bedrock-model") is False

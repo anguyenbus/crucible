@@ -149,13 +149,16 @@ answers, scores them with the four DeepEval LLM-judge metrics, traces to Phoenix
 and writes CSV/Parquet results under `results/eval_rag/<timestamp>/`.
 
 ```bash
-# 1. Start Phoenix (optional but recommended — tracing degrades gracefully without it):
+# 1. Start Phoenix (REQUIRED — eval-rag runs the Phoenix-native experiment flow):
 docker-compose -f docker-compose.yml -f docker-compose.observability.yml up -d
 
-# 2. First run ingests the corpus into ChromaDB, then evaluates a slice:
+# 2. Preflight that Phoenix is reachable before running an eval:
+uv run crucible check phoenix
+
+# 3. First run ingests the corpus into ChromaDB, then evaluates a slice:
 uv run eval-rag --slice gst_pico --rag stub-local --force-reingest
 
-# 3. Subsequent runs reuse the persisted collection (data/chromadb/) — omit --force-reingest:
+# 4. Subsequent runs reuse the persisted collection (data/chromadb/) — omit --force-reingest:
 uv run eval-rag --slice gst_nano --rag stub-local
 ```
 
@@ -163,17 +166,13 @@ uv run eval-rag --slice gst_nano --rag stub-local
 > limitation). Use it only to (re)build the collection the first time; drop it for
 > normal runs so retrieval reuses `data/chromadb/`.
 
-Two reporting modes:
-
-- **Default (span tracing):** emits CHAIN / RETRIEVER / LLM / EVALUATOR spans to
-  Phoenix and writes the result CSV/Parquet.
-- **`--phoenix-native`:** uploads the slice as a Phoenix dataset and runs a Phoenix
-  experiment with the four metrics as evaluators — a scored experiment table in the
-  Phoenix UI.
-
-```bash
-uv run eval-rag --slice gst_pico --rag stub-local --phoenix-native
-```
+`eval-rag` runs the Phoenix-native **Datasets & Experiments** flow — the only
+Phoenix path. It uploads the slice as a Phoenix dataset, runs a Phoenix experiment
+with the four DeepEval metrics as evaluators (judge on AWS Bedrock), and writes the
+canonical CSV / Parquet / JSON artifacts (`*_score` / `*_label` / `*_verdicts` +
+`app_cost_usd` / `judge_cost_usd` / `total_cost_usd`) under
+`results/eval_rag/<timestamp>/`. A running Phoenix server is REQUIRED;
+`crucible check phoenix` is the fail-fast preflight.
 
 Other console scripts: `uv run eval-replay ...` (replay comparison),
 `uv run generate-spans ...` (demo span generator), and the `crucible` command group
@@ -188,11 +187,10 @@ the UI:
 http://localhost:6006
 ```
 
-- **Scored experiment** (the `--phoenix-native` output) → **Datasets** → open the
-  slice dataset (e.g. `gst-legal-rag-gst_pico`) → the experiment row shows per-row
-  faithfulness / context_precision / context_recall / answer_relevancy.
-- **Traces** (the default mode) → **Projects** → the RAG-pipeline spans and the
-  per-call judge (EVALUATOR) spans.
+- **Scored experiment** → **Datasets** → open the slice dataset (e.g.
+  `gst-legal-rag-gst_pico`) → the experiment row shows per-row faithfulness /
+  context_precision / context_recall / answer_relevancy with a click-to-inspect
+  view per question.
 
 To check Phoenix from the shell instead of the browser:
 
@@ -225,7 +223,7 @@ silent fallback).
 |---|---|---|
 | core (always) | `pydantic`, `jsonschema`, `pyyaml`, `deepeval==4.0.5`, `scipy`, `polars`, `beartype` | kernel-grade; `pip install crucible` is import-clean |
 | `bedrock` | `boto3`, `aiobotocore` | default Bedrock generator + judge (`AmazonBedrockModel` needs `aiobotocore`) |
-| `phoenix` | `arize-phoenix`, `openinference-semantic-conventions` | span tracing + native experiments |
+| `phoenix` | `arize-phoenix`, `openinference-semantic-conventions` | native Datasets & Experiments flow |
 | `replay` | `fastapi`, `uvicorn`, `click`, `aiohttp` | replay testing + the Zvec stub service |
 | `demo` | `chromadb`, `sentence-transformers`, `openai`, `datasets`, `huggingface-hub`, `rich`, `python-dotenv`, `openinference-instrumentation-openai` | the local stub RAG + OpenAI path; **never migrates** |
 | `dev` (group) | `pytest`, `pytest-cov`, `ruff`, `icontract`, `import-linter` | development tooling |

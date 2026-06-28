@@ -17,7 +17,7 @@ from __future__ import annotations
 from beartype.typing import Final
 
 # ====================================================================
-# JUDGE PROVIDER / MODEL DEFAULTS (Bedrock-default; OpenAI opt-in)
+# JUDGE PROVIDER / MODEL DEFAULTS (Bedrock-only)
 # ====================================================================
 # Bedrock is the default judge provider. The default judge model is an
 # AU-geographic inference profile (au.*) so Australian legal/PII data stays
@@ -25,10 +25,11 @@ from beartype.typing import Final
 # a residency regression).
 #
 # HARD INVARIANT (non-negotiable): the judge model ID MUST differ from the
-# generator model ID -- no same-model self-grading. The two defaults below are
-# Opus (judge) vs Sonnet (generator) precisely to satisfy this.
+# generator model ID -- no same-model self-grading. Policy: sonnet/haiku only,
+# never opus. The two defaults below are Sonnet 4.5 (judge) vs Haiku 4.5
+# (generator) precisely to satisfy this (both accept the `temperature` param).
 DEFAULT_JUDGE_PROVIDER: Final[str] = "bedrock"
-DEFAULT_JUDGE_MODEL: Final[str] = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+DEFAULT_JUDGE_MODEL: Final[str] = "au.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 # Kept in sync with the demo generator's default model.
 # Used only to enforce the judge != generator invariant locally without

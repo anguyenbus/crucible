@@ -38,27 +38,18 @@ RanExperiment = PhoenixRanExperiment | dict[str, Any] | None
 # Constants
 DEFAULT_EXPERIMENT_NAME: Final[str] = "rag-evaluation"
 
-# AWS Bedrock inference-profile id prefixes (geo-routed). A bare model STRING is
-# treated by DeepEval as an OpenAI model, so Bedrock judges must be passed as an
-# AmazonBedrockModel INSTANCE -- see ``_build_judge`` below.
-_BEDROCK_PREFIXES: Final[tuple[str, ...]] = ("au.", "us.", "apac.", "eu.", "global.", "anthropic.")
-
-
 @beartype
 def _build_judge(judge_model: str) -> Any:
     """
-    Resolve the DeepEval judge for the experiment evaluators.
+    Build the AWS Bedrock judge instance for the experiment evaluators.
 
-    DeepEval routes a bare model *string* to its OpenAI ``GPTModel``. For Bedrock
-    inference-profile ids (``au.*`` etc., this project's judge) we must build an
-    ``AmazonBedrockModel`` *instance* instead, or the evaluators fail demanding an
-    ``OPENAI_API_KEY``. Non-Bedrock ids pass through unchanged (OpenAI path).
+    DeepEval routes a bare model *string* to its OpenAI ``GPTModel``, so the
+    Bedrock judge MUST be passed as an ``AmazonBedrockModel`` *instance*. This
+    project is Bedrock-only (OpenAI/gpt-4o removed).
     """
-    if judge_model.startswith(_BEDROCK_PREFIXES):
-        from crucible.service.deepeval.bedrock_provider import get_deepeval_llm
+    from crucible.service.deepeval.bedrock_provider import get_deepeval_llm
 
-        return get_deepeval_llm(provider="bedrock", model=judge_model)
-    return judge_model
+    return get_deepeval_llm(provider="bedrock", model=judge_model)
 
 
 @beartype
@@ -156,10 +147,10 @@ def create_rag_task(
 def run_phoenix_experiment(
     rag_adapter: Any,
     corpus_dir: Path,
+    judge_model: str,
     endpoint: str = "http://localhost:6006",
     slice_name: str = "pico",
     experiment_name: str | None = None,
-    judge_model: str = "gpt-4o-mini",
 ) -> RanExperiment:
     """
     Run a RAG evaluation experiment using Phoenix's native experiment API.

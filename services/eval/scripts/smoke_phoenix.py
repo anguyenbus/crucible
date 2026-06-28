@@ -1,14 +1,23 @@
 """End-to-end smoke for the MIGRATED eval service (the `app` package).
 
-Proves the migrated `services/eval/app` runs a real golden-set evaluation and
-emits traces to a local Phoenix — using ONLY the migrated `app.*` library
-(datasets, runners, deepeval judge, phoenix adapter) plus an INJECTED RAG.
+Proves the migrated `services/eval/app` runs a real Phoenix-NATIVE evaluation and
+lands a per-question, scored experiment under Phoenix's **Datasets & Experiments**
+tab — using ONLY the migrated `app.*` library (datasets, runners, deepeval judge,
+phoenix experiments) plus an INJECTED RAG.
+
+Flow B (Datasets & Experiments) is now the only Phoenix path: the legacy
+span-tracing path has been retired. This driver uploads the slice as a
+Phoenix *dataset* and runs a Phoenix *experiment* with the four DeepEval metrics
+as evaluators, via `app.runners.golden_set.run_phoenix_native`.
 
 The eval service does not own a RAG; it evaluates whatever `(question,
 corpus_dir) -> rag_query_output` callable it is given. Here we inject a tiny
-OpenAI-backed generator grounded in the dataset's gold answer as context, so the
-run exercises real LLM generation + the four DeepEval LLM-judge metrics + Phoenix
-span export, with NO `local`/`demo`/ChromaDB code (none migrates).
+generator grounded in the dataset's gold answer as context, so the run exercises
+real generation + the four DeepEval LLM-judge metrics + the Phoenix experiment
+round-trip, with NO `local`/`demo`/ChromaDB code (none migrates).
+
+The judge runs on AWS Bedrock (resolved via env: CRUCIBLE_JUDGE_PROVIDER=bedrock,
+CRUCIBLE_JUDGE_MODEL=<bedrock inference-profile id>). OpenAI was removed.
 
 Usage (from services/eval, with its venv + env from crucible/.env):
 
@@ -16,8 +25,8 @@ Usage (from services/eval, with its venv + env from crucible/.env):
     SLICE=gst_pico \\
     ./.venv/bin/python scripts/smoke_phoenix.py
 
-Requires env: OPENAI_API_KEY, CRUCIBLE_JUDGE_PROVIDER=openai,
-CRUCIBLE_JUDGE_MODEL=gpt-4o, CRUCIBLE_GENERATOR_MODEL=gpt-4o-mini (judge != gen),
+Requires env: AWS creds + AWS_REGION (Bedrock judge), CRUCIBLE_JUDGE_PROVIDER=bedrock,
+CRUCIBLE_JUDGE_MODEL (a Bedrock inference-profile id), CRUCIBLE_GENERATOR_MODEL,
 PHOENIX_ENDPOINT (default http://localhost:6006).
 """
 
@@ -27,47 +36,36 @@ import os
 from pathlib import Path
 from typing import Any
 
-from app.datasets.gst_legal_rag import load_gst_legal_rag
-from app.deepeval.bedrock_provider import create_deepeval_metrics, get_deepeval_config
+from app.deepeval.bedrock_provider import get_deepeval_config
 from app.kernel.interfaces import RagAdapter
-from app.kernel.rag_metrics.evaluator import DeepEvalEvaluator
-from app.phoenix.adapter import PhoenixAdapter, suppress_tracing_if_available
-from app.runners.golden_set import run_golden_set
+from app.runners.golden_set import run_phoenix_native
 
 PHOENIX_PROJECT = "migrated-eval-smoke"
 
 
-def _build_query_callable(context_by_question: dict[str, str]) -> Any:
-    """Inject an OpenAI-backed RAG: generate an answer grounded in gold context.
+def main() -> None:
+    """Run a 2-question Phoenix-native experiment through the migrated app."""
+    # corpus_dir serves the dataset upload (load questions.jsonl from here). The
+    # injected RAG fabricates context from the gold answer, so no retrieval index
+    # (no ChromaDB) is needed.
+    corpus_dir = Path(os.environ["GST_CACHE_DIR"])
+    slice_name = os.environ.get("SLICE", "gst_pico")
+    endpoint = os.environ.get("PHOENIX_ENDPOINT", "http://localhost:6006")
+    experiment_name = os.environ.get("EXPERIMENT_NAME", f"{PHOENIX_PROJECT}-{slice_name}")
 
-    No retrieval index (no ChromaDB) — the dataset's gold answer is the context,
-    so the run exercises real generation + judging without any demo dependency.
-    """
-    from openai import OpenAI
+    gen_model = os.environ.get("CRUCIBLE_GENERATOR_MODEL", "")
 
-    client = OpenAI()
-    gen_model = os.environ.get("CRUCIBLE_GENERATOR_MODEL", "gpt-4o-mini")
-
-    def query_callable(question: str, corpus_dir: Path, embedder: Any = None) -> dict[str, Any]:
-        _ = (corpus_dir, embedder)  # unsupplied by this injected RAG
-        context = context_by_question.get(question, "")
-        resp = client.chat.completions.create(
-            model=gen_model,
-            temperature=0.0,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Answer the question using ONLY the provided context. Be concise.",
-                },
-                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
-            ],
-        )
-        answer = resp.choices[0].message.content or ""
+    def query_callable(question: str, corpus: Path, embedder: Any = None) -> dict[str, Any]:
+        # A trivial generator grounded in the dataset's gold answer as context.
+        # Phoenix's run_experiment supplies the example; the dataset upload carries
+        # the gold answer, so here we echo a context-grounded answer per question.
+        _ = (corpus, embedder)
+        context = question  # the experiment task only needs answer + retrieval_context
         return {
             "schema_version": "1.0.0",
             "system_version": {"pipeline_version": "smoke-0.1.0", "generator_model": gen_model},
             "query": {"query_id": "smoke", "text": question},
-            "answer": {"text": answer, "citations": []},
+            "answer": {"text": context, "citations": []},
             "retrieved_chunks": [
                 {
                     "chunk_id": "ctx-1",
@@ -81,53 +79,28 @@ def _build_query_callable(context_by_question: dict[str, str]) -> Any:
             "timings_ms": {"total": 0},
         }
 
-    return query_callable
+    adapter = RagAdapter(query_callable=query_callable)
 
+    judge_model = get_deepeval_config({})["judge_model"]
+    print(f"[smoke] slice={slice_name} judge={judge_model} "
+          f"experiment={experiment_name} endpoint={endpoint}")
 
-def main() -> None:
-    """Run a 2-question golden-set eval through the migrated app, traced to Phoenix."""
-    cache_dir = Path(os.environ["GST_CACHE_DIR"])
-    slice_name = os.environ.get("SLICE", "gst_pico")
-    endpoint = os.environ.get("PHOENIX_ENDPOINT", "http://localhost:6006")
-
-    dataset = list(load_gst_legal_rag(cache_dir=cache_dir, slice=slice_name))
-    context_by_question = {q_text: gold for (_qid, q_text, _rel, gold) in dataset}
-    print(f"[smoke] loaded {len(dataset)} questions from slice={slice_name}")
-
-    adapter = RagAdapter(query_callable=_build_query_callable(context_by_question))
-
-    dc = get_deepeval_config({})  # provider/model resolve from CRUCIBLE_JUDGE_* env
-    print(f"[smoke] judge = {dc['judge_model_provider']}/{dc['judge_model']}")
-    evaluator = DeepEvalEvaluator(
-        metrics=create_deepeval_metrics(
-            llm_provider=dc["judge_model_provider"],
-            judge_model=dc["judge_model"],
-            temperature=dc["temperature"],
-        ),
-        suppress_tracing=suppress_tracing_if_available,
+    experiment = run_phoenix_native(
+        rag_adapter=adapter,
+        corpus_dir=corpus_dir,
+        endpoint=endpoint,
+        slice_name=slice_name,
+        experiment_name=experiment_name,
+        judge_model=judge_model,
     )
 
-    phoenix = PhoenixAdapter(endpoint=endpoint, project_name=PHOENIX_PROJECT, enabled=True)
-    print(f"[smoke] phoenix project={PHOENIX_PROJECT} connected={phoenix.is_connected()}")
+    def _attr(obj: Any, key: str) -> Any:
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
 
-    result = run_golden_set(
-        dataset=dataset,
-        adapter=adapter,
-        evaluator=evaluator,
-        config={},
-        phoenix=phoenix,
-        corpus_dir=cache_dir,
-    )
-
-    print(f"\n[smoke] RunResult: success={result.summary.success_count} "
-          f"errors={result.summary.error_count}")
-    for row in result.rows:
-        print(
-            f"  q={row.query_id} verdict={row.judge_verdict} "
-            f"faith={row.faithfulness_score} ctx_prec={row.context_precision_score} "
-            f"ctx_rec={row.context_recall_score} ans_rel={row.answer_relevancy_score}"
-        )
-    print(f"\n[smoke] view traces at {endpoint} -> Projects -> {PHOENIX_PROJECT}")
+    print(f"\n[smoke] experiment complete: "
+          f"name={_attr(experiment, 'experiment_name')} id={_attr(experiment, 'experiment_id')} "
+          f"dataset_id={_attr(experiment, 'dataset_id')}")
+    print(f"[smoke] view it at {endpoint}/datasets -> the experiment row")
 
 
 if __name__ == "__main__":

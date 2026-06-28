@@ -42,19 +42,22 @@ def _ok_body() -> dict:
     return {"body": io.BytesIO(payload), "contentType": "application/json"}
 
 
-def test_preflight_noop_when_provider_not_bedrock():
-    """provider=openai -> the preflight makes NO bedrock call and does not raise."""
+def test_preflight_rejects_non_bedrock_provider():
+    """provider=openai is rejected outright: this project is Bedrock-only."""
+    import pytest
+
     env = {
         "CRUCIBLE_GENERATOR_PROVIDER": "openai",
         "CRUCIBLE_GENERATOR_MODEL": "gpt-4o-mini",
     }
 
     def fail_client(*a, **k):  # pragma: no cover - must not be called
-        raise AssertionError("boto3.client must not be called for openai provider")
+        raise AssertionError("boto3.client must not be called when the provider is rejected")
 
     with mock.patch.dict("os.environ", env, clear=True):
         with mock.patch.object(boto3, "client", fail_client):
-            bedrock_preflight()  # no raise, no client construction
+            with pytest.raises(ValueError, match="Bedrock-only"):
+                bedrock_preflight()
 
 
 def test_preflight_passes_on_successful_cheap_call():

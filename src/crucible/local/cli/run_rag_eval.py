@@ -5,15 +5,18 @@ Usage:
     uv run eval-rag --slice full --rag stub-local
 
 This is a LOCAL/demo shell: it parses args, resolves the judge provider/model and
-builds the DeepEval metrics via ``service/deepeval/bedrock_provider``, builds the
-Phoenix adapter and the ``RagAdapter`` (stub-local ChromaDB demo backend), then
-calls the service library (``service/runners/golden_set``) and persists the
-returned ``RunResult`` via ``service/metrics/csv_writer``. All eval-loop logic
-lives in the service library; this module builds infra and writes outputs.
+builds the ``RagAdapter`` (stub-local ChromaDB demo backend), then runs the
+Phoenix-native Datasets & Experiments flow via the service library
+(``service/runners/golden_set.run_phoenix_native`` ->
+``service/phoenix/experiments``). Every run produces a per-question, scored
+experiment in the Phoenix UI plus the canonical CSV/parquet/JSON artifacts via
+``export_experiment_results``.
+
+A running Phoenix server is REQUIRED for ``eval-rag``; ``crucible check phoenix``
+is the fail-fast preflight. There is no offline/no-server CLI scoring path.
 
 NOTE: stub-local uses a ChromaDB reference implementation for demonstration only.
-The judge runs on AWS Bedrock by default; set CRUCIBLE_JUDGE_PROVIDER=openai with
-OPENAI_API_KEY to use OpenAI instead.
+The judge runs on AWS Bedrock only (OpenAI/gpt-4o was removed from this project).
 """
 
 from __future__ import annotations
@@ -100,7 +103,6 @@ def _build_args() -> Any:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--force-reingest", action="store_true")
     parser.add_argument("--top-k", type=int, default=5)
-    parser.add_argument("--phoenix-native", action="store_true")
     return parser.parse_args()
 
 
@@ -110,21 +112,6 @@ def _build_embedder(dataset_config: dict, get_embedder: Any) -> Any:
         provider=cfg.get("provider", "huggingface"),
         model=cfg.get("model", "sentence-transformers/all-MiniLM-L6-v2"),
     )
-
-
-def _build_evaluator(config: dict, embedder: Any, get_deepeval_config: Any) -> Any:
-    from crucible.kernel.rag_metrics.evaluator import DeepEvalEvaluator
-    from crucible.service.deepeval.bedrock_provider import create_deepeval_metrics
-    from crucible.service.phoenix.adapter import suppress_tracing_if_available
-
-    dc = get_deepeval_config(config)
-    metrics = create_deepeval_metrics(
-        llm_provider=dc["judge_model_provider"],
-        judge_model=dc["judge_model"],
-        temperature=dc["temperature"],
-        embedder=embedder,
-    )
-    return DeepEvalEvaluator(metrics=metrics, suppress_tracing=suppress_tracing_if_available)
 
 
 def _default_output_dir(args: Any) -> Path:
@@ -157,25 +144,12 @@ def _phoenix_native(args: Any, config: dict, get_deepeval_config: Any, get_embed
     print(f"Phoenix-native experiment complete; results in {output_dir}")
 
 
-def _build_phoenix() -> Any:
-    try:
-        from crucible.service.phoenix.adapter import PhoenixAdapter
-
-        endpoint = os.environ.get("PHOENIX_ENDPOINT", "http://localhost:6006")
-        return PhoenixAdapter(endpoint=endpoint, project_name="crucible-eval-rag", enabled=True)
-    except Exception:  # noqa: BLE001 -- tracing is best-effort
-        return None
-
-
 def main() -> None:
-    """Parse args, build injected deps, call the service library, write CSV."""
+    """Parse args, build injected deps, and run the Phoenix-native experiment."""
     from crucible.local.cli.check import bedrock_preflight
     from crucible.service.config import load_config
-    from crucible.service.datasets.resolve import resolve_routing
     from crucible.service.deepeval.bedrock_provider import get_deepeval_config
     from crucible.service.deepeval.embeddings import get_embedder
-    from crucible.service.metrics.csv_writer import write_run_result
-    from crucible.service.runners.golden_set import run_golden_set
 
     args = _build_args()
     try:
@@ -192,31 +166,9 @@ def main() -> None:
         print(f"ERROR: Bedrock preflight failed: {e}")
         sys.exit(1)
 
-    if args.phoenix_native:
-        return _phoenix_native(args, config, get_deepeval_config, get_embedder)
-
-    routing = resolve_routing(args.slice)
-    dataset_config = config["datasets"].get(routing.config_key, {})
-    corpus_dir = Path(dataset_config.get("path", f"data/rag/{routing.config_key}/corpus_files"))
-    embedder = _build_embedder(dataset_config, get_embedder)
-    evaluator = _build_evaluator(config, embedder, get_deepeval_config)
-    adapter = get_rag(args.rag, args.force_reingest, args.top_k, embedder)
-
-    result = run_golden_set(
-        dataset=load_dataset(args.slice, config),
-        adapter=adapter,
-        evaluator=evaluator,
-        config=config,
-        phoenix=_build_phoenix(),
-        corpus_dir=corpus_dir,
-    )
-
-    csv_path = _default_output_dir(args) / "results.csv"
-    write_run_result(result, csv_path)
-    print(
-        f"Evaluation complete: success={result.summary.success_count} "
-        f"errors={result.summary.error_count}; results saved to {csv_path}"
-    )
+    # Flow B (Phoenix-native Datasets & Experiments) is the ONLY path. A running
+    # Phoenix server is REQUIRED; `crucible check phoenix` is the preflight.
+    return _phoenix_native(args, config, get_deepeval_config, get_embedder)
 
 
 if __name__ == "__main__":

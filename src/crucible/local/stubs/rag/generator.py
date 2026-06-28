@@ -3,7 +3,7 @@ LLM-powered answer generation for RAG.
 
 NOTE: This is a reference stub implementation provided for demonstration purposes.
 It is not intended for production use. This module provides the LLMGenerator class
-which supports both OpenAI and AWS Bedrock (Anthropic, Amazon, Meta) models.
+which runs AWS Bedrock (Anthropic, Amazon, Meta) models. Bedrock-only.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ if _env_path.exists():
 _tracer = None
 
 # ====================================================================
-# GENERATOR PROVIDER / MODEL DEFAULTS (Bedrock-default; OpenAI opt-in)
+# GENERATOR PROVIDER / MODEL DEFAULTS (Bedrock-only)
 # ====================================================================
 # Bedrock is the default provider. The default model is an AU-geographic
 # inference profile (au.*) so Australian legal/PII data stays in-country.
@@ -127,7 +127,7 @@ def _resolve_generator_provider_and_model(
     Resolve the generator (provider, model) from the env-var contract.
 
     Contract (env > explicit-call > default; no YAML wiring at the generator):
-    - CRUCIBLE_GENERATOR_PROVIDER: "bedrock" (default) or "openai".
+    - CRUCIBLE_GENERATOR_PROVIDER: "bedrock" (the only supported provider).
     - CRUCIBLE_GENERATOR_MODEL: model ID (inference-profile ID for bedrock).
     - Explicit provider WINS; FAIL LOUD on provider/model disagreement.
     - Fail-loud rename: if the old RAG_GENERATOR_* is set while the matching
@@ -156,36 +156,24 @@ def _resolve_generator_provider_and_model(
     if model is None:
         model = os.getenv("CRUCIBLE_GENERATOR_MODEL", DEFAULT_GENERATOR_MODEL)
 
-    # Resolve provider: explicit env > default.
+    # Resolve provider: explicit env > default. This project is BEDROCK-ONLY
+    # (OpenAI/gpt-4o removed), so the only valid provider is "bedrock".
     explicit_provider = os.getenv("CRUCIBLE_GENERATOR_PROVIDER")
     if explicit_provider is not None:
         provider = explicit_provider.strip().lower()
-        if provider not in ("bedrock", "openai"):
+        if provider != "bedrock":
             raise ValueError(
                 f"Unsupported CRUCIBLE_GENERATOR_PROVIDER: {explicit_provider!r}. "
-                "Use 'bedrock' or 'openai'."
+                "This project is Bedrock-only (OpenAI/gpt-4o removed); use 'bedrock'."
             )
-        # Explicit provider WINS, but FAIL LOUD on provider/model disagreement.
-        model_looks_bedrock = _is_bedrock_model(model)
-        if provider == "bedrock" and not model_looks_bedrock:
-            raise ValueError(
-                f"CRUCIBLE_GENERATOR_PROVIDER=bedrock disagrees with "
-                f"CRUCIBLE_GENERATOR_MODEL={model!r} (does not look like a "
-                "Bedrock model/inference-profile ID). Fix the model ID or the "
-                "provider; refusing to silently pick."
-            )
-        if provider == "openai" and model_looks_bedrock:
-            raise ValueError(
-                f"CRUCIBLE_GENERATOR_PROVIDER=openai disagrees with "
-                f"CRUCIBLE_GENERATOR_MODEL={model!r} (looks like a Bedrock "
-                "model ID). Fix the model ID or the provider; refusing to "
-                "silently pick."
-            )
-        return provider, model
 
-    # No explicit provider: dev-only sniff from the model ID.
-    provider = "bedrock" if _is_bedrock_model(model) else "openai"
-    return provider, model
+    # FAIL LOUD if the model id does not look like a Bedrock inference profile.
+    if not _is_bedrock_model(model):
+        raise ValueError(
+            f"CRUCIBLE_GENERATOR_MODEL={model!r} does not look like a Bedrock "
+            "model/inference-profile ID. This project is Bedrock-only; fix the model ID."
+        )
+    return "bedrock", model
 
 
 def _resolve_region() -> str:
@@ -223,7 +211,7 @@ class LLMGenerator:
     It is not intended for production use.
 
     Supports:
-    - OpenAI: gpt-4o-mini, gpt-4-turbo, etc. (opt-in via CRUCIBLE_GENERATOR_*)
+    All models run on AWS Bedrock (Bedrock-only project).
     - AWS Bedrock (default): au.anthropic.claude-sonnet-4-6 and other
       inference-profile / foundation-model IDs.
 
@@ -270,16 +258,10 @@ class LLMGenerator:
         """
         provider, model = _resolve_generator_provider_and_model(model)
         self._model: str = model
-        self._provider: str = provider
+        self._provider: str = provider  # always "bedrock" (Bedrock-only project)
         self._deterministic_mode: bool = deterministic_mode
-
-        if self._provider == "openai":
-            self._api_key = os.getenv("OPENAI_API_KEY")
-            if not self._api_key:
-                raise ValueError("OPENAI_API_KEY environment variable required for OpenAI models")
-        else:
-            # Bedrock uses AWS credentials from environment/aws config
-            self._api_key = None
+        # Bedrock uses AWS credentials from the environment / AWS config chain.
+        self._api_key = None
 
     def generate(self, question: str, retrieved_chunks: list[dict[str, Any]]) -> dict[str, Any]:
         """
@@ -309,25 +291,20 @@ class LLMGenerator:
         )
 
         if tracer is None or is_noop_tracer:
-            if self._provider == "openai":
-                return self._generate_openai(question, retrieved_chunks)
-            else:
-                return self._generate_bedrock(question, retrieved_chunks)
+            return self._generate_bedrock(question, retrieved_chunks)
 
         try:
             from openinference.semconv.trace import OpenInferenceSpanKindValues
         except ImportError:
             # Tracing deps (openinference) not installed and not needed when
             # Phoenix tracing is off — generate without emitting spans.
-            if self._provider == "openai":
-                return self._generate_openai(question, retrieved_chunks)
             return self._generate_bedrock(question, retrieved_chunks)
 
         LLM = OpenInferenceSpanKindValues.LLM
 
         # Try using tracer, fall back if it fails
         try:
-            span_name = "bedrock.generate" if self._provider == "bedrock" else "openai.generate"
+            span_name = "bedrock.generate"
             span_context = tracer.start_as_current_span(
                 span_name,
                 openinference_span_kind=LLM,
@@ -350,10 +327,7 @@ class LLMGenerator:
             span.set_attribute(f"{self.INPUT_MESSAGE_ATTR}.{self.MESSAGE_CONTENT}", user_message)
 
             # Generate answer
-            if self._provider == "openai":
-                result = self._generate_openai(question, retrieved_chunks)
-            else:
-                result = self._generate_bedrock(question, retrieved_chunks)
+            result = self._generate_bedrock(question, retrieved_chunks)
 
             # Set output message attributes
             span.set_attribute(f"{self.OUTPUT_MESSAGE_ATTR}.{self.MESSAGE_ROLE}", "assistant")
@@ -371,74 +345,7 @@ class LLMGenerator:
         except TypeError:
             # Tracer doesn't support OpenInference params (NoOpTracer)
             # Fall back to direct generation
-            if self._provider == "openai":
-                return self._generate_openai(question, retrieved_chunks)
-            else:
-                return self._generate_bedrock(question, retrieved_chunks)
-
-    def _generate_openai(
-        self, question: str, retrieved_chunks: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        """Generate using OpenAI API."""
-        start_time = time.perf_counter()
-
-        context_parts = []
-        for chunk in retrieved_chunks:
-            chunk_id = chunk.get("chunk_id", "unknown")
-            text = chunk.get("text", "")
-            context_parts.append(f"[{chunk_id}]: {text}")
-
-        context = "\n\n".join(context_parts)
-
-        system_prompt = (
-            "You are a helpful assistant that answers questions based on "
-            "the provided context.\n"
-            "When answering, you MUST cite your sources using the chunk_ids "
-            "in square brackets like [chunk_id].\n"
-            'For example: "The answer is [doc1_chunk_00000]."\n\n'
-            "If the context doesn't contain enough information to answer "
-            "the question confidently, say \"I don't have enough information "
-            'to answer this question."\n'
-        )
-
-        user_message = f"""Context:
-{context}
-
-Question: {question}
-
-Answer:"""
-
-        try:
-            from openai import OpenAI
-
-            client = OpenAI(api_key=self._api_key)
-
-            # Use temperature=0 if in deterministic mode
-            temperature = 0.0 if self._deterministic_mode else 0.0
-
-            response = client.chat.completions.create(
-                model=self._model,
-                max_tokens=1024,
-                temperature=temperature,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-            )
-
-            answer_text = response.choices[0].message.content or ""
-            answer_supported = "I don't have enough information" not in answer_text
-            generation_time = (time.perf_counter() - start_time) * 1000
-
-            return {
-                "text": answer_text,
-                "answer_supported": answer_supported,
-                "citations": [],
-                "timings_ms": {"generation": generation_time},
-            }
-
-        except Exception as e:
-            raise ValueError(f"OpenAI API call failed: {e}") from e
+            return self._generate_bedrock(question, retrieved_chunks)
 
     def _generate_bedrock(
         self, question: str, retrieved_chunks: list[dict[str, Any]]
@@ -571,5 +478,4 @@ Answer:"""
 
 
 # Aliases for backward compatibility with imports
-OpenAIGenerator = LLMGenerator
 ClaudeGenerator = LLMGenerator

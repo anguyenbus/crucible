@@ -43,7 +43,7 @@ def test_assert_distinct_rejects_self_grading() -> None:
 def test_au_defaults_are_in_country_inference_profiles() -> None:
     """Judge and generator defaults are au.* inference profiles, judge != generator."""
     assert DEFAULT_JUDGE_PROVIDER == "bedrock"
-    assert DEFAULT_JUDGE_MODEL == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert DEFAULT_JUDGE_MODEL == "au.anthropic.claude-sonnet-4-5-20250929-v1:0"
     assert DEFAULT_GENERATOR_MODEL == "au.anthropic.claude-sonnet-4-6"
     # DEFAULT_BEDROCK_MODEL is the resolved au.* judge default.
     assert DEFAULT_BEDROCK_MODEL == DEFAULT_JUDGE_MODEL

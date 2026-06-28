@@ -55,7 +55,7 @@ class _HermeticBedrockJudge(AmazonBedrockModel):
     instances so each metric can complete measure() with no network call.
     """
 
-    def __init__(self, model: str = "au.anthropic.claude-haiku-4-5-20251001-v1:0", **_: object) -> None:
+    def __init__(self, model: str = "au.anthropic.claude-haiku-4-5-20251001-v1:0", **_: object) -> None:  # noqa: E501
         # Deliberately do NOT call super().__init__: that requires aiobotocore and
         # would build a real Bedrock client. We only need a native-typed model.
         self.model_id = model
@@ -146,10 +146,9 @@ def test_no_openai_client_constructed_across_all_four_metrics(monkeypatch):
 def test_bedrock_judge_construction_never_touches_openai_api_key(monkeypatch):
     """Constructing the bedrock judge never reads/requires OPENAI_API_KEY.
 
-    Inverse-flavoured sanity: the openai branch of get_deepeval_llm fails loud
-    when OPENAI_API_KEY is unset (proving that branch genuinely depends on the
-    key), while the bedrock branch builds with the key unset and OpenAI patched
-    to raise -- demonstrating the two branches are truly distinct.
+    Bedrock-only: the OpenAI provider was REMOVED, so ``provider=openai`` is now
+    rejected outright. The bedrock branch builds with the key unset and OpenAI
+    patched to raise -- demonstrating no OpenAI path remains.
     """
     import pytest
 
@@ -161,10 +160,10 @@ def test_bedrock_judge_construction_never_touches_openai_api_key(monkeypatch):
     monkeypatch.setattr(openai, "AsyncOpenAI", _boom_openai)
     monkeypatch.setattr(deepeval_models, "AmazonBedrockModel", _HermeticBedrockJudge)
 
-    # openai branch: with the key unset it must fail loud (key is a hard dep).
-    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
-        get_deepeval_llm(provider="openai", model="gpt-4o-mini")
+    # openai provider: removed -> rejected outright (no OpenAI path remains).
+    with pytest.raises(ValueError, match="Bedrock-only"):
+        get_deepeval_llm(provider="openai", model="anything")
 
     # bedrock branch: builds fine with the key unset and OpenAI patched to raise.
-    judge = get_deepeval_llm(provider="bedrock", model="au.anthropic.claude-haiku-4-5-20251001-v1:0")
+    judge = get_deepeval_llm(provider="bedrock", model="au.anthropic.claude-haiku-4-5-20251001-v1:0")  # noqa: E501
     assert is_native_model(judge) is True

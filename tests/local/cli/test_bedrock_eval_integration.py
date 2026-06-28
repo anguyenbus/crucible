@@ -220,23 +220,19 @@ def test_csv_writer_tolerates_none_score_cell():
 # --------------------------------------------------------------------------- #
 
 
-def test_provider_switch_to_openai_via_env(monkeypatch):
-    """CRUCIBLE_JUDGE_PROVIDER=openai env flips the resolved judge config."""
+def test_provider_openai_is_rejected_bedrock_only(monkeypatch):
+    """CRUCIBLE_JUDGE_PROVIDER=openai is rejected: this project is Bedrock-only."""
+    import pytest
+
     from crucible.service.deepeval.bedrock_provider import get_deepeval_config
 
-    for var in ("AWS_REGION", "AWS_DEFAULT_REGION"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
     monkeypatch.setenv("CRUCIBLE_JUDGE_PROVIDER", "openai")
     monkeypatch.setenv("CRUCIBLE_JUDGE_MODEL", "gpt-4o-mini")
 
-    # A YAML judge block defaulting to bedrock must be overridden by the env.
-    config = {"judge": {"provider": "bedrock", "model": "au.anthropic.claude-haiku-4-5-20251001-v1:0"}}
-    result = get_deepeval_config(config)
-
-    assert result["judge_model_provider"] == "openai"
-    assert result["judge_model"] == "gpt-4o-mini"
-    # No region resolved/required on an openai run (region is bedrock-only).
-    assert result["region"] is None
+    config = {"judge": {"provider": "bedrock", "model": "au.anthropic.claude-haiku-4-5-20251001-v1:0"}}  # noqa: E501
+    with pytest.raises(ValueError, match="Bedrock-only"):
+        get_deepeval_config(config)
 
 
 def test_default_bedrock_run_resolves_region_and_au_judge(monkeypatch):

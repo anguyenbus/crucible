@@ -20,7 +20,7 @@ UV_LOCK = REPO_ROOT / "uv.lock"
 
 # Demo-only deps quarantined out of core in Phase 5. These must NEVER reappear in
 # [project.dependencies]; `pip install crucible` (no extras) stays kernel-grade.
-DEMO_ONLY_DEPS = ("chromadb", "openai", "sentence-transformers", "datasets")
+DEMO_ONLY_DEPS = ("chromadb", "sentence-transformers", "datasets")
 
 
 def _project_dependencies() -> list[str]:

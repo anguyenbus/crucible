@@ -9,7 +9,6 @@ from crucible.service.deepeval.bedrock_provider import (
     DEFAULT_BEDROCK_MODEL,
     DEFAULT_JUDGE_MODEL,
     DEFAULT_MAX_CONCURRENT,
-    DEFAULT_OPENAI_MODEL,
     DEFAULT_TEMPERATURE,
     get_deepeval_config,
     get_deepeval_llm,
@@ -42,30 +41,17 @@ def test_deepeval_telemetry_disabled():
 
 def test_constants():
     """Test module constants."""
-    assert DEFAULT_OPENAI_MODEL == "gpt-4o-mini"
     assert DEFAULT_TEMPERATURE == 0.0
     assert DEFAULT_MAX_CONCURRENT == 10
-    # Bedrock-default: DEFAULT_BEDROCK_MODEL is now the resolved au.-profile
-    # judge default (was the bare-family anthropic.claude-3-5-sonnet ID).
-    assert DEFAULT_BEDROCK_MODEL == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+    # Bedrock-only: DEFAULT_BEDROCK_MODEL is the resolved au.-profile judge default.
+    assert DEFAULT_BEDROCK_MODEL == "au.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 
-def test_get_openai_api_key_missing(monkeypatch):
-    """Test that missing API key raises ValueError."""
-    from crucible.service.deepeval.bedrock_provider import _get_openai_api_key
-
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    with pytest.raises(ValueError, match="OPENAI_API_KEY.*must be set"):
-        _get_openai_api_key()
-
-
-def test_get_openai_api_key_from_env(monkeypatch):
-    """Test API key from environment."""
-    from crucible.service.deepeval.bedrock_provider import _get_openai_api_key
-
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    assert _get_openai_api_key() == "test-key"
+def test_openai_provider_rejected(monkeypatch):
+    """Bedrock-only: get_deepeval_llm rejects provider=openai (gpt-4o removed)."""
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
+    with pytest.raises(ValueError, match="Bedrock-only"):
+        get_deepeval_llm(provider="openai", model="gpt-4o-mini")
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +103,8 @@ def test_get_deepeval_config_reads_top_level_judge_block(monkeypatch):
         "datasets": {
             "legal_rag_bench": {
                 "deepeval": {
-                    "judge_model": "gpt-4o",
-                    "judge_model_provider": "openai",
+                    "judge_model": "IGNORED-per-dataset",
+                    "judge_model_provider": "IGNORED",
                 }
             }
         },
@@ -148,11 +134,11 @@ def test_get_deepeval_config_global_for_gst_and_legal_rag(monkeypatch):
     }
     config_legal = {
         **judge_block,
-        "datasets": {"legal_rag_bench": {"deepeval": {"judge_model": "gpt-4o"}}},
+        "datasets": {"legal_rag_bench": {"deepeval": {"judge_model": "IGNORED-a"}}},
     }
     config_gst = {
         **judge_block,
-        "datasets": {"gst_legal_rag": {"deepeval": {"judge_model": "gpt-3.5"}}},
+        "datasets": {"gst_legal_rag": {"deepeval": {"judge_model": "IGNORED-b"}}},
     }
 
     result_legal = get_deepeval_config(config_legal)
@@ -171,14 +157,14 @@ def test_get_deepeval_config_env_wins_over_yaml(monkeypatch):
     monkeypatch.setenv("CRUCIBLE_JUDGE_MODEL", "au.anthropic.claude-sonnet-4-5")
     config = {
         "judge": {
-            "provider": "openai",
-            "model": "gpt-4o",
+            "provider": "bedrock",
+            "model": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
         }
     }
 
     result = get_deepeval_config(config)
 
-    # Env wins over YAML for both provider and model.
+    # Env model wins over the YAML model (both Bedrock).
     assert result["judge_model_provider"] == "bedrock"
     assert result["judge_model"] == "au.anthropic.claude-sonnet-4-5"
 
@@ -191,29 +177,28 @@ def test_get_deepeval_config_defaults_to_bedrock_haiku(monkeypatch):
     result = get_deepeval_config(config)
 
     assert result["judge_model_provider"] == "bedrock"
-    assert result["judge_model"] == DEFAULT_JUDGE_MODEL == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert result["judge_model"] == DEFAULT_JUDGE_MODEL == "au.anthropic.claude-sonnet-4-5-20250929-v1:0"  # noqa: E501
     assert result["region"] == "ap-southeast-2"
 
 
 def test_get_deepeval_config_cli_overrides_env_and_yaml(monkeypatch):
-    """CLI args win over env and YAML (top of the precedence stack)."""
-    monkeypatch.setenv("CRUCIBLE_JUDGE_PROVIDER", "bedrock")
+    """CLI args win over env and YAML (top of the precedence stack). Bedrock-only."""
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
     monkeypatch.setenv("CRUCIBLE_JUDGE_MODEL", "au.anthropic.claude-haiku-4-5-20251001-v1:0")
-    config = {"judge": {"provider": "bedrock", "model": "au.anthropic.claude-haiku-4-5-20251001-v1:0"}}
+    config = {"judge": {"provider": "bedrock", "model": "au.anthropic.claude-haiku-4-5-20251001-v1:0"}}  # noqa: E501
 
     result = get_deepeval_config(
         config,
         cli_enabled=False,
-        cli_judge_model="gpt-4o-mini",
-        cli_provider="openai",
+        cli_judge_model="au.anthropic.claude-sonnet-4-5",
+        cli_provider="bedrock",
         cli_temperature=0.2,
         cli_max_concurrent=20,
     )
 
     assert result["enabled"] is False
-    assert result["judge_model"] == "gpt-4o-mini"
-    assert result["judge_model_provider"] == "openai"
+    assert result["judge_model"] == "au.anthropic.claude-sonnet-4-5"
+    assert result["judge_model_provider"] == "bedrock"
     assert result["temperature"] == 0.2
     assert result["max_concurrent"] == 20
-    # provider!=bedrock => region not resolved (no AWS_REGION needed).
-    assert result["region"] is None
+    assert result["region"] == "ap-southeast-2"

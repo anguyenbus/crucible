@@ -170,8 +170,10 @@ def phoenix(endpoint: str, timeout: int) -> None:
     """
     Check Phoenix server connectivity.
 
-    Verifies that Phoenix is reachable and responding. This is useful
-    for pre-flight checks before running evaluations.
+    Verifies that Phoenix is reachable and responding. ``eval-rag`` REQUIRES a
+    running Phoenix server (the Phoenix-native Datasets & Experiments flow is the
+    only eval path), so this is the fail-fast preflight to run before any
+    evaluation.
 
     Examples:
         crucible check phoenix
