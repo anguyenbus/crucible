@@ -1,5 +1,26 @@
 # Evaluation configuration for crucible
 
+# ============================================================================
+# GLOBAL JUDGE CONFIGURATION
+# ============================================================================
+# The DeepEval LLM-judge is the measuring instrument, so its config is GLOBAL
+# across ALL datasets (per-dataset judges make scores incomparable). This
+# top-level `judge:` block is the ONLY judge config read by
+# crucible.metrics.deepeval_config.get_deepeval_config; the former per-dataset
+# `datasets.*.deepeval` judge blocks are no longer read (and have been removed).
+#
+# Precedence is env > YAML: CRUCIBLE_JUDGE_PROVIDER / CRUCIBLE_JUDGE_MODEL
+# override the values here. Defaults are Bedrock + the AU-geographic
+# inference-profile judge model so Australian legal/PII data stays in-country.
+# The AWS region is NOT set here — it is resolved natively from
+# AWS_REGION / AWS_DEFAULT_REGION (see .env.example).
+judge:
+  enabled: true
+  provider: bedrock  # "bedrock" (default) or "openai"
+  model: au.anthropic.claude-sonnet-4-5-20250929-v1:0  # judge model ID (au.* inference profile)
+  temperature: 0.0
+  max_concurrent: 10
+
 datasets:
   legal_rag_bench:
     # Path to Legal RAG Bench corpus (optional if using HuggingFace dataset)
@@ -13,13 +34,17 @@ datasets:
       provider: huggingface  # or openai
       model: sentence-transformers/all-MiniLM-L6-v2
 
-    # DeepEval LLM-judge configuration
-    deepeval:
-      enabled: true
-      judge_model: gpt-4o-mini
-      judge_model_provider: openai  # or bedrock
-      temperature: 0.0
-      max_concurrent: 10
+  gst_legal_rag:
+    # Path to GST Legal RAG corpus
+    path: ${DATA_DIR:-data/rag}/gst_legal_rag
+
+    # Cache directory for GST dataset (vendored local files)
+    cache_path: ${CACHE_DIR:-data/rag}/gst_legal_rag
+
+    # Embedder configuration for retrieval
+    embeddings:
+      provider: huggingface  # or openai
+      model: sentence-transformers/all-MiniLM-L6-v2
 
 metrics:
   # RAG quality metrics (computed by DeepEval)
@@ -28,12 +53,14 @@ metrics:
   - contextual_recall
   - answer_relevancy
 
-models:
-  # Generator model for RAG answer generation
-  generator:
-    model: gpt-4o-mini
-    provider: openai
-
-  # Optional: Bedrock configuration
-  # bedrock:
-  #   region: us-east-1
+# ============================================================================
+# DEAD CONFIG — NOT READ. Environment variables are the source of truth.
+# ============================================================================
+# This `models:` block is retained only as a required-section placeholder; it
+# is NOT read by the generator. The RAG generator provider/model is configured
+# via the CRUCIBLE_* environment variables (see .env.example):
+#   CRUCIBLE_GENERATOR_PROVIDER  (bedrock | openai; default bedrock)
+#   CRUCIBLE_GENERATOR_MODEL     (e.g. au.anthropic.claude-sonnet-4-6)
+# AWS region/credentials come from AWS_REGION / the standard credential chain.
+# Do NOT add authoritative-looking model config here — env wins.
+models: {}

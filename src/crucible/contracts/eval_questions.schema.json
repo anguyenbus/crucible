@@ -148,7 +148,7 @@
         "model": {
           "type": "string",
           "description": "Judge model identifier. Pin a specific version — judge drift between model versions is a real source of eval noise.",
-          "examples": ["claude-opus-4-7", "gpt-4o-2024-11-20"]
+          "examples": ["claude-sonnet-4-5"]
         },
         "prompt_template": {
           "type": "string",
@@ -204,7 +204,7 @@
           "description": "Does every factual claim in the answer trace to text actually present in retrieved_chunks?",
           "evaluator": {
             "kind": "llm_judge",
-            "model": "claude-opus-4-7",
+            "model": "claude-sonnet-4-5",
             "prompt_template": "You are evaluating whether a RAG system's answer is faithful to its retrieved evidence.\n\nQUESTION: {{ query_text }}\n\nANSWER:\n{{ answer_text }}\n\nRETRIEVED CHUNKS:\n{% for c in retrieved_chunks %}--- chunk {{ c.chunk_id }} ---\n{{ c.text }}\n{% endfor %}\n\nSCOPE: {{ scope_guardrail }}\n\nDoes every factual claim in ANSWER appear in RETRIEVED CHUNKS? Reply with reasoning, then on the final line reply only 'Yes' or 'No'.",
             "expected_answer": "Yes",
             "temperature": 0
@@ -221,7 +221,7 @@
           "description": "For each citation in the answer, does the cited chunk actually contain the information used in the claim?",
           "evaluator": {
             "kind": "llm_judge",
-            "model": "claude-opus-4-7",
+            "model": "claude-sonnet-4-5",
             "prompt_template": "You are evaluating whether each citation in a RAG answer correctly points to supporting evidence.\n\nQUESTION: {{ query_text }}\n\nFor each (claim, cited_chunk) pair below, decide whether the cited chunk supports the claim.\n\n{% for cit in answer_citations %}CLAIM: {{ cit.claim_text }}\nCITED CHUNK ({{ cit.chunk_id }}): {{ cit.chunk_text }}\n\n{% endfor %}\n\nSCOPE: {{ scope_guardrail }}\n\nDo ALL citations correctly support their claims? Reply with reasoning, then on the final line reply only 'Yes' or 'No'.",
             "expected_answer": "Yes",
             "temperature": 0
@@ -238,7 +238,7 @@
           "description": "Does the generated answer convey the same factual content as the gold reference answer?",
           "evaluator": {
             "kind": "llm_judge",
-            "model": "claude-opus-4-7",
+            "model": "claude-sonnet-4-5",
             "prompt_template": "You are comparing a RAG answer to a reference answer.\n\nQUESTION: {{ query_text }}\n\nGENERATED ANSWER: {{ answer_text }}\n\nREFERENCE ANSWER: {{ gold_answer_text }}\n\nSCOPE: {{ scope_guardrail }}\n\nDoes the GENERATED answer convey the same factual content as the REFERENCE? Reply with reasoning, then on the final line reply only 'Yes' or 'No'.",
             "expected_answer": "Yes",
             "temperature": 0

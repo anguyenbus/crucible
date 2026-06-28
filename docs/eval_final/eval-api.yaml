@@ -1,0 +1,1038 @@
+openapi: 3.1.0
+
+info:
+  title: Evaluation Service API
+  version: 1.0.0
+  description: |
+    REST control plane for the evaluation service.
+
+    The API never performs evaluation work synchronously: POST /v1/eval/runs
+    validates, persists the run record, hands the work to a worker, and returns
+    202. Callers poll GET /v1/eval/runs/{run_id} for status and results.
+
+    The nightly online-scoring run is NOT created via this API (a Kubernetes
+    CronJob creates it); it appears in run listings with initiated_by=schedule.
+
+    Authentication: JWT Bearer (same issuer/JWKS as the ingestion service).
+    project_id and permissions come from token claims, never the request body.
+    Cross-project reads return 404 (no existence leakage).
+
+    Required scopes per operation are stated in each operation description:
+    eval:read (all GETs), eval:write (submit/cancel runs), eval:admin
+    (register configs/datasets). eval:replay is reserved for the unimplemented
+    RAG replay capability.
+
+servers:
+  - url: https://eval.internal.example.com
+    description: Internal ALB (scheme internal, VPC-only) — placeholder hostname
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: runs
+    description: Submit, poll, list, and cancel evaluation runs
+  - name: configs
+    description: Immutable, versioned evaluation configs
+  - name: datasets
+    description: Immutable, versioned datasets (direct registration or span-window materialization)
+  - name: health
+    description: Kubernetes liveness/readiness probes
+
+paths:
+  /v1/eval/runs:
+    post:
+      operationId: submitEvalRun
+      tags: [runs]
+      summary: Submit an eval run (async)
+      description: |
+        Requires scope eval:write.
+
+        Validates, persists the run record, hands off to a worker, returns 202.
+        If idempotency_key matches an existing run with an identical request
+        hash, returns 200 with the existing run instead of creating a new one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvalRunRequest'
+      responses:
+        '202':
+          description: Run accepted and queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalRun'
+        '200':
+          description: Idempotency-key hit — existing run returned, no new run created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: idempotency_key reused with a different request hash.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '422':
+          description: |
+            Semantically invalid request. Examples: a ground-truth metric
+            (contextual_precision / contextual_recall) requested on a
+            span_window source; a metric not present in the referenced config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    get:
+      operationId: listEvalRuns
+      tags: [runs]
+      summary: List/filter runs
+      description: |
+        Requires scope eval:read.
+
+        Returns abbreviated EvalRun objects, newest first. Trend-line rule for
+        consumers: only group runs with equal repro_key AND comparable=true into
+        a like-for-like trend; span-window runs are a health time series, not
+        paired comparisons.
+      parameters:
+        - name: initiated_by
+          in: query
+          schema:
+            $ref: '#/components/schemas/InitiatedBy'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/RunStatus'
+        - name: target_type
+          in: query
+          schema:
+            $ref: '#/components/schemas/TargetType'
+        - name: dataset_id
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          description: Only runs created at or after this instant (RFC 3339 UTC).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Only runs created before this instant (RFC 3339 UTC).
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of runs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunListPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/eval/runs/{run_id}:
+    get:
+      operationId: getEvalRun
+      tags: [runs]
+      summary: Run status + result summary (poll target)
+      description: |
+        Requires scope eval:read.
+
+        While status=running, result_counts and summary update incrementally.
+        404 is returned both for unknown run_id and for runs belonging to
+        another project.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: The run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalRun'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/eval/runs/{run_id}/results:
+    get:
+      operationId: listRunResults
+      tags: [runs]
+      summary: Per-item results, paginated
+      description: |
+        Requires scope eval:read.
+
+        The verdict=fail filter is the triage entry point of the golden-set
+        growth flywheel. For span-sourced items, input_ref carries Phoenix
+        trace/span IDs for deep-linking into the Phoenix UI.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - name: metric
+          in: query
+          schema:
+            type: string
+        - name: verdict
+          in: query
+          schema:
+            type: string
+            enum: [pass, fail, errored]
+        - name: min_score
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+        - name: max_score
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of per-item results.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultsPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/eval/runs/{run_id}/cancel:
+    post:
+      operationId: cancelEvalRun
+      tags: [runs]
+      summary: Best-effort cancel of a queued/running run
+      description: |
+        Requires scope eval:write.
+
+        Marks the run cancelling; workers check the flag between items.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '202':
+          description: Cancellation requested.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalRun'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Run is already in a terminal state (completed, failed, or cancelled).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/eval/configs:
+    get:
+      operationId: listConfigs
+      tags: [configs]
+      summary: List eval configs
+      description: Requires scope eval:read.
+      parameters:
+        - name: name
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of configs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigListPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: registerConfig
+      tags: [configs]
+      summary: Register a new config version (immutable)
+      description: |
+        Requires scope eval:admin.
+
+        Configs are immutable versions — there is no PUT/PATCH. "Updating"
+        means registering version N+1; runs pin the version they were
+        submitted with.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigRegistrationRequest'
+      responses:
+        '201':
+          description: Config version registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalConfig'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Config spec fails schema validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/eval/configs/{config_id}:
+    get:
+      operationId: getConfig
+      tags: [configs]
+      summary: Fetch a config version
+      description: Requires scope eval:read. Accepts an opaque id or name@version.
+      parameters:
+        - name: config_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalConfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/eval/datasets:
+    get:
+      operationId: listDatasets
+      tags: [datasets]
+      summary: List dataset registrations
+      description: Requires scope eval:read.
+      parameters:
+        - name: name
+          in: query
+          schema:
+            type: string
+        - name: has_ground_truth
+          in: query
+          schema:
+            type: boolean
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of datasets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetListPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: registerDataset
+      tags: [datasets]
+      summary: Register/materialize a dataset version (immutable)
+      description: |
+        Requires scope eval:admin.
+
+        Datasets are immutable versions — no PUT/PATCH. Two source kinds:
+        direct registration of prepared S3 data, or materialization from a
+        Phoenix span window (snapshots matching spans to S3 once, applies PII
+        redaction, writes Parquet with deterministic ordering, records
+        per-file SHA-256 plus a manifest hash; _MANIFEST.json is written last
+        as the completion marker).
+
+        Materialization is asynchronous for large windows; the dataset is
+        usable when its status becomes ready.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DatasetRegistrationRequest'
+      responses:
+        '202':
+          description: Registration/materialization accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dataset'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Source fails validation (e.g. empty span window, unreadable S3 URI).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/eval/datasets/{dataset_id}:
+    get:
+      operationId: getDataset
+      tags: [datasets]
+      summary: Fetch a dataset registration
+      description: Requires scope eval:read. Accepts an opaque id or name@version.
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The dataset.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dataset'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /healthz:
+    get:
+      operationId: healthz
+      tags: [health]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Process is up.
+
+  /readyz:
+    get:
+      operationId: readyz
+      tags: [health]
+      summary: Readiness probe
+      description: Ready when RDS Proxy is reachable (and the run queue, if one is used).
+      security: []
+      responses:
+        '200':
+          description: Ready to serve traffic.
+        '503':
+          description: A dependency is unreachable.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT issued by the shared identity provider (same issuer/JWKS/audience
+        as the ingestion service). Claims: sub, project_id, permissions[], exp.
+        project_id scopes every read and write. The bu_id claim may be present
+        but is not used by this service.
+
+  parameters:
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        description: ULID-based id, prefixed run_.
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque pagination cursor from a previous response. No offset paging.
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
+  responses:
+    BadRequest:
+      description: Malformed request, unknown target.type, missing required fields.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Missing or invalid JWT.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Token lacks the required scope for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Resource not found, or belongs to another project (no existence leakage).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    RateLimited:
+      description: Per-project run-submission rate limit exceeded.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ServerError:
+      description: Persist or dispatch failure (no work handed off if persist failed).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, trace_id]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            trace_id:
+              type: string
+              description: Echoed as the X-Trace-Id response header.
+
+    TargetType:
+      type: string
+      description: |
+        rag_pipeline is reserved in this enum for the unimplemented RAG replay
+        capability (Appendix A of the design doc); submitting it returns 400
+        until implemented. Clients must tolerate unknown enum values.
+      enum: [dataset, model, parse_run, rag_pipeline]
+
+    RunStatus:
+      type: string
+      enum: [queued, running, cancelling, completed, failed, cancelled]
+
+    InitiatedBy:
+      type: string
+      description: schedule = nightly CronJob; api = human/CI via this API.
+      enum: [schedule, api]
+
+    Verdict:
+      type: string
+      enum: [pass, fail]
+
+    EvalRunRequest:
+      type: object
+      required: [target, config_id]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        target:
+          $ref: '#/components/schemas/Target'
+        config_id:
+          type: string
+          description: |
+            Reference to a registered, immutable config (opaque id or
+            name@version). Inline config is not accepted in v1.
+        dataset_id:
+          type: string
+          description: |
+            Opaque id or name@version. Required for dataset targets with an
+            s3_manifest source and for parse_run targets (which always need a
+            ground-truth dataset); forbidden for span_window sources (the
+            window is the input).
+        metrics:
+          type: array
+          description: |
+            Optional; defaults come from the config. Subsetting the config's
+            metrics is allowed, supersetting is not. Known RAG metrics:
+            answer_relevancy, faithfulness, contextual_relevancy,
+            contextual_precision, contextual_recall (the last two require
+            ground truth and are rejected with 422 on span_window sources).
+            Parser metrics are being finalized with the data-scientist team,
+            so this is a free string rather than a closed enum.
+          items:
+            type: string
+        idempotency_key:
+          type: string
+          maxLength: 200
+          description: |
+            If supplied and a run exists with the same key and an identical
+            request hash, the API returns 200 with the existing run. Reuse with
+            a different request hash returns 409.
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+
+    Target:
+      description: |
+        Discriminated union on type. rag_pipeline (RAG replay) is reserved but
+        not implemented and is therefore not an accepted request shape.
+      oneOf:
+        - $ref: '#/components/schemas/DatasetTarget'
+        - $ref: '#/components/schemas/ModelTarget'
+        - $ref: '#/components/schemas/ParseRunTarget'
+      discriminator:
+        propertyName: type
+        mapping:
+          dataset: '#/components/schemas/DatasetTarget'
+          model: '#/components/schemas/ModelTarget'
+          parse_run: '#/components/schemas/ParseRunTarget'
+
+    DatasetTarget:
+      type: object
+      required: [type, source]
+      properties:
+        type:
+          type: string
+          const: dataset
+        source:
+          oneOf:
+            - $ref: '#/components/schemas/S3ManifestSource'
+            - $ref: '#/components/schemas/SpanWindowSource'
+          discriminator:
+            propertyName: kind
+            mapping:
+              s3_manifest: '#/components/schemas/S3ManifestSource'
+              span_window: '#/components/schemas/SpanWindowSource'
+
+    S3ManifestSource:
+      type: object
+      required: [kind, uri]
+      properties:
+        kind:
+          type: string
+          const: s3_manifest
+        uri:
+          type: string
+          description: S3 URI of the dataset's _MANIFEST.json.
+          examples:
+            - s3://eval-data/datasets/ds_legal_rag_bench/v1/_MANIFEST.json
+
+    SpanWindowSource:
+      type: object
+      description: |
+        Production traffic from Phoenix — online lane only. A span window is a
+        query, not a frozen artifact (Phoenix spans are deletable and
+        retention-purged), so span-window runs are one-shot health readings:
+        they carry comparable=false and accept reference-free metrics only.
+        Anything that must be compared across runs is first materialized into
+        an immutable dataset via POST /v1/eval/datasets.
+      required: [kind, project_identifier, from, to]
+      properties:
+        kind:
+          type: string
+          const: span_window
+        project_identifier:
+          type: string
+          description: Phoenix project to query.
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        sample_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 1
+        strata:
+          type: array
+          description: Attributes the sample is stratified across.
+          items:
+            type: string
+
+    ModelTarget:
+      type: object
+      description: |
+        Generator-only eval against a model endpoint. The service resolves the
+        endpoint from model_id; callers never pass raw URLs or credentials.
+      required: [type, model_id]
+      properties:
+        type:
+          type: string
+          const: model
+        model_id:
+          type: string
+          examples:
+            - anthropic.claude-sonnet-4-5-v1:0
+        params:
+          type: object
+          properties:
+            temperature:
+              type: number
+            max_tokens:
+              type: integer
+          additionalProperties: true
+
+    ParseRunTarget:
+      type: object
+      description: |
+        Evaluate the ingestion document parser: the worker pulls each file from
+        the dataset (top-level dataset_id, required), calls the ingestion
+        parser to produce output, then scores it against the dataset's ground
+        truth with deterministic comparison metrics. Always requires a
+        ground-truth dataset; there is no reference-free parser mode. The
+        worker resolves the parser endpoint internally; callers never pass raw
+        URLs or credentials. Single-version scoring only — baseline/candidate
+        comparison is reserved (design doc Appendix A.2).
+      required: [type, parser]
+      properties:
+        type:
+          type: string
+          const: parse_run
+        parser:
+          type: object
+          required: [service, version]
+          properties:
+            service:
+              type: string
+              const: ingestion
+            version:
+              type: string
+              description: Parser build under test.
+              examples:
+                - docling-2.9.1
+
+    EvalRun:
+      type: object
+      required: [run_id, status, initiated_by, target, config_id, repro_key, result_counts, created_at, links]
+      properties:
+        run_id:
+          type: string
+          examples:
+            - run_01JABCDEF0123456789ABCDEF
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/RunStatus'
+        initiated_by:
+          $ref: '#/components/schemas/InitiatedBy'
+        lane:
+          type: string
+          description: Internal execution lane (e.g. judge, deterministic, parse). Informational.
+        target:
+          $ref: '#/components/schemas/Target'
+        config_id:
+          type: string
+        dataset_id:
+          type: [string, 'null']
+        repro_key:
+          type: string
+          description: |
+            Server-computed reproducibility key (config version + dataset hash
+            + judge prompt version + model ids + comparator version + code
+            version). Two runs with equal repro keys scored byte-identical
+            inputs under identical methodology.
+        comparable:
+          type: boolean
+          description: |
+            False for span-window runs (window contents are not stable);
+            consumers must not pair such runs item-by-item against other runs.
+        result_counts:
+          $ref: '#/components/schemas/ResultCounts'
+        summary:
+          oneOf:
+            - $ref: '#/components/schemas/RunSummary'
+            - type: 'null'
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: [string, 'null']
+          format: date-time
+        completed_at:
+          type: [string, 'null']
+          format: date-time
+        links:
+          type: object
+          properties:
+            self:
+              type: string
+            results:
+              type: string
+
+    ResultCounts:
+      type: object
+      required: [total, scored, passed, failed, errored]
+      properties:
+        total:
+          type: integer
+        scored:
+          type: integer
+        passed:
+          type: integer
+        failed:
+          type: integer
+        errored:
+          type: integer
+          description: |
+            Per-item failures (e.g. span_contract_violation, parser timeout).
+            The run still completes; errored items are excluded from scoring.
+
+    RunSummary:
+      type: object
+      required: [metrics, verdict]
+      properties:
+        metrics:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/MetricSummary'
+        verdict:
+          $ref: '#/components/schemas/Verdict'
+          description: |
+            Single gate field, computed by the service so consuming pipelines
+            never reimplement threshold logic.
+
+    MetricSummary:
+      type: object
+      required: [mean, threshold, pass]
+      properties:
+        mean:
+          type: number
+        p25:
+          type: number
+        threshold:
+          type: number
+        pass:
+          type: boolean
+
+    ResultItem:
+      type: object
+      required: [item_id, scores, verdict]
+      properties:
+        item_id:
+          type: string
+        input_ref:
+          type: object
+          description: |
+            Provenance of the evaluated item. For span-sourced items carries
+            Phoenix trace/span IDs for deep-linking; for dataset items carries
+            the dataset item reference; for parse items carries the file key.
+          properties:
+            kind:
+              type: string
+              enum: [span, dataset_item, file]
+            trace_id:
+              type: string
+            span_id:
+              type: string
+            dataset_item_id:
+              type: string
+            file_key:
+              type: string
+          additionalProperties: true
+        scores:
+          type: object
+          additionalProperties:
+            type: number
+        verdict:
+          type: string
+          enum: [pass, fail, errored]
+        error_reason:
+          type: string
+          description: Present when verdict=errored (e.g. span_contract_violation).
+        judge_rationale:
+          type: string
+          description: |
+            LLM judge explanation (RAG lanes only; absent for deterministic
+            parse metrics). Not yet a stable contract — see design doc Open
+            Question 5.
+        artifacts:
+          type: object
+          additionalProperties: true
+
+    ResultsPage:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResultItem'
+        next_cursor:
+          type: [string, 'null']
+        total:
+          type: integer
+
+    RunListPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvalRun'
+        next_cursor:
+          type: [string, 'null']
+
+    ConfigRegistrationRequest:
+      type: object
+      required: [name, kind, spec]
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [judge, deterministic, parse_comparator]
+        spec:
+          type: object
+          description: |
+            Kind-specific spec. For kind=judge: library, judge_model_id,
+            judge_prompt_version, temperature, and a metrics map of
+            {threshold, requires_ground_truth?}. Customized DeepEval prompt
+            templates are versioned in judge_prompt_version so the repro key
+            captures them.
+          additionalProperties: true
+
+    EvalConfig:
+      type: object
+      required: [config_id, name, version, kind, spec, created_at]
+      properties:
+        config_id:
+          type: string
+          examples:
+            - cfg_01JABCDEF0123456789ABCDEF
+        name:
+          type: string
+        version:
+          type: integer
+        kind:
+          type: string
+        spec:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    ConfigListPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvalConfig'
+        next_cursor:
+          type: [string, 'null']
+
+    DatasetRegistrationRequest:
+      type: object
+      required: [name, source]
+      properties:
+        name:
+          type: string
+        source:
+          oneOf:
+            - $ref: '#/components/schemas/S3DirectSource'
+            - $ref: '#/components/schemas/SpanWindowSource'
+          discriminator:
+            propertyName: kind
+            mapping:
+              s3: '#/components/schemas/S3DirectSource'
+              span_window: '#/components/schemas/SpanWindowSource'
+        has_ground_truth:
+          type: boolean
+          default: false
+
+    S3DirectSource:
+      type: object
+      required: [kind, uri]
+      properties:
+        kind:
+          type: string
+          const: s3
+        uri:
+          type: string
+          description: S3 URI of prepared data (e.g. a staging Parquet file).
+          examples:
+            - s3://eval-data/staging/legal-bench.parquet
+
+    Dataset:
+      type: object
+      required: [dataset_id, name, version, status, has_ground_truth, created_at]
+      properties:
+        dataset_id:
+          type: string
+          examples:
+            - ds_01JABCDEF0123456789ABCDEF
+        name:
+          type: string
+        version:
+          type: integer
+        status:
+          type: string
+          description: Materialization state; the dataset is usable when ready.
+          enum: [materializing, ready, failed]
+        s3_prefix:
+          type: string
+        content_hash:
+          type: string
+          description: |
+            Manifest hash over the per-file SHA-256s. Anyone can re-hash the
+            S3 objects to verify two runs scored byte-identical inputs.
+        item_count:
+          type: [integer, 'null']
+        has_ground_truth:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    DatasetListPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Dataset'
+        next_cursor:
+          type: [string, 'null']
