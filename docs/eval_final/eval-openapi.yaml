@@ -1,0 +1,934 @@
+openapi: 3.1.0
+
+info:
+  title: Evaluation Service — Internal API
+  version: 1.0.0
+  description: |
+    East-west (service-to-service) contract for the eval microservice.
+
+    This is the INTERNAL twin of the BFF spec (eval-api.yaml). The BFF
+    (api-wrapper) authenticates the end user, resolves tenant + scopes, shapes
+    responses for the frontend, and owns CORS + user-facing rate limiting. This
+    service trusts that work and exposes the full eval domain to in-mesh callers
+    only. The api-wrapper's eval client codegens against THIS file; in the
+    monorepo target (genai-backend), contract tests gate breaking diffs
+    (scripts/export-openapi.py vs committed contracts/openapi/eval-openapi.json).
+    NOTE: those paths and the FastAPI app that would generate this spec do NOT
+    exist yet — this file is hand-authored ahead of implementation.
+
+    AUTH MODEL — ASSUMPTION, NOT YET RATIFIED. The mTLS + trusted-header model
+    below is a PROPOSAL, pending sign-off. If rejected, this section reverts to
+    JWT Bearer and the X-* context headers are dropped in favour of token claims.
+    * Caller authentication is mutualTLS. A request is served only if the mesh
+      presents a verified peer identity (api-wrapper / nightly job / ops). No
+      verified peer => 401, before any body parsing.
+    * End-user identity is NOT re-derived here. It arrives as trusted context
+      headers (X-Project-Id, X-Principal-Sub, X-Scopes), injected by the BFF
+      AFTER it validated the user's JWT. These headers are trusted ONLY because
+      mTLS proved the caller is an authorized in-mesh service.
+    * project_id is read EXCLUSIVELY from X-Project-Id. It is never read from a
+      request body or query param. This is the tenant-isolation boundary:
+      cross-project reads return 404 (no existence leakage), never 403.
+    * Confused-deputy guard: any path that lets a non-mesh caller set
+      X-Project-Id breaks tenant isolation. NetworkPolicy + mTLS peer
+      allow-listing are load-bearing, not decoration.
+
+    WHAT IS NOT HERE (by design): no worker callback / result-ingest endpoints.
+    The nightly CronJob and run workers persist to RDS directly and write
+    annotations to Phoenix directly; they do not round-trip through this API.
+    Submission stays persist-then-dispatch: validate -> write run record (RDS,
+    one txn) -> hand to worker -> 202. A dispatch failure leaves the run
+    recoverable in 'queued', never lost.
+
+servers:
+  - url: https://eval.eval-system.svc.cluster.local
+    description: In-cluster service DNS (mTLS; not reachable outside the mesh) — placeholder host
+
+security:
+  - mtlsPeer: []
+
+tags:
+  - name: runs
+    description: Submit, poll, list, and cancel evaluation runs
+  - name: configs
+    description: Immutable, versioned evaluation configs
+  - name: datasets
+    description: Immutable, versioned datasets (direct registration or span-window materialization)
+  - name: health
+    description: Kubernetes liveness/readiness probes
+
+paths:
+  /v1/eval/runs:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdHeader'
+      - $ref: '#/components/parameters/PrincipalHeader'
+      - $ref: '#/components/parameters/ScopesHeader'
+      - $ref: '#/components/parameters/TraceparentHeader'
+    post:
+      operationId: submitEvalRun
+      tags: [runs]
+      summary: Submit an eval run (async)
+      description: |
+        Forwarded scope required: eval:write (from X-Scopes).
+
+        Validates, persists the run record, hands off to a worker, returns 202.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvalRunRequest'
+      responses:
+        '202':
+          description: Run accepted and queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalRun'
+        '200':
+          description: Idempotency hit — existing run returned, no new run created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalRun'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Idempotency key reused with a different request hash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: |
+            Semantically invalid. Examples: a ground-truth metric
+            (contextual_precision / contextual_recall) on a span_window source;
+            a metric not present in the referenced config; dataset_id supplied
+            for a span_window source (the window is the input); dataset_id
+            missing for s3_manifest or parse_run.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    get:
+      operationId: listEvalRuns
+      tags: [runs]
+      summary: List/filter runs
+      description: |
+        Forwarded scope required: eval:read.
+
+        Returns abbreviated EvalRun objects, newest first. Trend grouping rule:
+        only group runs with equal repro_key AND comparable=true; span-window
+        runs are a health time series, not paired comparisons. repro_key and
+        comparable are exposed as filters here precisely so the caller can build
+        like-for-like trends without client-side guesswork.
+      parameters:
+        - { name: initiated_by, in: query, schema: { $ref: '#/components/schemas/InitiatedBy' } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/RunStatus' } }
+        - { name: target_type, in: query, schema: { $ref: '#/components/schemas/TargetType' } }
+        - { name: dataset_id, in: query, schema: { type: string } }
+        - { name: repro_key, in: query, schema: { type: string } }
+        - { name: comparable, in: query, schema: { type: boolean } }
+        - name: from
+          in: query
+          description: Runs created at/after this instant (RFC 3339 UTC).
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: Runs created before this instant (RFC 3339 UTC).
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of runs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunListPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/eval/runs/{run_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdHeader'
+      - $ref: '#/components/parameters/PrincipalHeader'
+      - $ref: '#/components/parameters/ScopesHeader'
+      - $ref: '#/components/parameters/TraceparentHeader'
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: getEvalRun
+      tags: [runs]
+      summary: Run status + result summary (poll target)
+      description: |
+        Forwarded scope required: eval:read. While status=running,
+        result_counts/summary/diagnostics update incrementally. 404 for unknown
+        run_id AND for runs in another project (no existence leakage).
+      responses:
+        '200':
+          description: The run.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvalRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/eval/runs/{run_id}/results:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdHeader'
+      - $ref: '#/components/parameters/PrincipalHeader'
+      - $ref: '#/components/parameters/ScopesHeader'
+      - $ref: '#/components/parameters/TraceparentHeader'
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: listRunResults
+      tags: [runs]
+      summary: Per-item results, paginated
+      description: |
+        Forwarded scope required: eval:read. verdict=fail is the triage entry
+        point of the golden-set growth flywheel. For span-sourced items
+        input_ref carries Phoenix trace/span IDs; judge_rationale is returned
+        verbatim here (the BFF decides whether to surface it to the UI).
+      parameters:
+        - { name: metric, in: query, schema: { type: string } }
+        - { name: verdict, in: query, schema: { type: string, enum: [pass, fail, errored] } }
+        - { name: min_score, in: query, schema: { type: number, minimum: 0, maximum: 1 } }
+        - { name: max_score, in: query, schema: { type: number, minimum: 0, maximum: 1 } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of per-item results.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResultsPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/eval/runs/{run_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdHeader'
+      - $ref: '#/components/parameters/PrincipalHeader'
+      - $ref: '#/components/parameters/ScopesHeader'
+      - $ref: '#/components/parameters/TraceparentHeader'
+      - $ref: '#/components/parameters/RunId'
+    post:
+      operationId: cancelEvalRun
+      tags: [runs]
+      summary: Best-effort cancel of a queued/running run
+      description: |
+        Forwarded scope required: eval:write. Marks the run cancelling; workers
+        check the flag between items. Idempotent: cancelling an already-
+        cancelling run returns 202.
+      responses:
+        '202':
+          description: Cancellation requested.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvalRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Run is already terminal (completed, failed, or cancelled).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /v1/eval/configs:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdHeader'
+      - $ref: '#/components/parameters/PrincipalHeader'
+      - $ref: '#/components/parameters/ScopesHeader'
+      - $ref: '#/components/parameters/TraceparentHeader'
+    get:
+      operationId: listConfigs
+      tags: [configs]
+      summary: List eval configs
+      description: 'Forwarded scope required: eval:read.'
+      parameters:
+        - { name: name, in: query, schema: { type: string } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of configs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConfigListPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: registerConfig
+      tags: [configs]
+      summary: Register a new config version (immutable)
+      description: |
+        Forwarded scope required: eval:admin. Configs are immutable versions —
+        no PUT/PATCH. "Updating" means registering version N+1; runs pin the
+        version they were submitted with.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfigRegistrationRequest' }
+      responses:
+        '201':
+          description: Config version registered.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvalConfig' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: Config spec fails schema validation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /v1/eval/configs/{config_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdHeader'
+      - $ref: '#/components/parameters/PrincipalHeader'
+      - $ref: '#/components/parameters/ScopesHeader'
+      - $ref: '#/components/parameters/TraceparentHeader'
+    get:
+      operationId: getConfig
+      tags: [configs]
+      summary: Fetch a config version
+      description: 'Forwarded scope required: eval:read. Accepts an opaque id or name@version.'
+      parameters:
+        - { name: config_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The config.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvalConfig' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/eval/datasets:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdHeader'
+      - $ref: '#/components/parameters/PrincipalHeader'
+      - $ref: '#/components/parameters/ScopesHeader'
+      - $ref: '#/components/parameters/TraceparentHeader'
+    get:
+      operationId: listDatasets
+      tags: [datasets]
+      summary: List dataset registrations
+      description: 'Forwarded scope required: eval:read.'
+      parameters:
+        - { name: name, in: query, schema: { type: string } }
+        - { name: has_ground_truth, in: query, schema: { type: boolean } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of datasets.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DatasetListPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: registerDataset
+      tags: [datasets]
+      summary: Register/materialize a dataset version (immutable)
+      description: |
+        Forwarded scope required: eval:admin. Immutable versions — no PUT/PATCH.
+        Two source kinds: direct registration of prepared S3 data, or
+        materialization from a Phoenix span window (snapshots matching spans to
+        S3 once, applies PII redaction, writes Parquet with deterministic
+        ordering, records per-file SHA-256 + manifest hash; _MANIFEST.json is
+        written last as the completion marker). Materialization is async; the
+        dataset is usable when status=ready.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DatasetRegistrationRequest' }
+      responses:
+        '202':
+          description: Registration/materialization accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: Source fails validation (empty span window, unreadable S3 URI).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /v1/eval/datasets/{dataset_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdHeader'
+      - $ref: '#/components/parameters/PrincipalHeader'
+      - $ref: '#/components/parameters/ScopesHeader'
+      - $ref: '#/components/parameters/TraceparentHeader'
+    get:
+      operationId: getDataset
+      tags: [datasets]
+      summary: Fetch a dataset registration
+      description: 'Forwarded scope required: eval:read. Accepts an opaque id or name@version.'
+      parameters:
+        - { name: dataset_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The dataset.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /healthz:
+    get:
+      operationId: healthz
+      tags: [health]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200': { description: Process is up. }
+
+  /readyz:
+    get:
+      operationId: readyz
+      tags: [health]
+      summary: Readiness probe
+      description: Ready when RDS Proxy is reachable (and the run queue, if one is used).
+      security: []
+      responses:
+        '200': { description: Ready to serve traffic. }
+        '503': { description: A dependency is unreachable. }
+
+components:
+  securitySchemes:
+    mtlsPeer:
+      type: mutualTLS
+      description: |
+        In-mesh mutual TLS. The eval service serves a request only if the mesh
+        presents a verified peer certificate whose identity is on the eval
+        service's allow-list (api-wrapper, nightly job, ops tooling). This is
+        the sole caller-authentication mechanism; the trusted context headers
+        below are honored only on top of a verified peer.
+
+  parameters:
+    ProjectIdHeader:
+      name: X-Project-Id
+      in: header
+      required: true
+      description: |
+        Tenant for this request, resolved by the BFF from the validated user
+        JWT. The ONLY source of project scope — never read from body/query.
+        Trusted solely because mTLS authenticated the caller. Missing/blank => 401.
+      schema: { type: string }
+    PrincipalHeader:
+      name: X-Principal-Sub
+      in: header
+      required: true
+      description: End-user (or service principal) subject, for audit/attribution.
+      schema: { type: string }
+    ScopesHeader:
+      name: X-Scopes
+      in: header
+      required: true
+      description: |
+        Space-delimited effective scopes the BFF derived from the user JWT
+        (e.g. "eval:read eval:write"). Enforced here as defense-in-depth; the
+        BFF is the primary authz point. Missing required scope => 403.
+      schema: { type: string }
+    TraceparentHeader:
+      name: traceparent
+      in: header
+      required: true
+      description: W3C trace context originated by the BFF; propagated to RDS/worker/Phoenix.
+      schema: { type: string }
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Client-supplied idempotency key for safe retries of POSTs. Maps onto the
+        same DynamoDB conditional-claim mechanism the schedule/event paths use.
+        Wins over a body idempotency_key if both are present.
+      schema: { type: string, maxLength: 200 }
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema: { type: string }
+      description: ULID-based id, prefixed run_.
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque pagination cursor from a previous response. No offset paging.
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      description: |
+        Page size. Max 200. Kept identical to the BFF cap so the two contracts agree.
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+
+  responses:
+    BadRequest:
+      description: Malformed request, unknown target.type, bad query/header, missing required fields.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Unauthorized:
+      description: No verified mTLS peer, or missing/blank X-Project-Id.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: Forwarded scopes (X-Scopes) lack the scope required for this operation.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: Resource not found, or belongs to another project (no existence leakage).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    RateLimited:
+      description: |
+        Per-project run-submission rate limit exceeded. Kept on the internal
+        path because the limit protects the shared Bedrock judge quota
+        downstream — it is not a caller-shaping concern the BFF can absorb.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    ServerError:
+      description: Persist or dispatch failure (no work handed off if persist failed).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, trace_id]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            trace_id:
+              type: string
+              description: Echoed as the X-Trace-Id response header; equals the traceparent trace-id.
+
+    TargetType:
+      type: string
+      description: |
+        rag_pipeline is reserved for the unimplemented RAG replay capability;
+        submitting it returns 400 until implemented. Clients must tolerate
+        unknown enum values.
+      enum: [dataset, model, parse_run, rag_pipeline]
+
+    RunStatus:
+      type: string
+      enum: [queued, running, cancelling, completed, failed, cancelled]
+
+    InitiatedBy:
+      type: string
+      description: schedule = nightly CronJob; api = human/CI via the BFF.
+      enum: [schedule, api]
+
+    Verdict:
+      type: string
+      enum: [pass, fail]
+
+    EvalRunRequest:
+      type: object
+      required: [target, config_id]
+      properties:
+        name: { type: string, maxLength: 200 }
+        target: { $ref: '#/components/schemas/Target' }
+        config_id:
+          type: string
+          description: Registered immutable config (opaque id or name@version). Inline config not accepted.
+        dataset_id:
+          type: string
+          description: |
+            Opaque id or name@version. Required for dataset/s3_manifest and for
+            parse_run; forbidden for span_window (the window is the input).
+        metrics:
+          type: array
+          description: |
+            Optional; defaults from the config. Subsetting allowed, supersetting
+            not. RAG metrics: answer_relevancy, faithfulness,
+            contextual_relevancy, contextual_precision, contextual_recall (last
+            two require ground truth; 422 on span_window). Parser metrics are
+            free strings pending the data-scientist team.
+          items: { type: string }
+        idempotency_key:
+          type: string
+          maxLength: 200
+          description: Body-level idempotency for parity; the Idempotency-Key header wins if both present.
+        labels:
+          type: object
+          additionalProperties: { type: string }
+
+    Target:
+      description: Discriminated union on type. rag_pipeline is reserved and rejected (400).
+      oneOf:
+        - $ref: '#/components/schemas/DatasetTarget'
+        - $ref: '#/components/schemas/ModelTarget'
+        - $ref: '#/components/schemas/ParseRunTarget'
+      discriminator:
+        propertyName: type
+        mapping:
+          dataset: '#/components/schemas/DatasetTarget'
+          model: '#/components/schemas/ModelTarget'
+          parse_run: '#/components/schemas/ParseRunTarget'
+
+    DatasetTarget:
+      type: object
+      required: [type, source]
+      properties:
+        type: { type: string, const: dataset }
+        source:
+          oneOf:
+            - $ref: '#/components/schemas/S3ManifestSource'
+            - $ref: '#/components/schemas/SpanWindowSource'
+          discriminator:
+            propertyName: kind
+            mapping:
+              s3_manifest: '#/components/schemas/S3ManifestSource'
+              span_window: '#/components/schemas/SpanWindowSource'
+
+    S3ManifestSource:
+      type: object
+      required: [kind, uri]
+      properties:
+        kind: { type: string, const: s3_manifest }
+        uri:
+          type: string
+          description: S3 URI of the dataset's _MANIFEST.json.
+          examples: [ s3://eval-data/datasets/ds_legal_rag_bench/v1/_MANIFEST.json ]
+
+    SpanWindowSource:
+      type: object
+      description: |
+        Production traffic from Phoenix — online lane only. A span window is a
+        query, not a frozen artifact, so span-window runs are one-shot health
+        readings: comparable=false, reference-free metrics only. To compare
+        across runs, materialize via POST /v1/eval/datasets first.
+      required: [kind, project_identifier, from, to]
+      properties:
+        kind: { type: string, const: span_window }
+        project_identifier: { type: string, description: Phoenix project to query. }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        sample_rate: { type: number, minimum: 0, maximum: 1, default: 1 }
+        strata:
+          type: array
+          description: Attributes the sample is stratified across.
+          items: { type: string }
+
+    ModelTarget:
+      type: object
+      description: Generator-only eval. The service resolves the endpoint from model_id; no raw URLs/creds.
+      required: [type, model_id]
+      properties:
+        type: { type: string, const: model }
+        model_id:
+          type: string
+          examples: [ anthropic.claude-sonnet-4-5-v1:0 ]
+        params:
+          type: object
+          properties:
+            temperature: { type: number }
+            max_tokens: { type: integer }
+          additionalProperties: true
+
+    ParseRunTarget:
+      type: object
+      description: |
+        Evaluate the ingestion document parser: worker pulls each file from the
+        dataset (top-level dataset_id required), calls the ingestion parser,
+        scores output against ground truth with deterministic metrics. Always
+        requires a ground-truth dataset. Worker resolves the parser endpoint
+        internally. Single-version scoring only (baseline/candidate reserved).
+      required: [type, parser]
+      properties:
+        type: { type: string, const: parse_run }
+        parser:
+          type: object
+          required: [service, version]
+          properties:
+            service: { type: string, const: ingestion }
+            version:
+              type: string
+              description: Parser build under test.
+              examples: [ docling-2.9.1 ]
+
+    EvalRun:
+      type: object
+      required: [run_id, status, initiated_by, target, config_id, repro_key, result_counts, created_at, links]
+      properties:
+        run_id:
+          type: string
+          examples: [ run_01JABCDEF0123456789ABCDEF ]
+        name: { type: string }
+        status: { $ref: '#/components/schemas/RunStatus' }
+        initiated_by: { $ref: '#/components/schemas/InitiatedBy' }
+        lane:
+          type: string
+          description: Internal execution lane (judge | deterministic | parse).
+        target: { $ref: '#/components/schemas/Target' }
+        config_id: { type: string }
+        dataset_id: { type: [string, 'null'] }
+        repro_key:
+          type: string
+          description: |
+            Server-computed reproducibility key (config version + dataset hash +
+            judge prompt version + model ids + comparator version + code
+            version). Equal keys => byte-identical inputs under identical method.
+        comparable:
+          type: boolean
+          description: False for span-window runs; do not pair such runs item-by-item.
+        result_counts: { $ref: '#/components/schemas/ResultCounts' }
+        summary:
+          oneOf:
+            - $ref: '#/components/schemas/RunSummary'
+            - type: 'null'
+        diagnostics:
+          oneOf:
+            - $ref: '#/components/schemas/RunDiagnostics'
+            - type: 'null'
+          description: Internal-only operational detail. The BFF strips this before the frontend.
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, 'null'], format: date-time }
+        completed_at: { type: [string, 'null'], format: date-time }
+        links:
+          type: object
+          properties:
+            self: { type: string }
+            results: { type: string }
+
+    RunDiagnostics:
+      type: object
+      description: |
+        Operational provenance NOT exposed on the BFF. Lets ops/cost dashboards
+        and the wrapper's debug surfaces read what actually happened without a
+        second hop into RDS.
+      properties:
+        code_version: { type: string }
+        comparator_version: { type: [string, 'null'] }
+        judge_model_id: { type: [string, 'null'] }
+        dispatch:
+          type: object
+          properties:
+            mode:
+              type: string
+              enum: [k8s_job, queue, cronjob]
+            worker_id: { type: [string, 'null'] }
+            attempts: { type: integer }
+        cost:
+          type: object
+          description: Judge token usage and estimated spend; nulls until scoring runs.
+          properties:
+            judge_input_tokens: { type: [integer, 'null'] }
+            judge_output_tokens: { type: [integer, 'null'] }
+            usd: { type: [number, 'null'] }
+
+    ResultCounts:
+      type: object
+      required: [total, scored, passed, failed, errored]
+      properties:
+        total: { type: integer }
+        scored: { type: integer }
+        passed: { type: integer }
+        failed: { type: integer }
+        errored:
+          type: integer
+          description: |
+            Per-item failures (span_contract_violation, parser timeout). The run
+            still completes; errored items are excluded from scoring.
+
+    RunSummary:
+      type: object
+      required: [metrics, verdict]
+      properties:
+        metrics:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/MetricSummary' }
+        verdict:
+          $ref: '#/components/schemas/Verdict'
+          description: Single gate field, computed server-side; consumers never reimplement thresholds.
+
+    MetricSummary:
+      type: object
+      required: [mean, threshold, pass]
+      properties:
+        mean: { type: number }
+        p25: { type: number }
+        threshold: { type: number }
+        pass: { type: boolean }
+
+    ResultItem:
+      type: object
+      required: [item_id, scores, verdict]
+      properties:
+        item_id: { type: string }
+        input_ref:
+          type: object
+          description: |
+            Provenance. span items carry Phoenix trace/span IDs; dataset items
+            carry the dataset item ref; parse items carry the file key.
+          properties:
+            kind: { type: string, enum: [span, dataset_item, file] }
+            trace_id: { type: string }
+            span_id: { type: string }
+            dataset_item_id: { type: string }
+            file_key: { type: string }
+          additionalProperties: true
+        scores:
+          type: object
+          additionalProperties: { type: number }
+        verdict: { type: string, enum: [pass, fail, errored] }
+        error_reason:
+          type: string
+          description: Present when verdict=errored (e.g. span_contract_violation).
+        judge_rationale:
+          type: string
+          description: |
+            LLM judge explanation (RAG lanes only). Returned verbatim on the
+            internal API; the BFF decides UI exposure (design Open Question 5).
+        artifacts:
+          type: object
+          additionalProperties: true
+
+    ResultsPage:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ResultItem' }
+        next_cursor: { type: [string, 'null'] }
+        total: { type: integer }
+
+    RunListPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/EvalRun' }
+        next_cursor: { type: [string, 'null'] }
+
+    ConfigRegistrationRequest:
+      type: object
+      required: [name, kind, spec]
+      properties:
+        name: { type: string }
+        kind: { type: string, enum: [judge, deterministic, parse_comparator] }
+        spec:
+          type: object
+          description: |
+            Kind-specific. For kind=judge: library, judge_model_id,
+            judge_prompt_version, temperature, and a metrics map of
+            {threshold, requires_ground_truth?}. Customized DeepEval prompt
+            templates are versioned in judge_prompt_version for the repro key.
+          additionalProperties: true
+
+    EvalConfig:
+      type: object
+      required: [config_id, name, version, kind, spec, created_at]
+      properties:
+        config_id:
+          type: string
+          examples: [ cfg_01JABCDEF0123456789ABCDEF ]
+        name: { type: string }
+        version: { type: integer }
+        kind: { type: string }
+        spec:
+          type: object
+          additionalProperties: true
+        created_at: { type: string, format: date-time }
+
+    ConfigListPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/EvalConfig' }
+        next_cursor: { type: [string, 'null'] }
+
+    DatasetRegistrationRequest:
+      type: object
+      required: [name, source]
+      properties:
+        name: { type: string }
+        source:
+          oneOf:
+            - $ref: '#/components/schemas/S3DirectSource'
+            - $ref: '#/components/schemas/SpanWindowSource'
+          discriminator:
+            propertyName: kind
+            mapping:
+              s3: '#/components/schemas/S3DirectSource'
+              span_window: '#/components/schemas/SpanWindowSource'
+        has_ground_truth: { type: boolean, default: false }
+
+    S3DirectSource:
+      type: object
+      required: [kind, uri]
+      properties:
+        kind: { type: string, const: s3 }
+        uri:
+          type: string
+          description: S3 URI of prepared data (e.g. a staging Parquet file).
+          examples: [ s3://eval-data/staging/legal-bench.parquet ]
+
+    Dataset:
+      type: object
+      required: [dataset_id, name, version, status, has_ground_truth, created_at]
+      properties:
+        dataset_id:
+          type: string
+          examples: [ ds_01JABCDEF0123456789ABCDEF ]
+        name: { type: string }
+        version: { type: integer }
+        status:
+          type: string
+          description: Materialization state; usable when ready.
+          enum: [materializing, ready, failed]
+        s3_prefix: { type: string }
+        content_hash:
+          type: string
+          description: Manifest hash over per-file SHA-256s; re-hashable to verify byte-identical inputs.
+        item_count: { type: [integer, 'null'] }
+        has_ground_truth: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    DatasetListPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Dataset' }
+        next_cursor: { type: [string, 'null'] }
