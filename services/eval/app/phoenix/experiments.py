@@ -8,6 +8,7 @@ including dataset management, task execution, and result retrieval.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Final
 
@@ -37,6 +38,7 @@ RanExperiment = PhoenixRanExperiment | dict[str, Any] | None
 
 # Constants
 DEFAULT_EXPERIMENT_NAME: Final[str] = "rag-evaluation"
+
 
 @beartype
 def _build_judge(judge_model: str) -> Any:
@@ -343,7 +345,7 @@ def export_experiment_results(
         try:
             from phoenix.client import Client
 
-            client = Client(base_url="http://localhost:6006")
+            client = Client(base_url=os.environ.get("PHOENIX_ENDPOINT", "http://localhost:6006"))
             dataset = client.datasets.get_dataset(dataset=dataset_id)
             for example in dataset.examples:
                 ex_id = example.get("id", "")

@@ -16,13 +16,23 @@ repos:
       # is the only gate.
       - id: lint-imports
         name: lint-imports
-        entry: uv run --project services/eval lint-imports
+        entry: bash -c 'cd services/eval && uv run lint-imports'
         language: system
         pass_filenames: false
         always_run: true
       - id: pytest
         name: pytest
-        entry: uv run --project services/eval pytest
+        entry: bash -c 'cd services/eval && uv run pytest'
+        language: system
+        pass_filenames: false
+        always_run: true
+      # Complements import-linter: import-linter graphs IMPORTS but cannot see
+      # os.environ/os.getenv attribute access inside app/kernel/. This grep-gate
+      # forbids that (and boto3/phoenix/load_dotenv code use), allowlisting only
+      # the one DeepEval telemetry opt-out line.
+      - id: kernel-grep-gate
+        name: kernel-grep-gate
+        entry: bash scripts/check_kernel_grep_gate.sh
         language: system
         pass_filenames: false
         always_run: true

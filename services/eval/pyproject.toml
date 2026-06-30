@@ -1,5 +1,5 @@
 [build-system]
-requires = ["uv_build>=0.9,<0.10"]
+requires = ["uv_build>=0.9,<0.12"]
 build-backend = "uv_build"
 
 [project]
@@ -56,14 +56,12 @@ demo = [
     "aiohttp",
 ]
 
-# Console scripts resolve to dev.cli.* (local-only). `eval` is the umbrella click
-# group (renamed from the deleted package name); the descriptive
-# script names are kept.
-[project.scripts]
-eval = "dev.cli:main"
-eval-rag = "dev.cli.run_rag_eval:main"
-generate-spans = "dev.cli.generate_spans:main"
-eval-replay = "dev.cli.eval_replay:main"
+# NOTE: intentionally NO [project.scripts]. The dev CLIs (eval, eval-rag,
+# generate-spans, eval-replay) live in the LOCAL-ONLY dev/ package, which is NOT
+# packaged into the app/ wheel (module-name = "app"). Declaring them as
+# console_scripts would bake broken entrypoints (ModuleNotFoundError: No module
+# named 'dev') into every installed wheel. Run them from source instead:
+#   python -m dev.cli.run_rag_eval --rag stub-local --slice gst_pico --config dev/fixtures/eval_config.yaml
 
 [dependency-groups]
 dev = [
