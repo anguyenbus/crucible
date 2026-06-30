@@ -1,12 +1,12 @@
 version: "3.8"
 
 services:
-  crucible:
+  eval:
     build:
       context: .
       target: runtime
-    image: crucible:latest
-    container_name: crucible
+    image: eval:latest
+    container_name: eval
 
     # Volume mounts for I/O
     volumes:
@@ -15,7 +15,7 @@ services:
 
     # Environment variables
     environment:
-      - CRUCIBLE_LOG_LEVEL=${CRUCIBLE_LOG_LEVEL:-INFO}
+      - EVAL_LOG_LEVEL=${EVAL_LOG_LEVEL:-INFO}
 
     # Restart policy (manual control for development)
     restart: "no"

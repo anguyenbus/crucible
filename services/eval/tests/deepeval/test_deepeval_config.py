@@ -14,12 +14,12 @@ from app.deepeval.bedrock_provider import (
     get_deepeval_llm,
 )
 
-# Judge-related CRUCIBLE_* / AWS_* env vars touched by these tests. We clear
+# Judge-related EVAL_* / AWS_* env vars touched by these tests. We clear
 # them per-test so suite ordering cannot leak provider/model/region state.
 _JUDGE_ENV_VARS = (
-    "CRUCIBLE_JUDGE_PROVIDER",
-    "CRUCIBLE_JUDGE_MODEL",
-    "CRUCIBLE_GENERATOR_MODEL",
+    "EVAL_JUDGE_PROVIDER",
+    "EVAL_JUDGE_MODEL",
+    "EVAL_GENERATOR_MODEL",
     "DEEPEVAL_MAX_CONCURRENT",
     "AWS_REGION",
     "AWS_DEFAULT_REGION",
@@ -151,10 +151,10 @@ def test_get_deepeval_config_global_for_gst_and_legal_rag(monkeypatch):
 
 
 def test_get_deepeval_config_env_wins_over_yaml(monkeypatch):
-    """CRUCIBLE_JUDGE_* env overrides win over the YAML judge: block."""
+    """EVAL_JUDGE_* env overrides win over the YAML judge: block."""
     monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
-    monkeypatch.setenv("CRUCIBLE_JUDGE_PROVIDER", "bedrock")
-    monkeypatch.setenv("CRUCIBLE_JUDGE_MODEL", "au.anthropic.claude-sonnet-4-5")
+    monkeypatch.setenv("EVAL_JUDGE_PROVIDER", "bedrock")
+    monkeypatch.setenv("EVAL_JUDGE_MODEL", "au.anthropic.claude-sonnet-4-5")
     config = {
         "judge": {
             "provider": "bedrock",
@@ -184,7 +184,7 @@ def test_get_deepeval_config_defaults_to_bedrock_haiku(monkeypatch):
 def test_get_deepeval_config_cli_overrides_env_and_yaml(monkeypatch):
     """CLI args win over env and YAML (top of the precedence stack). Bedrock-only."""
     monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
-    monkeypatch.setenv("CRUCIBLE_JUDGE_MODEL", "au.anthropic.claude-haiku-4-5-20251001-v1:0")
+    monkeypatch.setenv("EVAL_JUDGE_MODEL", "au.anthropic.claude-haiku-4-5-20251001-v1:0")
     config = {"judge": {"provider": "bedrock", "model": "au.anthropic.claude-haiku-4-5-20251001-v1:0"}}  # noqa: E501
 
     result = get_deepeval_config(

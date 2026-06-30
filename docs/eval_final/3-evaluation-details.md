@@ -12,7 +12,7 @@ eval-rag/
 ├── pyproject.toml                  # requires-python >= 3.13; uv-managed
 ├── uv.lock
 ├── src/
-│   ├── crucible/                   # ── KERNEL (pure, CLI-runnable, no infra imports)
+│   ├── eval/                   # ── KERNEL (pure, CLI-runnable, no infra imports)
 │   │   ├── metrics/                #    DeepEval wiring: faithfulness, answer_relevancy,
 │   │   │                           #    ctx_precision, ctx_recall (pinned evaluation_steps)
 │   │   ├── judge/                  #    JudgeProvider protocol + score normalisation,
@@ -21,7 +21,7 @@ eval-rag/
 │   │   ├── spans/                  #    span parsing/validation against the span schema
 │   │   ├── datasets/               #    eval_questions loading (incl. adversarial flag)
 │   │   └── adapters.py             #    RAGAdapter / JudgeProvider Protocols (interfaces only)
-│   └── eval_service/               # ── SERVICE LAYER (depends on crucible; never the reverse)
+│   └── eval_service/               # ── SERVICE LAYER (depends on eval; never the reverse)
 │       ├── run.py                  #    single entrypoint: --surface adoption|online|replay|calibration
 │       ├── surfaces/               #    one module per surface (thin: select items → process loop)
 │       ├── adapters/
@@ -54,21 +54,21 @@ eval-rag/
 ```ini
 # importlinter.cfg
 [importlinter]
-root_packages = crucible, eval_service
+root_packages = eval, eval_service
 
 [contract:kernel-is-pure]
-name = crucible never imports eval_service or infra SDKs
+name = eval never imports eval_service or infra SDKs
 type = forbidden
-source_modules = crucible
+source_modules = eval
 forbidden_modules = eval_service, boto3, kubernetes, opensearchpy, sqlalchemy
 ```
 
-This is what keeps crucible CLI-runnable on a laptop (stub adapters, no AWS) while the same code judges production runs.
+This is what keeps eval CLI-runnable on a laptop (stub adapters, no AWS) while the same code judges production runs.
 
 ### 1.2 The two kernel interfaces (the seam everything plugs into)
 
 ```python
-# src/crucible/adapters.py — interfaces live in the kernel; implementations in the service layer
+# services/eval/app/adapters.py — interfaces live in the kernel; implementations in the service layer
 from typing import Protocol
 
 class RAGAdapter(Protocol):
@@ -492,7 +492,7 @@ Postgres access is via IAM auth tokens over TLS; no static DB passwords anywhere
 
 | Piece | Status |
 |---|---|
-| crucible kernel: metrics, Bedrock judge call path, replay statistics | exists |
+| eval kernel: metrics, Bedrock judge call path, replay statistics | exists |
 | pinned `evaluation_steps` prompt versions; judge≠generator assertion; self-consistency runner | **net-new** |
 | service layer: surfaces, claims, budget, sampling, reporting, db | **net-new** |
 | `import-linter` seam; `--surface` entrypoint; CPU image | **net-new** (small) |

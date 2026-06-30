@@ -31,8 +31,8 @@ from dev.cli.check import BedrockPreflightError, bedrock_preflight
 _REGION = "ap-southeast-2"
 _BEDROCK_ENV = {
     "AWS_REGION": _REGION,
-    "CRUCIBLE_GENERATOR_PROVIDER": "bedrock",
-    "CRUCIBLE_GENERATOR_MODEL": "au.anthropic.claude-sonnet-4-6",
+    "EVAL_GENERATOR_PROVIDER": "bedrock",
+    "EVAL_GENERATOR_MODEL": "au.anthropic.claude-sonnet-4-6",
 }
 
 
@@ -47,8 +47,8 @@ def test_preflight_rejects_non_bedrock_provider():
     import pytest
 
     env = {
-        "CRUCIBLE_GENERATOR_PROVIDER": "openai",
-        "CRUCIBLE_GENERATOR_MODEL": "gpt-4o-mini",
+        "EVAL_GENERATOR_PROVIDER": "openai",
+        "EVAL_GENERATOR_MODEL": "gpt-4o-mini",
     }
 
     def fail_client(*a, **k):  # pragma: no cover - must not be called
@@ -90,7 +90,7 @@ def test_preflight_cheap_call_requests_single_token():
             with mock.patch.object(real_client, "invoke_model", recording_invoke):
                 bedrock_preflight()
 
-    assert captured["modelId"] == _BEDROCK_ENV["CRUCIBLE_GENERATOR_MODEL"]
+    assert captured["modelId"] == _BEDROCK_ENV["EVAL_GENERATOR_MODEL"]
     assert captured["body"]["max_tokens"] == 1
 
 
@@ -151,8 +151,8 @@ def test_preflight_model_not_in_region_message():
 def test_preflight_region_unset_fails_loud_before_network():
     """Region unset -> ValueError from _resolve_region, before any boto3 call."""
     env = {
-        "CRUCIBLE_GENERATOR_PROVIDER": "bedrock",
-        "CRUCIBLE_GENERATOR_MODEL": "au.anthropic.claude-sonnet-4-6",
+        "EVAL_GENERATOR_PROVIDER": "bedrock",
+        "EVAL_GENERATOR_MODEL": "au.anthropic.claude-sonnet-4-6",
     }
 
     def fail_client(*a, **k):  # pragma: no cover - must not be called

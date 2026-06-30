@@ -1,6 +1,6 @@
 # Replay Testing Guide
 
-This guide shows how to use crucible replay testing to validate candidate services against production baselines.
+This guide shows how to use eval replay testing to validate candidate services against production baselines.
 
 ## Prerequisites
 
@@ -19,13 +19,13 @@ This guide shows how to use crucible replay testing to validate candidate servic
 ### Generate baseline spans
 
 ```bash
-uv run crucible generate-spans --limit 10 --slice nano
+uv run eval generate-spans --limit 10 --slice nano
 ```
 
 ### Evaluate candidate service
 
 ```bash
-uv run crucible eval-replay \
+uv run eval eval-replay \
     --candidate-spec configs/candidates/zvec.yaml \
     --production-baseline default
 ```
@@ -55,7 +55,7 @@ timeout: 30
 To serve a candidate service locally:
 
 ```bash
-uv run crucible serve --config configs/candidates/zvec.yaml --port 8082
+uv run eval serve --config configs/candidates/zvec.yaml --port 8082
 ```
 
 ## Statistical Tests

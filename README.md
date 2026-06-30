@@ -143,9 +143,8 @@ uv run python -m dev.cli check bedrock
 ```
 
 > Optional per-process overrides for the judge/generator provider and model are
-> read from the environment under a legacy `CRUCIBLE_*` prefix (e.g.
-> `CRUCIBLE_JUDGE_MODEL`), read verbatim by `app.config`. These names are a
-> holdover from a former package name and are pending a rename.
+> read from the environment — `EVAL_JUDGE_PROVIDER`, `EVAL_JUDGE_MODEL`,
+> `EVAL_GENERATOR_PROVIDER`, `EVAL_GENERATOR_MODEL` — with precedence env > YAML.
 
 ## Running an Evaluation
 

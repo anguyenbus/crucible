@@ -23,7 +23,7 @@ call AWS.
 
 CONTINGENCY (O4->O5): if this guard ever FAILS because an external/OpenAI
 embedder path reappears on the resolved deepeval version, re-introduce
-CRUCIBLE_JUDGE_EMBEDDER_PROVIDER / _MODEL and wire them to the consuming path
+EVAL_JUDGE_EMBEDDER_PROVIDER / _MODEL and wire them to the consuming path
 before the spec is complete. Re-run this guard on any deepeval version change.
 """
 
@@ -99,7 +99,7 @@ def _boom_openai(*_: object, **__: object):  # pragma: no cover - must never run
     raise AssertionError(
         "An OpenAI client was constructed on a Bedrock judge run. The no-OpenAI "
         "guard FAILED: an external/OpenAI path reappeared. Per the O4->O5 "
-        "contingency, re-introduce CRUCIBLE_JUDGE_EMBEDDER_* and wire them before "
+        "contingency, re-introduce EVAL_JUDGE_EMBEDDER_* and wire them before "
         "the spec is complete."
     )
 

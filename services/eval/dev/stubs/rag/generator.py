@@ -111,7 +111,7 @@ def _is_bedrock_model(model: str) -> bool:
     """
     Check if a model identifier is for AWS Bedrock.
 
-    DEV-ONLY convenience: an explicit CRUCIBLE_GENERATOR_PROVIDER is the
+    DEV-ONLY convenience: an explicit EVAL_GENERATOR_PROVIDER is the
     correctness path. This sniff recognises both bare family prefixes
     (anthropic., amazon., ...) AND geographic inference-profile prefixes
     (us., eu., apac., au., global.) so that profile IDs like
@@ -127,15 +127,15 @@ def _resolve_generator_provider_and_model(
     Resolve the generator (provider, model) from the env-var contract.
 
     Contract (env > explicit-call > default; no YAML wiring at the generator):
-    - CRUCIBLE_GENERATOR_PROVIDER: "bedrock" (the only supported provider).
-    - CRUCIBLE_GENERATOR_MODEL: model ID (inference-profile ID for bedrock).
+    - EVAL_GENERATOR_PROVIDER: "bedrock" (the only supported provider).
+    - EVAL_GENERATOR_MODEL: model ID (inference-profile ID for bedrock).
     - Explicit provider WINS; FAIL LOUD on provider/model disagreement.
     - Fail-loud rename: if the old RAG_GENERATOR_* is set while the matching
-      CRUCIBLE_GENERATOR_* is unset, raise — never silently alias or fall back.
+      EVAL_GENERATOR_* is unset, raise — never silently alias or fall back.
 
     Args:
         model: Explicit model override (e.g. passed to LLMGenerator). When
-            provided it takes precedence over CRUCIBLE_GENERATOR_MODEL.
+            provided it takes precedence over EVAL_GENERATOR_MODEL.
 
     Returns:
         (provider, model) tuple.
@@ -146,31 +146,31 @@ def _resolve_generator_provider_and_model(
     """
     # Fail-loud rename: never silently alias the old var or fall back.
     if os.getenv("RAG_GENERATOR_MODEL") is not None and (
-        os.getenv("CRUCIBLE_GENERATOR_MODEL") is None
+        os.getenv("EVAL_GENERATOR_MODEL") is None
     ):
         raise ValueError(
-            "RAG_GENERATOR_MODEL is renamed to CRUCIBLE_GENERATOR_MODEL; update your config."
+            "RAG_GENERATOR_MODEL is renamed to EVAL_GENERATOR_MODEL; update your config."
         )
 
     # Resolve model: explicit call arg > env > default.
     if model is None:
-        model = os.getenv("CRUCIBLE_GENERATOR_MODEL", DEFAULT_GENERATOR_MODEL)
+        model = os.getenv("EVAL_GENERATOR_MODEL", DEFAULT_GENERATOR_MODEL)
 
     # Resolve provider: explicit env > default. This project is BEDROCK-ONLY,
     # so the only valid provider is "bedrock".
-    explicit_provider = os.getenv("CRUCIBLE_GENERATOR_PROVIDER")
+    explicit_provider = os.getenv("EVAL_GENERATOR_PROVIDER")
     if explicit_provider is not None:
         provider = explicit_provider.strip().lower()
         if provider != "bedrock":
             raise ValueError(
-                f"Unsupported CRUCIBLE_GENERATOR_PROVIDER: {explicit_provider!r}. "
+                f"Unsupported EVAL_GENERATOR_PROVIDER: {explicit_provider!r}. "
                 "This project is Bedrock-only; use 'bedrock'."
             )
 
     # FAIL LOUD if the model id does not look like a Bedrock inference profile.
     if not _is_bedrock_model(model):
         raise ValueError(
-            f"CRUCIBLE_GENERATOR_MODEL={model!r} does not look like a Bedrock "
+            f"EVAL_GENERATOR_MODEL={model!r} does not look like a Bedrock "
             "model/inference-profile ID. This project is Bedrock-only; fix the model ID."
         )
     return "bedrock", model
@@ -222,7 +222,7 @@ class LLMGenerator:
         _deterministic_mode: Whether to use deterministic generation (temp=0).
 
     Example:
-        >>> generator = LLMGenerator()  # Uses CRUCIBLE_GENERATOR_* env vars
+        >>> generator = LLMGenerator()  # Uses EVAL_GENERATOR_* env vars
         >>> answer = generator.generate(
         ...     question="What is this?",
         ...     retrieved_chunks=[...]
@@ -245,7 +245,7 @@ class LLMGenerator:
         Initialize LLM generator.
 
         Args:
-            model: Model identifier. If None, resolves from the CRUCIBLE_GENERATOR_*
+            model: Model identifier. If None, resolves from the EVAL_GENERATOR_*
                 env-var contract (defaulting to Bedrock + au.anthropic.claude-sonnet-4-6).
                 Bedrock models start with a geographic profile prefix (au., us., ...)
                 or a family prefix (anthropic., amazon., ...).

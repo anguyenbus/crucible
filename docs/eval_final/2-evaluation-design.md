@@ -1,6 +1,6 @@
 # Evaluation Service — Design v0.2: `genai-backend` Monorepo
 
-The evaluation service is `genai-backend/services/eval/` — a sibling of ingestion, the orchestrator, and api-wrapper, sharing the repo's `libs/`, `contracts/`, and GitLab CI. The judge stack is **DeepEval on Bedrock**; experiment tracking is **Phoenix** (MLflow optional as a summary mirror). All crucible code is reused inside this service; doc-bench remains the one external evaluation component.
+The evaluation service is `genai-backend/services/eval/` — a sibling of ingestion, the orchestrator, and api-wrapper, sharing the repo's `libs/`, `contracts/`, and GitLab CI. The judge stack is **DeepEval on Bedrock**; experiment tracking is **Phoenix** (MLflow optional as a summary mirror). All eval code is reused inside this service; doc-bench remains the one external evaluation component.
 
 ---
 
@@ -18,7 +18,7 @@ genai-backend/
           golden_set.py             #   golden-dataset scoring (s3_manifest source; + ctx precision/recall)
           parse_run.py              #   parser eval: calls the ingestion parser, scores via the comparator (doc-bench)
           replay.py                 #   RESERVED — `rag_pipeline` + parser comparison (spec Appendix A)
-        kernel/                     # absorbed crucible code — pure, no infra imports (§3)
+        kernel/                     # absorbed eval code — pure, no infra imports (§3)
           rag_metrics/              #   faithfulness, answer relevancy, ctx precision/recall orchestration
           replay_stats/             #   paired Wilcoxon, Cliff's Delta, MDE
           spans/                    #   span parsing/handling primitives
@@ -44,7 +44,7 @@ genai-backend/
 What deliberately does **not** appear, and why that's consistent with the siblings:
 
 - **No `workers/` (no SQS consumer).** Ingestion has `workers/` because it has a queue. Eval, per the architecture decision trail (§3 note), has no queue: the S3 span store is the durable buffer, and every surface is a bounded K8s Job/CronJob launched by GitLab or the cluster clock. The monorepo changes where the code lives, not the execution model.
-- **`kernel/` is a hard internal boundary, not a folder name.** It is the absorbed crucible code and must stay pure: no imports from `runners/`, `state/`, `clients/`, `api/`, or anything AWS-touching — enforced by an import linter in CI (§3). Everything else in the service may import the kernel; the kernel imports nothing back.
+- **`kernel/` is a hard internal boundary, not a folder name.** It is the absorbed eval code and must stay pure: no imports from `runners/`, `state/`, `clients/`, `api/`, or anything AWS-touching — enforced by an import linter in CI (§3). Everything else in the service may import the kernel; the kernel imports nothing back.
 - **No index-building pipeline.** Eval measures; ingestion owns the testing index (invariant 5). One amendment from the API spec: `parse_run` does **call the ingestion parser at runtime** (spec §8.5) — eval still builds nothing, but this is a live cross-service dependency with per-file error isolation and a bounded concurrency limit (see §4).
 
 **Judge stack — DeepEval on Bedrock (settled).** The kernel orchestrates DeepEval metrics with the reliability techniques the architecture doc commits to: pinned G-Eval steps, decomposed QAG verdicts, temperature-0 judging, and the verdict cache keyed by `repro_key` (which includes the pinned `prompt_template_version` and dated judge model id).
@@ -78,13 +78,13 @@ With both teams in one repo, a schema change plus both consumers' updates land i
 
 ---
 
-## 3. Kernel boundaries: crucible is absorbed, doc-bench stays external
+## 3. Kernel boundaries: eval is absorbed, doc-bench stays external
 
-**Crucible ceases to exist as a separate repo/package.** All of its code is reused inside `genai-backend` — the kernel (RAG metrics, judge orchestration, replay statistics, span handling, the `RAGAdapter`/`JudgeProvider` interfaces) moves into `services/eval/app/kernel/`, and what would have been its service layer *is* the rest of `services/eval/`. There is no separate wheel, no pin, no separate release cadence. doc-bench is the only evaluation component remaining outside the monorepo:
+**Eval ceases to exist as a separate repo/package.** All of its code is reused inside `genai-backend` — the kernel (RAG metrics, judge orchestration, replay statistics, span handling, the `RAGAdapter`/`JudgeProvider` interfaces) moves into `services/eval/app/kernel/`, and what would have been its service layer *is* the rest of `services/eval/`. There is no separate wheel, no pin, no separate release cadence. doc-bench is the only evaluation component remaining outside the monorepo:
 
 | Component | Location | Rationale |
 |---|---|---|
-| **crucible (all of it)** | **absorbed** into `services/eval/app/kernel/` + the service code around it | One consumer (eval), one team, one repo: a separate package would add a release/pin cycle with no second consumer to justify it. The code is reused as-is; only its packaging identity disappears. Dead weight (the OpenAI default path, chromadb/Zvec demo backends, mandatory torch) is simply not carried across. |
+| **eval (all of it)** | **absorbed** into `services/eval/app/kernel/` + the service code around it | One consumer (eval), one team, one repo: a separate package would add a release/pin cycle with no second consumer to justify it. The code is reused as-is; only its packaging identity disappears. Dead weight (the OpenAI default path, chromadb/Zvec demo backends, mandatory torch) is simply not carried across. |
 | **doc-bench** | **stays external** — pinned wheel + image | Deterministic, model-free, its own cadence, ships baked benchmark datasets, and is used *standalone* (local, pre-commit, fast-CI wheel canary — arch §2a) in contexts that must not require cloning a backend monorepo. Versions pinned in `services/eval/pyproject.toml` and the gate pipeline. |
 
 **What the absorption must not destroy — the kernel/service seam.** The one-way dependency ("kernel stays pure, no infra imports; service depends on kernel, never the reverse") was the load-bearing structure, and it survives as a *package boundary inside the service*: `app/kernel/` imports nothing from `app/runners/`, `app/state/`, `app/clients/`, or `app/api/` — enforced with an import linter as a required CI check. The seam is what keeps the metrics/statistics code unit-testable without AWS and reusable if a second GenAI product ever needs it — at which point the escape hatch is hoisting `app/kernel/` into `libs/`, a mechanical move, not a redesign.
@@ -157,7 +157,7 @@ The promote-by-digest discipline maps onto the monorepo pipeline as follows:
 
 1. **§4 — persistence reconciliation:** one answer for the idempotency claim store — Postgres-on-Phoenix (arch §3a) or DynamoDB (API spec assumption, marked *[verify]*) — and update both documents together.
 2. **§4 — comparator = doc-bench:** confirm the spec's "shared, versioned comparator" (its Open Question 9) is the pinned doc-bench wheel, imported by both the CI check and the `parse_run` worker, with its version in the repro key.
-3. **§3 — kernel boundaries:** ratify crucible absorption into `services/eval/app/kernel/`, confirm the import-linter seam is a required CI check, and confirm the CLI trade-off (kernel runnable only from a monorepo checkout) is acceptable. Ratify doc-bench staying external as a pinned wheel + image, with the counter-position from §3 on the table.
+3. **§3 — kernel boundaries:** ratify eval absorption into `services/eval/app/kernel/`, confirm the import-linter seam is a required CI check, and confirm the CLI trade-off (kernel runnable only from a monorepo checkout) is acceptable. Ratify doc-bench staying external as a pinned wheel + image, with the counter-position from §3 on the table.
 4. **§2 — schema migration:** approve moving `parser_output`/`results_v1` from doc-bench vendoring into `contracts/schemas/` (doc-bench becomes a consumer at a pinned version), adding the span / manifest / `eval_questions` schemas alongside, and publishing the generated `eval-openapi.json` (with the `oasdiff` breaking-change gate) into `contracts/openapi/`.
 5. **§1 — tracking:** Phoenix is the convenience view (annotations write-back, retention-bounded working set per spec §8.3); RDS is the results of record; decide whether an MLflow summary mirror is needed for org dashboards (optional, additive only).
 6. **Open items inherited from the API spec:** execution model Option A vs B on measured volume (spec §11/OQ1); parser invocation contract (spec OQ7) and concurrency/capacity (OQ8); golden-set growth ownership (OQ6); parse metric set + thresholds (OQ10). Plus the reserved comparisons (spec Appendix A) — when implemented, they carry the paired-stats machinery (Wilcoxon, Cliff's delta) and the `eval:replay` scope, and remain off the v1 surface until then.

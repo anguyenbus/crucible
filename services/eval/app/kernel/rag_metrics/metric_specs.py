@@ -86,7 +86,7 @@ def _looks_like_bedrock_model(model: str) -> bool:
 
     Recognises geographic inference-profile prefixes (us./eu./apac./au./global.)
     AND bare family prefixes (anthropic./amazon./...). An explicit
-    CRUCIBLE_JUDGE_PROVIDER is the correctness path; this only powers the
+    EVAL_JUDGE_PROVIDER is the correctness path; this only powers the
     fail-loud provider/model disagreement check.
 
     Args:

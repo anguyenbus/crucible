@@ -11,7 +11,7 @@
 | # | Decision | Where the rationale lives | Re-opens if… |
 |---|---|---|---|
 | D1 | doc-bench stays a separate repo: deterministic, CPU, no model plane; shipped as wheel + image | AD §1–2 | never expected — the deterministic/probabilistic boundary is the design's organising idea |
-| D2 | crucible is repurposed into `eval-rag`: one repo, kernel/service seam, one-way imports enforced by `import-linter` | AD §2 · DD §1.1 | a sub-batch-interval freshness SLO turns online-spans back into a streaming service (narrow, named) |
+| D2 | eval is repurposed into `eval-rag`: one repo, kernel/service seam, one-way imports enforced by `import-linter` | AD §2 · DD §1.1 | a sub-batch-interval freshness SLO turns online-spans back into a streaming service (narrow, named) |
 | D3 | Two-hurdle adoption: parsing benchmark = necessary (registers a candidate), RAG test = sufficient (makes it mergeable); eval measures, never decides | AD §0, §4 · OV §4 | — |
 | D4 | Orchestration = GitLab CI/CD + the cluster clock; **no bespoke control plane** | AD §3, §7 | see P5 (API) and F3 (platform orchestrator) |
 | D5 | Execution = bounded K8s Jobs on the shared EKS platform (Indexed Job for doc-bench, CronJob for nightly); nothing always-on | AD §3b **[decision trail recorded]** | platform/orchestrator answers (F3) *refine* this; none re-open it |

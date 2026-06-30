@@ -2,8 +2,8 @@
 # Phase 0 wheel-content verification (decision 0.0); Phase 5 single-sourced the
 # contracts in-package and added parser_output, so this now asserts 4 schemas.
 #
-# Builds the crucible wheel with the configured build backend (uv_build) and
-# asserts that the 4 in-package schema JSONs under src/crucible/contracts/ are
+# Builds the eval wheel with the configured build backend (uv_build) and
+# asserts that the 4 in-package schema JSONs under services/eval/app/contracts/ are
 # present in the wheel. This guards against uv_build silently dropping the data
 # files that hatchling shipped automatically.
 #
@@ -15,7 +15,7 @@
 # Exits non-zero if uv build fails or if any of the 4 schema paths is missing.
 #
 # Phase 5: run-from-anywhere is now real. The kernel validator resolves schemas
-# via importlib.resources against crucible.contracts (no CWD-relative paths;
+# via importlib.resources against app.contracts (no CWD-relative paths;
 # Finding A closed), and these JSONs ship in the wheel, so an installed wheel can
 # validate without a top-level contracts/ dir.
 set -euo pipefail
@@ -24,10 +24,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 EXPECTED=(
-    "crucible/contracts/eval_questions.schema.json"
-    "crucible/contracts/legal_rag_bench_query_output.schema.json"
-    "crucible/contracts/parser_output.schema.json"
-    "crucible/contracts/rag_query_output.schema.json"
+    "eval/contracts/eval_questions.schema.json"
+    "eval/contracts/legal_rag_bench_query_output.schema.json"
+    "eval/contracts/parser_output.schema.json"
+    "eval/contracts/rag_query_output.schema.json"
 )
 
 echo "[check_wheel_contents] building wheel with uv build..."

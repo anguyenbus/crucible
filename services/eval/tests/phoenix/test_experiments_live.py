@@ -33,9 +33,9 @@ class _GoldContextRag:
     """
 
     def query(self, question: str, corpus_dir: Path) -> dict[str, Any]:
-        context = "Crucible evaluates RAG systems using DeepEval metrics on Bedrock."
+        context = "Eval evaluates RAG systems using DeepEval metrics on Bedrock."
         return {
-            "answer": {"text": "Crucible evaluates RAG systems with DeepEval on Bedrock."},
+            "answer": {"text": "Eval evaluates RAG systems with DeepEval on Bedrock."},
             "retrieved_chunks": [{"text": context, "doc_id": "ctx-1"}],
         }
 
@@ -59,7 +59,7 @@ def test_live_flow_b_experiment_writes_artifacts(tmp_path, monkeypatch):
         except Exception:
             return client.datasets.create_dataset(
                 name=name,
-                inputs=[{"input": "What does Crucible evaluate?"}],
+                inputs=[{"input": "What does Eval evaluate?"}],
                 outputs=[{"expected": "RAG systems via DeepEval metrics on Bedrock."}],
                 metadata=[{"query_id": "live-1", "relevant_passage_id": "ctx-1"}],
                 input_keys=["input"],
@@ -70,7 +70,7 @@ def test_live_flow_b_experiment_writes_artifacts(tmp_path, monkeypatch):
     monkeypatch.setattr(experiments_mod, "create_phoenix_dataset", _create_one_row_dataset)
 
     judge_model = os.environ.get(
-        "CRUCIBLE_JUDGE_MODEL", "au.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        "EVAL_JUDGE_MODEL", "au.anthropic.claude-sonnet-4-5-20250929-v1:0"
     )
 
     experiment = run_phoenix_experiment(

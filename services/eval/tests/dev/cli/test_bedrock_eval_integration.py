@@ -9,7 +9,7 @@ Gaps covered:
    the adapter, and the runner's verdict computation + CSV row writing turn that
    None into an explicit "ERROR" row (NEVER a misleading PASS/0.0), while CSV
    output tolerates None cells.
-2. Provider switch to openai via env: CRUCIBLE_JUDGE_PROVIDER=openai flips the
+2. Provider switch to openai via env: EVAL_JUDGE_PROVIDER=openai flips the
    resolved judge config end-to-end through get_deepeval_config.
 3. Region-unset fail-loud at the runner level: main() runs the bedrock preflight
    on a bedrock-provider run and exits(1) loudly when AWS_REGION is unset, before
@@ -221,14 +221,14 @@ def test_csv_writer_tolerates_none_score_cell():
 
 
 def test_provider_openai_is_rejected_bedrock_only(monkeypatch):
-    """CRUCIBLE_JUDGE_PROVIDER=openai is rejected: this project is Bedrock-only."""
+    """EVAL_JUDGE_PROVIDER=openai is rejected: this project is Bedrock-only."""
     import pytest
 
     from app.deepeval.bedrock_provider import get_deepeval_config
 
     monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
-    monkeypatch.setenv("CRUCIBLE_JUDGE_PROVIDER", "openai")
-    monkeypatch.setenv("CRUCIBLE_JUDGE_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("EVAL_JUDGE_PROVIDER", "openai")
+    monkeypatch.setenv("EVAL_JUDGE_MODEL", "gpt-4o-mini")
 
     config = {"judge": {"provider": "bedrock", "model": "au.anthropic.claude-haiku-4-5-20251001-v1:0"}}  # noqa: E501
     with pytest.raises(ValueError, match="Bedrock-only"):
@@ -239,8 +239,8 @@ def test_default_bedrock_run_resolves_region_and_au_judge(monkeypatch):
     """Default (no provider env): bedrock judge + au.* model + resolved region."""
     from app.deepeval.bedrock_provider import get_deepeval_config
 
-    monkeypatch.delenv("CRUCIBLE_JUDGE_PROVIDER", raising=False)
-    monkeypatch.delenv("CRUCIBLE_JUDGE_MODEL", raising=False)
+    monkeypatch.delenv("EVAL_JUDGE_PROVIDER", raising=False)
+    monkeypatch.delenv("EVAL_JUDGE_MODEL", raising=False)
     monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
 
     result = get_deepeval_config({})
@@ -261,8 +261,8 @@ def test_runner_main_region_unset_exits_loud(monkeypatch, tmp_path, capsys):
 
     for var in ("AWS_REGION", "AWS_DEFAULT_REGION"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("CRUCIBLE_GENERATOR_PROVIDER", "bedrock")
-    monkeypatch.setenv("CRUCIBLE_GENERATOR_MODEL", "au.anthropic.claude-sonnet-4-6")
+    monkeypatch.setenv("EVAL_GENERATOR_PROVIDER", "bedrock")
+    monkeypatch.setenv("EVAL_GENERATOR_MODEL", "au.anthropic.claude-sonnet-4-6")
 
     # A config that satisfies load_config's required sections (datasets, metrics,
     # models) so the run reaches the bedrock preflight and dies there -- before

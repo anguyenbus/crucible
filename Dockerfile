@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for crucible
+# Multi-stage Dockerfile for eval
 # Minimal image with baked-in datasets (Legal RAG Bench)
 
 # ============================================================================
@@ -32,7 +32,7 @@ RUN mv .venv /opt/venv
 # ============================================================================
 FROM python:3.12-slim AS datasets
 
-WORKDIR /opt/crucible
+WORKDIR /opt/eval
 
 # Copy uv binary from builder
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -41,18 +41,18 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY --from=builder /opt/venv /opt/venv
 
 # Copy source and scripts
-COPY --chown=root:root src /opt/crucible/src
-COPY --chown=root:root scripts /opt/crucible/scripts
+COPY --chown=root:root src /opt/eval/src
+COPY --chown=root:root scripts /opt/eval/scripts
 
 # Download Legal RAG Bench corpus
-WORKDIR /opt/crucible
-ENV PYTHONPATH=/opt/crucible/src
+WORKDIR /opt/eval
+ENV PYTHONPATH=/opt/eval/src
 RUN /opt/venv/bin/python scripts/prepare_legal_rag_bench_corpus.py \
-    --cache-dir /opt/crucible/data/rag/legal_rag_bench \
-    --output-dir /opt/crucible/data/rag/legal_rag_bench
+    --cache-dir /opt/eval/data/rag/legal_rag_bench \
+    --output-dir /opt/eval/data/rag/legal_rag_bench
 
 # Verify datasets
-RUN test -d /opt/crucible/data/rag/legal_rag_bench || \
+RUN test -d /opt/eval/data/rag/legal_rag_bench || \
     (echo "ERROR: Dataset download failed" && exit 1)
 
 # ============================================================================
@@ -63,8 +63,8 @@ FROM python:3.12-slim AS runtime
 # Runtime environment
 ENV PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
-    PYTHONPATH="/opt/crucible/src" \
-    CRUCIBLE_LOG_LEVEL=INFO
+    PYTHONPATH="/opt/eval/src" \
+    EVAL_LOG_LEVEL=INFO
 
 # Install runtime dependencies only (no build tools)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -73,12 +73,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean
 
 # Create non-root user
-RUN groupadd -r crucible && \
-    useradd -r -u 1000 -g crucible -s /bin/bash -d /home/crucible crucible && \
-    mkdir -p /home/crucible
+RUN groupadd -r eval && \
+    useradd -r -u 1000 -g eval -s /bin/bash -d /home/eval eval && \
+    mkdir -p /home/eval
 
 # Create directories
-RUN mkdir -p /opt/crucible /work/results
+RUN mkdir -p /opt/eval /work/results
 
 # Copy venv from builder
 COPY --from=builder /opt/venv /opt/venv
@@ -91,20 +91,20 @@ RUN /opt/venv/bin/python -m sysconfig && \
     done
 
 # Copy baked datasets from datasets stage
-COPY --from=datasets --chown=crucible:crucible /opt/crucible/data /opt/crucible/data
+COPY --from=datasets --chown=eval:eval /opt/eval/data /opt/eval/data
 
 # Copy source code
-COPY --chown=crucible:crucible src /opt/crucible/src
-COPY --chown=crucible:crucible scripts /opt/crucible/scripts
-COPY --chown=crucible:crucible contracts /opt/crucible/contracts
-COPY --chown=crucible:crucible eval_config.yaml /opt/crucible/eval_config.yaml
+COPY --chown=eval:eval src /opt/eval/src
+COPY --chown=eval:eval scripts /opt/eval/scripts
+COPY --chown=eval:eval contracts /opt/eval/contracts
+COPY --chown=eval:eval eval_config.yaml /opt/eval/eval_config.yaml
 
 # Set ownership
-RUN chown -R crucible:crucible /opt/crucible /work
+RUN chown -R eval:eval /opt/eval /work
 
-WORKDIR /opt/crucible
-USER crucible
+WORKDIR /opt/eval
+USER eval
 
 # Default entry point
-ENTRYPOINT ["crucible"]
+ENTRYPOINT ["eval"]
 CMD ["--help"]

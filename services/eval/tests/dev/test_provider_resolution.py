@@ -31,10 +31,10 @@ from app.deepeval.bedrock_provider import (
 
 # Env keys that influence resolution; cleared per test for a clean baseline.
 _RESOLUTION_ENV_KEYS = [
-    "CRUCIBLE_GENERATOR_PROVIDER",
-    "CRUCIBLE_GENERATOR_MODEL",
-    "CRUCIBLE_JUDGE_PROVIDER",
-    "CRUCIBLE_JUDGE_MODEL",
+    "EVAL_GENERATOR_PROVIDER",
+    "EVAL_GENERATOR_MODEL",
+    "EVAL_JUDGE_PROVIDER",
+    "EVAL_JUDGE_MODEL",
     "RAG_GENERATOR_MODEL",
     "AWS_REGION",
     "AWS_DEFAULT_REGION",
@@ -86,8 +86,8 @@ def test_defaults_resolve_to_bedrock_and_o1_model_ids():
 def test_env_beats_yaml_for_judge_provider_model_and_region():
     """env > YAML for provider, model, and region (Bedrock-only)."""
     with _patched_env(
-        CRUCIBLE_JUDGE_PROVIDER="bedrock",
-        CRUCIBLE_JUDGE_MODEL="au.anthropic.claude-sonnet-4-5",
+        EVAL_JUDGE_PROVIDER="bedrock",
+        EVAL_JUDGE_MODEL="au.anthropic.claude-sonnet-4-5",
         AWS_REGION="ap-southeast-2",
     ):
         provider, model = _resolve_judge_provider_and_model(
@@ -103,26 +103,26 @@ def test_env_beats_yaml_for_judge_provider_model_and_region():
 def test_explicit_provider_wins_fails_loud_on_disagreement():
     """provider=bedrock with a non-Bedrock model ID fails loud (no silent pick)."""
     with _patched_env(
-        CRUCIBLE_GENERATOR_PROVIDER="bedrock",
-        CRUCIBLE_GENERATOR_MODEL="not-a-bedrock-model",
+        EVAL_GENERATOR_PROVIDER="bedrock",
+        EVAL_GENERATOR_MODEL="not-a-bedrock-model",
     ):
         with pytest.raises(ValueError, match="does not look like a Bedrock"):
             _resolve_generator_provider_and_model()
 
     with _patched_env(
-        CRUCIBLE_JUDGE_PROVIDER="bedrock",
-        CRUCIBLE_JUDGE_MODEL="not-a-bedrock-model",
+        EVAL_JUDGE_PROVIDER="bedrock",
+        EVAL_JUDGE_MODEL="not-a-bedrock-model",
     ):
         with pytest.raises(ValueError, match="disagrees"):
             _resolve_judge_provider_and_model()
 
 
 def test_old_rag_generator_model_without_eval_raises_rename_error():
-    """RAG_GENERATOR_MODEL set + CRUCIBLE_GENERATOR_MODEL unset raises; never silent."""
+    """RAG_GENERATOR_MODEL set + EVAL_GENERATOR_MODEL unset raises; never silent."""
     with _patched_env(RAG_GENERATOR_MODEL="not-a-bedrock-model"):
         with pytest.raises(
             ValueError,
-            match="RAG_GENERATOR_MODEL is renamed to CRUCIBLE_GENERATOR_MODEL",
+            match="RAG_GENERATOR_MODEL is renamed to EVAL_GENERATOR_MODEL",
         ):
             _resolve_generator_provider_and_model()
 
@@ -139,8 +139,8 @@ def test_region_unset_on_bedrock_run_fails_loud():
 def test_judge_equals_generator_model_is_rejected():
     """HARD INVARIANT: judge model ID must not equal the generator model ID."""
     with _patched_env(
-        CRUCIBLE_GENERATOR_MODEL="au.anthropic.claude-haiku-4-5-20251001-v1:0",
-        CRUCIBLE_JUDGE_MODEL="au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        EVAL_GENERATOR_MODEL="au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        EVAL_JUDGE_MODEL="au.anthropic.claude-haiku-4-5-20251001-v1:0",
     ):
         with pytest.raises(ValueError, match="must not equal the generator model"):
             _resolve_judge_provider_and_model()

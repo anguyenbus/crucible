@@ -69,8 +69,8 @@ def _resolve_judge_provider_and_model(
 
     The judge is the measuring instrument, so these vars are global across all
     datasets. Contract:
-    - CRUCIBLE_JUDGE_PROVIDER: "bedrock" (the only supported provider).
-    - CRUCIBLE_JUDGE_MODEL: model ID (inference-profile ID for bedrock).
+    - EVAL_JUDGE_PROVIDER: "bedrock" (the only supported provider).
+    - EVAL_JUDGE_MODEL: model ID (inference-profile ID for bedrock).
     - Precedence env > YAML > default for both provider and model.
     - Explicit provider WINS; FAIL LOUD on provider/model disagreement.
     - HARD INVARIANT: the resolved judge model ID MUST NOT equal the generator
@@ -89,12 +89,12 @@ def _resolve_judge_provider_and_model(
 
     """
     # Resolve model: env > YAML > default.
-    model = os.getenv("CRUCIBLE_JUDGE_MODEL")
+    model = os.getenv("EVAL_JUDGE_MODEL")
     if model is None:
         model = yaml_model if yaml_model is not None else DEFAULT_JUDGE_MODEL
 
     # Resolve provider: env > YAML > default.
-    env_provider = os.getenv("CRUCIBLE_JUDGE_PROVIDER")
+    env_provider = os.getenv("EVAL_JUDGE_PROVIDER")
     if env_provider is not None:
         provider = env_provider.strip().lower()
     elif yaml_provider is not None:
@@ -118,7 +118,7 @@ def _resolve_judge_provider_and_model(
 
     # HARD INVARIANT: judge model != generator model (no self-grading). The pure
     # check now lives in the kernel (assert_distinct).
-    generator_model = os.getenv("CRUCIBLE_GENERATOR_MODEL", DEFAULT_GENERATOR_MODEL)
+    generator_model = os.getenv("EVAL_GENERATOR_MODEL", DEFAULT_GENERATOR_MODEL)
     assert_distinct(model, generator_model)
 
     return provider, model
@@ -278,7 +278,7 @@ def get_deepeval_config(
           max_concurrent: int    # default 10
 
     Precedence:
-    - provider/model: CLI > env (CRUCIBLE_JUDGE_*) > YAML > default, with the
+    - provider/model: CLI > env (EVAL_JUDGE_*) > YAML > default, with the
       explicit-provider-WINS fail-loud disagreement check and the judge !=
       generator invariant (delegated to _resolve_judge_provider_and_model).
     - enabled/temperature: CLI > YAML > default.
@@ -320,7 +320,7 @@ def get_deepeval_config(
     else:
         enabled = judge_config.get("enabled", True)
 
-    # Resolve provider + judge_model together: CLI > env (CRUCIBLE_JUDGE_*) >
+    # Resolve provider + judge_model together: CLI > env (EVAL_JUDGE_*) >
     # YAML > default. CLI wins outright when supplied; otherwise the shared
     # helper applies env > YAML > default with the explicit-provider-WINS
     # fail-loud disagreement check and the judge != generator invariant.

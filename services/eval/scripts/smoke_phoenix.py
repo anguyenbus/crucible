@@ -16,8 +16,8 @@ generator grounded in the dataset's gold answer as context, so the run exercises
 real generation + the four DeepEval LLM-judge metrics + the Phoenix experiment
 round-trip, with NO `local`/`demo`/ChromaDB code (none migrates).
 
-The judge runs on AWS Bedrock (resolved via env: CRUCIBLE_JUDGE_PROVIDER=bedrock,
-CRUCIBLE_JUDGE_MODEL=<bedrock inference-profile id>).
+The judge runs on AWS Bedrock (resolved via env: EVAL_JUDGE_PROVIDER=bedrock,
+EVAL_JUDGE_MODEL=<bedrock inference-profile id>).
 
 Usage (from services/eval, with its venv + env from the repo .env):
 
@@ -25,8 +25,8 @@ Usage (from services/eval, with its venv + env from the repo .env):
     SLICE=gst_pico \\
     ./.venv/bin/python scripts/smoke_phoenix.py
 
-Requires env: AWS creds + AWS_REGION (Bedrock judge), CRUCIBLE_JUDGE_PROVIDER=bedrock,
-CRUCIBLE_JUDGE_MODEL (a Bedrock inference-profile id), CRUCIBLE_GENERATOR_MODEL,
+Requires env: AWS creds + AWS_REGION (Bedrock judge), EVAL_JUDGE_PROVIDER=bedrock,
+EVAL_JUDGE_MODEL (a Bedrock inference-profile id), EVAL_GENERATOR_MODEL,
 PHOENIX_ENDPOINT (default http://localhost:6006).
 """
 
@@ -53,7 +53,7 @@ def main() -> None:
     endpoint = os.environ.get("PHOENIX_ENDPOINT", "http://localhost:6006")
     experiment_name = os.environ.get("EXPERIMENT_NAME", f"{PHOENIX_PROJECT}-{slice_name}")
 
-    gen_model = os.environ.get("CRUCIBLE_GENERATOR_MODEL", "")
+    gen_model = os.environ.get("EVAL_GENERATOR_MODEL", "")
 
     def query_callable(question: str, corpus: Path, embedder: Any = None) -> dict[str, Any]:
         # A trivial generator grounded in the dataset's gold answer as context.

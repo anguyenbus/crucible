@@ -16,7 +16,7 @@ services:
       - phoenix-data:/tmp/phoenix
     restart: unless-stopped
 
-  crucible:
+  eval:
     environment:
       - PHOENIX_ENDPOINT=http://phoenix:6006
     depends_on:

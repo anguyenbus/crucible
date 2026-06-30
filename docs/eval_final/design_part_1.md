@@ -18,7 +18,7 @@ flowchart TB
         H2["adoption-test run — --lane judge (Job)"]
         RP["replay run — --lane replay (Job)"]
     end
-    subgraph KERNEL["crucible kernel (pure · CLI-runnable · NO infra imports)"]
+    subgraph KERNEL["eval kernel (pure · CLI-runnable · NO infra imports)"]
         MET["RAG metrics · judge orchestration · replay stats"]
         IFACE["adapter interfaces: RAGAdapter · JudgeProvider"]
     end
@@ -36,7 +36,7 @@ flowchart TB
     SVC --> KERNEL
 ```
 
-**The one-way seam is the load-bearing rule:** the service layer imports the kernel; **the kernel imports neither the service layer nor any infra SDK** (`boto3`, `opensearch-py`, `sqlalchemy`). Enforced with an **import-linter** contract in CI. This is what keeps crucible runnable as a plain CLI for local dev while the same functions run inside the service — and what stops infra concerns leaking into the eval logic.
+**The one-way seam is the load-bearing rule:** the service layer imports the kernel; **the kernel imports neither the service layer nor any infra SDK** (`boto3`, `opensearch-py`, `sqlalchemy`). Enforced with an **import-linter** contract in CI. This is what keeps eval runnable as a plain CLI for local dev while the same functions run inside the service — and what stops infra concerns leaking into the eval logic.
 
 doc-bench is **not** a module in this image. It's a separate repo consumed two ways: the **wheel** (the deterministic lane + the wheel canary, §2a of the topology doc) and the **image** (the full-benchmark Indexed Job the **GitLab pipeline** launches). It never imports eval-rag and never touches Bedrock.
 
@@ -52,7 +52,7 @@ class RAGAdapter(Protocol):
     def retrieve(self, query: str, index_ref: IndexRef) -> list[Context]: ...
     def generate(self, query: str, contexts: list[Context]) -> Answer: ...
 ```
-- **Why split:** crucible's current adapter *fuses* retrieve+generate and is `corpus_dir`-based with a hardcoded contracts path — wrong shape for prod. The prod impl queries **OpenSearch k-NN** (same engine/dimension/space-type the index was built with — FAISS+HNSW if Bedrock KB fronts it) and calls the **Bedrock generator** (au. Sonnet profile). The split is mandatory because replay Case A re-runs *generation only* against the **recorded** context — fusing them would silently re-retrieve and confound the test.
+- **Why split:** eval's current adapter *fuses* retrieve+generate and is `corpus_dir`-based with a hardcoded contracts path — wrong shape for prod. The prod impl queries **OpenSearch k-NN** (same engine/dimension/space-type the index was built with — FAISS+HNSW if Bedrock KB fronts it) and calls the **Bedrock generator** (au. Sonnet profile). The split is mandatory because replay Case A re-runs *generation only* against the **recorded** context — fusing them would silently re-retrieve and confound the test.
 - Interface in the kernel; prod implementation in the service layer (it needs prod endpoints + IRSA).
 
 ### `JudgeProvider` — LLM judging on Bedrock

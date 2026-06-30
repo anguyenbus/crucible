@@ -10,7 +10,7 @@ injected RAG (the dev ChromaDB stub, reusing the persisted gst collection). The
 injected RAG does not migrate; this driver is the shell (app never imports
 dev)..
 
-Run from the CRUCIBLE REPO ROOT (so the stub's CWD-relative data/chromadb resolves
+Run from the repo root (so the stub's CWD-relative data/chromadb resolves
 to the ingested collection), service venv + services/eval on PYTHONPATH:
 
     set -a; . .env; set +a

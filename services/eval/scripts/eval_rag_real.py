@@ -10,14 +10,14 @@ under Phoenix's Datasets & Experiments tab.
 
 Flow B (Datasets & Experiments) is now the only Phoenix path: the legacy
 span-tracing path has been retired. The judge runs on AWS Bedrock,
-resolved via env (CRUCIBLE_JUDGE_PROVIDER=bedrock, CRUCIBLE_JUDGE_MODEL=<bedrock
+resolved via env (EVAL_JUDGE_PROVIDER=bedrock, EVAL_JUDGE_MODEL=<bedrock
 inference-profile id>).
 
 The injected RAG (`dev.stubs`) does NOT migrate; it is wired in here
 exactly as a CLI shell would in dev -- the eval service (`app`) never imports
 `dev`. This driver is the shell.
 
-Run from the CRUCIBLE REPO ROOT (so the stub's CWD-relative data/chromadb resolves
+Run from the repo root (so the stub's CWD-relative data/chromadb resolves
 to the ingested collection) with the service venv + services/eval on PYTHONPATH:
 
     set -a; . .env; set +a

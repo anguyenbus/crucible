@@ -1,6 +1,6 @@
-# Migrating Crucible → `genai-backend/services/eval/`
+# Migrating Eval → `genai-backend/services/eval/`
 
-A careful, tested runbook for moving crucible's evaluation engine into the
+A careful, tested runbook for moving eval's evaluation engine into the
 monorepo once `genai-backend` exists. Everything here has been exercised against
 a real local Phoenix and a staged destination (`services/eval/`); the
 gotchas in [§7](#7-gotchas-tested-the-things-that-actually-bite) are the ones that
@@ -17,33 +17,33 @@ actually bit, not hypotheticals.
 - [6. Validating the migrated service](#6-validating-the-migrated-service)
 - [7. Gotchas (tested)](#7-gotchas-tested-the-things-that-actually-bite)
 - [8. Net-new monorepo work](#8-net-new-monorepo-work)
-- [9. Tombstone crucible](#9-tombstone-crucible)
+- [9. Tombstone eval](#9-tombstone-eval)
 - [Appendix A. Driving the migrated service](#appendix-a-driving-the-migrated-service)
 
 ## 0. State of play
 
-The refactor is done and proven. Crucible is split into three strictly-layered
+The refactor is done and proven. Eval is split into three strictly-layered
 packages so the migration is a **directory copy plus a single mechanical import
 rewrite**:
 
-- `crucible.kernel.*` → `app/kernel/*` (pure: no infra, no env, no network)
-- `crucible.service.*` → `app/<child>/*` (the service children **flatten** into `app/`)
-- `crucible.contracts` → `app/contracts` (the JSON-schema package; importlib.resources anchor)
-- `crucible.local.*` — **never migrates** (demo stubs + CLI shells)
+- `app.kernel.*` → `app/kernel/*` (pure: no infra, no env, no network)
+- `app.*` → `app/<child>/*` (the service children **flatten** into `app/`)
+- `app.contracts` → `app/contracts` (the JSON-schema package; importlib.resources anchor)
+- `dev.*` — **never migrates** (demo stubs + CLI shells)
 
 Two artifacts already exist in this repo and prove the migration end-to-end:
 
 - **`scripts/rehearse_migration.sh`** — copies the three buckets into a fresh `app/`,
-  applies the rewrite, asserts zero surviving `crucible.` references, resolves the
+  applies the rewrite, asserts zero surviving `app.` references, resolves the
   destination lockfile, import-smokes every module, and runs the mirrored suite.
 - **`services/eval/`** — the committed migration *scaffold* (`pyproject.toml`, `uv.lock`,
   `app/__init__.py`) plus worked end-to-end driver scripts under `services/eval/scripts/`.
   The rehearsal regenerates `app/` + the mirrored tests into it on demand; those generated
   trees are **gitignored** (reproduced from the current `src/`, never hand-maintained), so
-  there is exactly one source of truth — `src/crucible/`.
+  there is exactly one source of truth — `services/eval/app/`.
 
 The canonical migration method is to **re-run the rehearsal against the real
-monorepo path** (always fresh from crucible's current `src/`). Run it locally with no
+monorepo path** (always fresh from eval's current `src/`). Run it locally with no
 argument to regenerate `services/eval/app` for a preview/smoke.
 
 ## 1. Prerequisites
@@ -51,34 +51,34 @@ argument to regenerate `services/eval/app` for a preview/smoke.
 - `genai-backend` exists and is checked out; you know its `services/*` conventions
   (workspace membership, lockfile model, Python version, CI).
 - Python ≥ 3.12 and `uv` available.
-- On the crucible side, the source branch is merged/clean and **the rehearsal is
+- On the eval side, the source branch is merged/clean and **the rehearsal is
   green**: `bash scripts/rehearse_migration.sh` exits 0.
-- Confirm the monorepo's Python minor matches crucible's `>=3.12` floor (a mismatch
+- Confirm the monorepo's Python minor matches eval's `>=3.12` floor (a mismatch
   is the one thing that can hard-block the copy — see [§7](#7-gotchas-tested-the-things-that-actually-bite)).
 
 ## 2. The migration in six steps
 
-### Step 1 — Land the refactor in crucible
+### Step 1 — Land the refactor in eval
 
 Migrate *from* a reviewed, green source.
 
 ```bash
-# in the crucible checkout
+# in the eval checkout
 bash scripts/rehearse_migration.sh        # must be green
-git push -u origin <refactor-branch>       # PR → review → merge to crucible main
+git push -u origin <refactor-branch>       # PR → review → merge to eval main
 ```
 
 ### Step 2 — Seed the destination in the monorepo
 
 Create the service directory and seed the *scaffold* (not the generated code) from
-crucible's committed `services/eval/` scaffold:
+eval's committed `services/eval/` scaffold:
 
 ```bash
 # in the genai-backend checkout
 mkdir -p services/eval
-cp <crucible>/services/eval/pyproject.toml  services/eval/
-cp <crucible>/services/eval/uv.lock         services/eval/
-mkdir -p services/eval/app && cp <crucible>/services/eval/app/__init__.py services/eval/app/
+cp <eval>/services/eval/pyproject.toml  services/eval/
+cp <eval>/services/eval/uv.lock         services/eval/
+mkdir -p services/eval/app && cp <eval>/services/eval/app/__init__.py services/eval/app/
 ```
 
 Then **adapt `services/eval/pyproject.toml` to monorepo house style** — preserving
@@ -96,22 +96,22 @@ internal libs), make the service a workspace member if that's the convention, th
 
 ### Step 3 — Run the migration
 
-From the **crucible** checkout, point the rehearsal at the real destination:
+From the **eval** checkout, point the rehearsal at the real destination:
 
 ```bash
-# in the crucible checkout
+# in the eval checkout
 bash scripts/rehearse_migration.sh /abs/path/to/genai-backend/services/eval
 ```
 
 This copies `kernel/`, the service children, `service/config.py`, and `contracts/`
 into `services/eval/app/`, copies `tests/kernel` + `tests/service` + `tests/conftest.py`,
-applies the four rewrite rules, **asserts zero surviving `crucible.` references**,
+applies the four rewrite rules, **asserts zero surviving `app.` references**,
 `uv sync --frozen`s, import-smokes every `app.*` module, and runs the suite. Green =
 the copy is correct by construction.
 
 ### Step 4 — Commit the generated code as monorepo source
 
-In crucible's `services/eval/` scaffold the generated `app/` + tests are gitignored
+In eval's `services/eval/` scaffold the generated `app/` + tests are gitignored
 (throwaway, reproduced from `src/`). In the **real destination they are source** — drop
 that ignore and commit them:
 
@@ -136,42 +136,42 @@ migrated service (see [Appendix A](#appendix-a-driving-the-migrated-service)).
 
 ## 3. What migrates, what stays, what is net-new
 
-| Migrates (the rehearsal handles) | Stays in crucible | Net-new in the monorepo |
+| Migrates (the rehearsal handles) | Stays in eval | Net-new in the monorepo |
 |---|---|---|
 | `kernel/` → `app/kernel/` | `local/` (stubs + CLI shells) | `api/` (REST) |
 | `service/*` → `app/*` (flattened) | `tests/local`, the `demo`/`replay` extras | `state/` — `ClaimStore` impl (DynamoDB) |
 | `service/config.py` → `app/config.py` | the `eval-rag`/`eval-replay`/`generate-spans` CLIs | `spans/` — S3 span reader/sampler |
-| `contracts/` → `app/contracts/` | `test_dependency_contract.py` (crucible-root anchored) | `deepeval/token_bucket.py` — `RateLimiter` impl |
+| `contracts/` → `app/contracts/` | `test_dependency_contract.py` (eval-root anchored) | `deepeval/token_bucket.py` — `RateLimiter` impl |
 | `tests/kernel` + `tests/service` + `tests/conftest.py` | the ChromaDB demo RAG | `runners/online_monitor.py`, `parse_run.py` |
 
 The kernel **protocols** — `ClaimStore`, `RateLimiter`, `JudgeProvider` in
 `app/kernel/interfaces.py` — are the seams the net-new infra plugs into, with **zero
 changes to migrated code**. The monorepo drives `app.runners.golden_set.run_golden_set`
 / `run_phoenix_native` / `app.runners.replay.run_replay` from its own `api/`+runner
-layer instead of crucible's `local/cli` shells.
+layer instead of eval's `local/cli` shells.
 
 **The eval service does not own a RAG.** It evaluates a RAG it is *given* — any
 `(question, corpus_dir) -> rag_query_output` callable injected into
-`app.kernel.interfaces.RagAdapter`. The ChromaDB stub stays in crucible; the monorepo
+`app.kernel.interfaces.RagAdapter`. The ChromaDB stub stays in eval; the monorepo
 injects the real RAG service (or reads its spans from the S3 store).
 
 ## 4. The four import-rewrite rules
 
-The rehearsal applies these in order (dotted rules first, so `crucible.kernel` is never
-mangled by the `crucible.service.` flatten):
+The rehearsal applies these in order (dotted rules first, so `app.kernel` is never
+mangled by the `app.` flatten):
 
 ```
-crucible.kernel                  → app.kernel
-crucible.service.                → app.            # children flatten: crucible.service.deepeval → app.deepeval
-crucible.contracts               → app.contracts
-from crucible[.service] import   → from app import
-import crucible                  → import app      # top-level package analog
+app.kernel                  → app.kernel
+app.                → app.            # children flatten: app.deepeval → app.deepeval
+app.contracts               → app.contracts
+from eval[.service] import   → from app import
+import app                  → import app      # top-level package analog
 ```
 
-After the rewrite, **zero dotted `crucible.` references** and **no `import crucible`
-statement** may survive. The proper noun "Crucible" and slash-paths (`crucible/...`) in
+After the rewrite, **zero dotted `app.` references** and **no `import app`
+statement** may survive. The proper noun "Eval" and slash-paths (`eval/...`) in
 prose are fine — the assertion is *dotted*. The only non-rewritable references
-(`crucible.local` in docstrings/messages) were genericized out of migrating code in the
+(`dev` in docstrings/messages) were genericized out of migrating code in the
 refactor, so nothing should leak; if something does, the rehearsal fails loud and you
 have found a real cross-bucket dependency to fix — **do not weaken the assertion.**
 
@@ -186,7 +186,7 @@ have found a real cross-bucket dependency to fix — **do not weaken the asserti
    — no kernel change needed; the `importlib.resources` default is just the self-contained
    convenience.
 2. **pyproject / workspace shape.** Keep the locked bits ([Step 2](#step-2--seed-the-destination-in-the-monorepo)); everything else bends to monorepo convention.
-3. **CI.** Port the gates with `root_package = "app"` (see [§6](#6-validating-the-migrated-service)). Crucible has no CI; this is where the contracts become *enforced* automatically.
+3. **CI.** Port the gates with `root_package = "app"` (see [§6](#6-validating-the-migrated-service)). Eval has no CI; this is where the contracts become *enforced* automatically.
 
 ## 6. Validating the migrated service
 
@@ -219,7 +219,7 @@ Then an **end-to-end eval** against a real RAG, traced to Phoenix — see
 3. **Projects vs. Datasets & Experiments.** `run_golden_set` emits OTLP **span traces →
    Projects** tab. Only `run_phoenix_native` uploads a **dataset + experiment → Datasets &
    Experiments** tab. If "I don't see scores under Experiments", you ran the wrong mode.
-4. **Phoenix project-name / global-tracer collision (demo-only).** Crucible's demo stub
+4. **Phoenix project-name / global-tracer collision (demo-only).** Eval's demo stub
    registers the **global** OpenTelemetry tracer with a hardcoded project name
    (`case-assistant-synthetic`), so when you inject it, *all* spans land under that
    project regardless of the `PhoenixAdapter` project you set. This is a demo-stub
@@ -253,9 +253,9 @@ Built *after* the copy, on the kernel protocols (no migrated-code changes):
 - `deepeval/token_bucket.py` — `RateLimiter` implementation (Redis or in-process).
 - `runners/online_monitor.py`, `parse_run.py` — wire doc-bench's comparator (external pinned wheel).
 
-## 9. Tombstone crucible
+## 9. Tombstone eval
 
-Once `genai-backend/services/eval` is green in CI, archive crucible with a README
+Once `genai-backend/services/eval` is green in CI, archive eval with a README
 pointing at the monorepo service, and freeze the repo (read-only).
 
 ## Appendix A. Driving the migrated service
@@ -284,7 +284,7 @@ def my_rag(question, corpus_dir, embedder=None) -> dict:
     ...  # return a rag_query_output-schema dict (validated by RagAdapter)
 
 adapter = RagAdapter(query_callable=my_rag)
-dc = get_deepeval_config({})  # provider/model from env (CRUCIBLE_JUDGE_*)
+dc = get_deepeval_config({})  # provider/model from env (EVAL_JUDGE_*)
 evaluator = DeepEvalEvaluator(
     metrics=create_deepeval_metrics(
         llm_provider=dc["judge_model_provider"], judge_model=dc["judge_model"],
@@ -298,11 +298,11 @@ result = run_golden_set(
 )
 ```
 
-Run the smoke against a local Phoenix from the crucible checkout:
+Run the smoke against a local Phoenix from the eval checkout:
 
 ```bash
 docker-compose -f docker-compose.yml -f docker-compose.observability.yml up -d
-set -a; . .env; set +a   # AWS creds/region + CRUCIBLE_JUDGE_*/GENERATOR_* + PHOENIX_ENDPOINT
+set -a; . .env; set +a   # AWS creds/region + EVAL_JUDGE_*/GENERATOR_* + PHOENIX_ENDPOINT
 GST_CORPUS_DIR=data/rag/gst_legal_rag SLICE=gst_pico \
   PYTHONPATH=$PWD/src services/eval/.venv/bin/python \
   services/eval/scripts/eval_rag_phoenix_native.py

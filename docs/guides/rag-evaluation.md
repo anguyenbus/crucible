@@ -1,6 +1,6 @@
 # RAG Evaluation Guide
 
-This guide shows how to use crucible to evaluate RAG systems on the Legal RAG Bench dataset.
+This guide shows how to use eval to evaluate RAG systems on the Legal RAG Bench dataset.
 
 ## Prerequisites
 
@@ -26,19 +26,19 @@ This guide shows how to use crucible to evaluate RAG systems on the Legal RAG Be
 ### Evaluate with pico slice (2 queries)
 
 ```bash
-uv run crucible eval-rag --slice pico --rag stub-local
+uv run eval eval-rag --slice pico --rag stub-local
 ```
 
 ### Evaluate with nano slice (10 queries)
 
 ```bash
-uv run crucible eval-rag --slice nano --rag stub-local
+uv run eval eval-rag --slice nano --rag stub-local
 ```
 
 ### Evaluate with full dataset (100 queries)
 
 ```bash
-uv run crucible eval-rag --slice full --rag stub-local
+uv run eval eval-rag --slice full --rag stub-local
 ```
 
 ## Options
@@ -62,7 +62,7 @@ To enable Phoenix tracing:
 2. Run evaluation with Phoenix:
    ```bash
    export PHOENIX_ENDPOINT=http://localhost:6006
-   uv run crucible eval-rag --slice pico --rag stub-local --enable-phoenix
+   uv run eval eval-rag --slice pico --rag stub-local --enable-phoenix
    ```
 
 3. View traces at http://localhost:6006

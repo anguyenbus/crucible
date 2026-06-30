@@ -31,9 +31,9 @@ if not _EVAL_CONFIG_PATH.exists():
 # Env vars that influence judge/region resolution; cleared per-test so suite
 # ordering cannot leak state into these YAML-shape assertions.
 _JUDGE_ENV_VARS = (
-    "CRUCIBLE_JUDGE_PROVIDER",
-    "CRUCIBLE_JUDGE_MODEL",
-    "CRUCIBLE_GENERATOR_MODEL",
+    "EVAL_JUDGE_PROVIDER",
+    "EVAL_JUDGE_MODEL",
+    "EVAL_GENERATOR_MODEL",
     "DEEPEVAL_MAX_CONCURRENT",
     "AWS_REGION",
     "AWS_DEFAULT_REGION",

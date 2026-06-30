@@ -1,8 +1,8 @@
 # Repo-root TOOLING config only — NOT a buildable package.
 #
 # The buildable deliverable is the eval service at services/eval/ (package `app`,
-# built by uv_build; see services/eval/pyproject.toml). After the crucible->app
-# restructure, src/ was removed, so the former root `crucible` package + its
+# built by uv_build; see services/eval/pyproject.toml). After the eval->app
+# restructure, src/ was removed, so the former root `eval` package + its
 # [build-system]/[tool.uv.build-backend] were retired. This file now carries only
 # the repo-wide ruff config so `ruff`/`ruff-format` (the pre-commit hooks that run
 # across the whole tree, including scripts/ and dev/) format consistently.

@@ -1,6 +1,6 @@
 # Developer Guide: Phoenix ↔ DeepEval Integration
 
-**Audience:** developers working on `src/crucible/service/phoenix/` and the `eval-rag` path.
+**Audience:** developers working on `services/eval/app/service/phoenix/` and the `eval-rag` path.
 **Status:** current as of 2026-06-28 (post Flow-A retirement, Bedrock-only).
 **Supersedes:** `docs/phoenix-audit.md` (historical — it still describes the now-deleted Flow A).
 
@@ -100,7 +100,7 @@ populate (faithfulness ignores `expected`; recall/precision use it; etc.).
 
 ```bash
 # Phoenix MUST be running (Flow B uploads a dataset + runs an experiment on the server).
-crucible check phoenix                      # fail-fast preflight
+eval check phoenix                      # fail-fast preflight
 
 PHOENIX_ENDPOINT=http://localhost:6006 AWS_REGION=ap-southeast-2 \
   uv run eval-rag --slice gst_pico --rag stub-local
@@ -143,7 +143,7 @@ metric** — use a stub judge or a mocked `get_deepeval_llm`, or you'll hit the 
 - [ ] `judge == generator` → `assert_distinct` raises. Keep them different.
 - [ ] `.env` silently overriding `eval_config.yaml` for the judge model. Check `.env` first.
 - [ ] `AWS_REGION` unset → loud failure (intentional, no us-east-1 default).
-- [ ] Phoenix server down → `eval-rag` fails (by design). Run `crucible check phoenix` first.
+- [ ] Phoenix server down → `eval-rag` fails (by design). Run `eval check phoenix` first.
 - [ ] Adding a default value to `judge_model` "for convenience" → re-arms the footgun. Don't.
 
 ---

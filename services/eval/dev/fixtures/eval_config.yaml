@@ -9,7 +9,7 @@
 # app.deepeval.bedrock_provider.get_deepeval_config; the former per-dataset
 # `datasets.*.deepeval` judge blocks are no longer read (and have been removed).
 #
-# Precedence is env > YAML: CRUCIBLE_JUDGE_PROVIDER / CRUCIBLE_JUDGE_MODEL
+# Precedence is env > YAML: EVAL_JUDGE_PROVIDER / EVAL_JUDGE_MODEL
 # override the values here. Defaults are Bedrock + the AU-geographic
 # inference-profile judge model so Australian legal/PII data stays in-country.
 # The AWS region is NOT set here — it is resolved natively from
@@ -58,9 +58,9 @@ metrics:
 # ============================================================================
 # This `models:` block is retained only as a required-section placeholder; it
 # is NOT read by the generator. The RAG generator provider/model is configured
-# via the CRUCIBLE_* environment variables (see .env.example):
-#   CRUCIBLE_GENERATOR_PROVIDER  (bedrock; the only supported provider)
-#   CRUCIBLE_GENERATOR_MODEL     (e.g. au.anthropic.claude-sonnet-4-6)
+# via the EVAL_* environment variables (see .env.example):
+#   EVAL_GENERATOR_PROVIDER  (bedrock; the only supported provider)
+#   EVAL_GENERATOR_MODEL     (e.g. au.anthropic.claude-sonnet-4-6)
 # AWS region/credentials come from AWS_REGION / the standard credential chain.
 # Do NOT add authoritative-looking model config here — env wins.
 models: {}

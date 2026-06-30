@@ -1,1 +1,1 @@
-"""Scripts for crucible."""
+"""Scripts for app."""

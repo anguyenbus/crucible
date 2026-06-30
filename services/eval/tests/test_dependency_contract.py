@@ -10,7 +10,7 @@ sentence-transformers, datasets) must NEVER leak into core [project.dependencies
 
 This guards what import-linter cannot: dependency SHAPE (not import graph). A
 loosened deepeval pin would silently reintroduce judge drift; a demo dep in core
-would bloat the app/ wheel. Re-established after the crucible->app restructure
+would bloat the app/ wheel. Re-established after the eval->app restructure
 (reads services/eval/pyproject.toml + uv.lock via tomllib).
 """
 
