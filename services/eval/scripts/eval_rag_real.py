@@ -1,7 +1,7 @@
 """Real RAG eval driven through the MIGRATED app -> Phoenix Datasets & Experiments.
 
 Unlike smoke_phoenix.py (which fabricates context from the gold answer), this
-injects a REAL retrieval+generation RAG -- the crucible ChromaDB stub, reusing the
+injects a REAL retrieval+generation RAG -- the dev ChromaDB stub, reusing the
 already-ingested gst collection -- as the eval service's query callable, and runs
 it through the migrated `app.runners.golden_set.run_phoenix_native`. It proves the
 migrated service evaluates a genuine RAG (real retrieval + generation + the four
@@ -13,12 +13,12 @@ span-tracing path has been retired. The judge runs on AWS Bedrock,
 resolved via env (CRUCIBLE_JUDGE_PROVIDER=bedrock, CRUCIBLE_JUDGE_MODEL=<bedrock
 inference-profile id>).
 
-The injected RAG (`crucible.local.stubs`) does NOT migrate; it is wired in here
-exactly as a CLI shell would in crucible -- the eval service (`app`) never imports
-`local`/`crucible`. This driver is the shell.
+The injected RAG (`dev.stubs`) does NOT migrate; it is wired in here
+exactly as a CLI shell would in dev -- the eval service (`app`) never imports
+`dev`. This driver is the shell.
 
 Run from the CRUCIBLE REPO ROOT (so the stub's CWD-relative data/chromadb resolves
-to the ingested collection) with the service venv + crucible/src on PYTHONPATH:
+to the ingested collection) with the service venv + services/eval on PYTHONPATH:
 
     set -a; . .env; set +a
     GST_CORPUS_DIR=data/rag/gst_legal_rag SLICE=gst_pico \\
@@ -35,8 +35,8 @@ from app.deepeval.bedrock_provider import get_deepeval_config
 from app.kernel.interfaces import RagAdapter
 from app.runners.golden_set import run_phoenix_native
 
-# The injected RAG: crucible's ChromaDB stub (retrieval + generation), reused as-is.
-from crucible.local.stubs.rag.chromadb_query import query as stub_query
+# The injected RAG: the dev ChromaDB stub (retrieval + generation), reused as-is.
+from dev.stubs.rag.chromadb_query import query as stub_query
 
 PHOENIX_PROJECT = "migrated-eval-rag-real"
 

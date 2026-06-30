@@ -1,30 +1,23 @@
-# services/eval is crucible's single migration scaffold AND the on-demand rehearsal
-# target. Only the scaffold is committed -- the generated app/ packages and the
-# mirrored test subset are NOT tracked; they are reproduced from src/crucible by
-# scripts/rehearse_migration.sh. Regenerate locally with:
-#   bash scripts/rehearse_migration.sh
-#
-# Tracked scaffold: pyproject.toml, uv.lock, app/__init__.py, scripts/, this file.
+# services/eval is the single source of truth for the eval service. app/ is the
+# deliverable that migrates 1:1 to genai-backend/services/eval/app/; dev/ is the
+# local-only zone (never migrates). Both are tracked. Only build artifacts and
+# caches are ignored.
 
-# Generated app/ packages (copied from crucible/src, imports rewritten to app.*)
-/app/kernel/
-/app/deepeval/
-/app/phoenix/
-/app/datasets/
-/app/metrics/
-/app/runners/
-/app/config.py
-/app/contracts/
-
-# Copied test subset + the phoenix_integration auto-skip conftest
-/tests/kernel/
-/tests/service/
-/tests/conftest.py
-
-# Resolved venv built by `uv sync --frozen` during the rehearsal
+# Resolved venv built by `uv sync`.
 /.venv/
 
-# Python caches
+# Local-only fixture data (large ChromaDB index + corpora) lives under
+# dev/fixtures/ and is not tracked.
+/dev/fixtures/data/
+
+# Build outputs.
+/dist/
+/build/
+*.egg-info/
+
+# Python + tooling caches.
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
+.import_linter_cache/

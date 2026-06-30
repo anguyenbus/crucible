@@ -3,7 +3,7 @@
 #
 # import-linter graphs IMPORT statements but cannot see attribute access
 # (os.environ) or dynamic reads. This grep-gate is the complementary guard: it
-# forbids forbidden CODE usage anywhere under src/crucible/kernel/ --
+# forbids forbidden CODE usage anywhere under services/eval/app/kernel/ --
 # os.environ access, os.getenv, load_dotenv(), boto3 import/use, and phoenix
 # import/use -- EXCEPT the single allowlisted DeepEval telemetry opt-out line in
 # kernel/rag_metrics/__init__.py.
@@ -19,7 +19,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-KERNEL_DIR="src/crucible/kernel"
+KERNEL_DIR="services/eval/app/kernel"
 # The exact allowlisted line (the one permitted kernel os.environ write).
 ALLOWLIST_REGEX='os\.environ\["DEEPEVAL_TELEMETRY_OPT_OUT"\] = "YES"'
 # Forbidden CODE usage (not prose mentions): attribute/subscript access and

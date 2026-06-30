@@ -1,177 +1,22 @@
-[build-system]
-requires = ["uv_build>=0.9,<0.10"]
-build-backend = "uv_build"
-
-[project]
-name = "crucible"
-version = "0.1.0"
-description = "Evaluation framework for RAG systems and replay testing with Phoenix observability"
-readme = "README.md"
-requires-python = ">=3.12"
-# Phase 5: kernel-grade core. `pip install crucible` (no extras) installs only
-# what the import-pure kernel needs; demo-only deps (chromadb, sentence-
-# transformers, datasets, huggingface-hub, rich, python-dotenv) are
-# quarantined into the `demo` extra. They are imported LAZILY inside functions
-# in service code, so `import crucible.kernel.*` / `import crucible.service.*`
-# resolves with zero extras; only RUNNING those paths needs `demo`.
-dependencies = [
-    "pydantic>=2",
-    "jsonschema>=4",
-    "pyyaml",
-    # EXACT pin: deepeval is the judge "ruler". A bump can shift metric prompts and
-    # reintroduce judge drift, so any future change is a deliberate re-baseline EVENT
-    # (see agent-os/specs/2026-06-02-bedrock-default-provider/runbook.md), never a
-    # routine dependabot merge. Do NOT loosen to >=/~=.
-    "deepeval==4.0.5",
-    # Phase 2: scipy is a kernel dependency. crucible.kernel.replay_stats.comparison
-    # imports scipy.stats.wilcoxon unconditionally (the sign-test ImportError fallback
-    # was deleted), so scipy must resolve with zero extras.
-    "scipy",
-    "polars>=1.41.0",
-    "beartype",
-]
-
-[project.optional-dependencies]
-phoenix = [
-    "arize-phoenix>=4.0.0",
-    "openinference-semantic-conventions>=0.1.0",
-]
-replay = [
-    "fastapi>=0.100.0",
-    "uvicorn>=0.23.0",
-    "click>=8.0.0",
-    "aiohttp",
-]
-bedrock = [
-    "boto3>=1.0.0",
-    # Required by DeepEval's AmazonBedrockModel (the LLM-judge on Bedrock).
-    "aiobotocore>=2.0.0",
-]
-demo = [
-    "chromadb",
-    "sentence-transformers>=5.5.0",
-    "huggingface-hub",
-    "datasets",
-    "rich",
-    "python-dotenv",
-]
-
-[project.scripts]
-crucible = "crucible.local.cli:main"
-eval-rag = "crucible.local.cli.run_rag_eval:main"
-generate-spans = "crucible.local.cli.generate_spans:main"
-eval-replay = "crucible.local.cli.eval_replay:main"
-
-[dependency-groups]
-dev = [
-    "pytest>=8",
-    "pytest-cov>=4",
-    # EXACT pin (Phase 0, decision 0.3): ruff is pinned to one identical exact
-    # version here AND in .pre-commit-config.yaml (rev: v0.15.15) so local and CI
-    # formatting are deterministic. The >=0.8 floor + v0.8.0 pre-commit rev was a
-    # local-vs-CI divergence source. Bump both together as a deliberate change.
-    "ruff==0.15.15",
-    "icontract",
-    "import-linter",
-]
-
-# Phase 0 (decision 0.0): build backend swapped hatchling -> uv_build.
-# hatchling shipped src/crucible/contracts/*.json into the wheel automatically.
-# uv_build packages the module tree (including these data files) into the wheel,
-# but the source-include below makes the 4 in-package schema JSONs an EXPLICIT,
-# non-regressing guarantee for BOTH the wheel and the sdist. Phase 5 single-sourced
-# the contracts here (the top-level contracts/ duplicate was deleted) and added
-# parser_output.schema.json so all 4 canonical schemas ship from src/crucible/
-# contracts/. Verified by scripts/check_wheel_contents.sh (the wheel must contain
-# all 4 JSONs). Run-from-anywhere is now real: the kernel validator anchors on
-# crucible.contracts via importlib.resources (no CWD-relative paths; Finding A closed).
-[tool.uv.build-backend]
-source-include = [
-    "src/crucible/contracts/eval_questions.schema.json",
-    "src/crucible/contracts/legal_rag_bench_query_output.schema.json",
-    "src/crucible/contracts/parser_output.schema.json",
-    "src/crucible/contracts/rag_query_output.schema.json",
-]
+# Repo-root TOOLING config only — NOT a buildable package.
+#
+# The buildable deliverable is the eval service at services/eval/ (package `app`,
+# built by uv_build; see services/eval/pyproject.toml). After the crucible->app
+# restructure, src/ was removed, so the former root `crucible` package + its
+# [build-system]/[tool.uv.build-backend] were retired. This file now carries only
+# the repo-wide ruff config so `ruff`/`ruff-format` (the pre-commit hooks that run
+# across the whole tree, including scripts/ and dev/) format consistently.
+#
+# pytest / lint-imports / kernel-grep-gate are scoped to services/eval via
+# .pre-commit-config.yaml (`uv run --project services/eval ...`).
 
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-# services/eval/ is the migration scaffold (its own pyproject + uv.lock); crucible's
-# tooling must not lint it. Its app/ + copied tests are rehearsal-generated from src/.
-extend-exclude = ["services/eval"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "D"]
 ignore = ["D203", "D212"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["D"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src", "scripts"]
-addopts = "-v --tb=short"
-markers = [
-    "phoenix_integration: live Phoenix write-back tests; require a reachable PHOENIX_ENDPOINT and are skipped by default (run with -m phoenix_integration).",
-]
-
-[tool.coverage.run]
-source = ["src"]
-branch = true
-
-[tool.coverage.report]
-precision = 2
-show_missing = true
-skip_covered = false
-
-
-# import-linter: kernel-pure is REAL in Phase 2.
-#
-# Phase 1 left these contracts VACUOUS-BUT-ARMED: crucible.kernel/crucible.service
-# did not exist so their "crucible.kernel.**" / "crucible.service.**" wildcards
-# matched ZERO modules and passed trivially. Phase 2 creates crucible.kernel, so
-# the kernel-pure contract now matches real modules and ENFORCES purity (confirm
-# via `uv run lint-imports`: kernel-pure reports a non-zero module count, not the
-# vacuous "no source modules"). service-not-local and nothing-imports-local stay
-# armed-but-vacuous (crucible.service does not exist until Phase 3). The repo has
-# no CI, so pre-commit (lint-imports + the kernel grep-gate) is the gate.
-[tool.importlinter]
-root_package = "crucible"
-# Required because kernel-pure forbids EXTERNAL packages (boto3/arize/phoenix/
-# dotenv): import-linter only graphs external modules when this is enabled.
-include_external_packages = true
-
-# Phase 2: crucible.kernel (comparison stats, schema validation, RAG/judge
-# interfaces, DeepEval metric specs + evaluator) must stay import-pure. It may
-# only import stdlib, pydantic, jsonschema, scipy, deepeval, beartype. It must
-# NEVER import the quarantined demo/CLI code (crucible.local), the migrating eval
-# service (crucible.service), nor infra libs (boto3, arize, phoenix, dotenv).
-# import-linter cannot see attribute access (os.environ); the kernel grep-gate
-# pre-commit hook covers the one allowlisted DeepEval telemetry line.
-[[tool.importlinter.contracts]]
-name = "kernel-pure"
-type = "forbidden"
-source_modules = ["crucible.kernel.**"]
-forbidden_modules = [
-    "crucible.local",
-    "crucible.service",
-    "boto3",
-    "arize",
-    "phoenix",
-    "dotenv",
-]
-
-# Phase 3: crucible.service (the migrating eval service) must not depend on the
-# non-migrating crucible.local code.
-[[tool.importlinter.contracts]]
-name = "service-not-local"
-type = "forbidden"
-source_modules = ["crucible.service.**"]
-forbidden_modules = ["crucible.local"]
-
-# Neither future migrating package may reach into crucible.local.
-[[tool.importlinter.contracts]]
-name = "nothing-imports-local"
-type = "forbidden"
-source_modules = ["crucible.kernel.**", "crucible.service.**"]
-forbidden_modules = ["crucible.local"]
+"**/tests/**/*.py" = ["D"]

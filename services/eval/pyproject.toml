@@ -1,17 +1,16 @@
 [build-system]
-requires = ["uv_build>=0.9,<0.10"]
+requires = ["uv_build>=0.9,<0.12"]
 build-backend = "uv_build"
 
 [project]
 name = "eval"
 version = "0.1.0"
-description = "Migration-rehearsal skeleton: the monorepo destination for crucible's kernel + service as the app package."
+description = "Evaluation service: the import-pure kernel + service adapters packaged as the app/ deliverable."
 requires-python = ">=3.12"
-# Derived from crucible's pyproject (Phase 5). Core deps are copied VERBATIM so the
-# skeleton resolves exactly what the import-pure kernel needs; bedrock + phoenix
-# extras are lifted unchanged. demo/replay are deliberately NOT carried: the copied
-# tests/kernel + tests/service subset is hermetic (embedding tests exercise only
-# lazy-init + empty-input short-circuits).
+# Core deps are what the import-pure kernel + the control-plane skin need. The
+# bedrock + phoenix extras are optional. demo/replay deps (chromadb,
+# sentence-transformers, etc.) live in the `demo` extra used only by the
+# sibling dev/ tooling, never by app/.
 dependencies = [
     "pydantic>=2",
     "jsonschema>=4",
@@ -25,6 +24,13 @@ dependencies = [
     "scipy",
     "polars>=1.41.0",
     "beartype",
+    # Control plane (app.main / app.api). fastapi/uvicorn were previously only
+    # transitive via arize-phoenix; declare them explicitly so the API runs
+    # without the phoenix extra. kubernetes is the worker-dispatch client
+    # (app.clients.dispatch, lazy-imported) and was undeclared.
+    "fastapi",
+    "uvicorn",
+    "kubernetes",
 ]
 
 [project.optional-dependencies]
@@ -37,20 +43,41 @@ bedrock = [
     # Required by DeepEval's AmazonBedrockModel (the LLM-judge on Bedrock).
     "aiobotocore>=2.0.0",
 ]
+# Local-only demo/replay deps for the sibling dev/ tooling (ChromaDB stub + the
+# eval-rag CLI). These NEVER ship in the app/ wheel or the Docker image.
+demo = [
+    "chromadb",
+    "sentence-transformers>=5.5.0",
+    "huggingface-hub",
+    "datasets",
+    "rich",
+    "python-dotenv",
+    "click>=8.0.0",
+    "aiohttp",
+]
+
+# NOTE: intentionally NO [project.scripts]. The dev CLIs (eval, eval-rag,
+# generate-spans, eval-replay) live in the LOCAL-ONLY dev/ package, which is NOT
+# packaged into the app/ wheel (module-name = "app"). Declaring them as
+# console_scripts would bake broken entrypoints (ModuleNotFoundError: No module
+# named 'dev') into every installed wheel. Run them from source instead:
+#   python -m dev.cli.run_rag_eval --rag stub-local --slice gst_pico --config dev/fixtures/eval_config.yaml
 
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "import-linter",
 ]
 
 # uv_build packages the module tree into the wheel; source-include makes the 4
-# in-package schema JSONs an EXPLICIT, non-regressing guarantee. After the migration
-# rewrite the kernel validator anchors on app.contracts via importlib.resources, so
-# app/contracts/*.json must ship (re-pointed from src/crucible/contracts/*.json).
+# in-package schema JSONs an EXPLICIT, non-regressing guarantee. The kernel
+# validator anchors on app.contracts via importlib.resources, so
+# app/contracts/*.json must ship.
 [tool.uv.build-backend]
 # The package is `app` at the project ROOT (not the default src/<name> layout):
-# crucible's kernel + service children flatten into app/ on migration, so point
-# uv_build at module `app` with an empty module-root.
+# kernel + service children flatten into app/, so point uv_build at module `app`
+# with an empty module-root. This packages ONLY app/ -- it REQUIRES dev/ to be a
+# SIBLING of app/, never nested under it (otherwise the wheel ships local code).
 module-name = "app"
 module-root = ""
 source-include = ["app/contracts/*.json"]
@@ -62,3 +89,50 @@ addopts = "-v --tb=short"
 markers = [
     "phoenix_integration: live Phoenix write-back tests; require a reachable PHOENIX_ENDPOINT and are skipped by default (run with -m phoenix_integration).",
 ]
+
+# import-linter: three contracts enforce the app/ <-> dev/ split and the
+# kernel-pure / api-not-scoring firewalls. root_package = "app";
+# include_external_packages is REQUIRED because kernel-pure forbids EXTERNAL
+# packages (boto3/arize/phoenix/dotenv) -- import-linter only graphs external
+# modules when this is enabled. Run via `uv run lint-imports`.
+[tool.importlinter]
+root_package = "app"
+include_external_packages = true
+
+# app.kernel must stay import-pure: only stdlib, pydantic, jsonschema, scipy,
+# beartype, and the third-party `deepeval` library (used lazily via
+# `from deepeval.test_case import LLMTestCase`). It must NEVER import the
+# app.deepeval ADAPTER, the other service children, the dev/ zone, or infra libs
+# (boto3, arize, phoenix, dotenv). NOTE: bare third-party `deepeval` is NOT
+# forbidden -- only the app.deepeval adapter is.
+[[tool.importlinter.contracts]]
+name = "kernel-pure"
+type = "forbidden"
+source_modules = ["app.kernel.**"]
+forbidden_modules = [
+    "app.deepeval",
+    "app.phoenix",
+    "app.runners",
+    "app.datasets",
+    "app.metrics",
+    "dev",
+    "boto3",
+    "arize",
+    "phoenix",
+    "dotenv",
+]
+
+# app.* must NEVER import the local-only dev/ zone. (dev.* MAY import app.*.)
+[[tool.importlinter.contracts]]
+name = "app-not-dev"
+type = "forbidden"
+source_modules = ["app.**"]
+forbidden_modules = ["dev"]
+
+# The control plane (app.main / app.api / app.clients) must not pull in the
+# scoring stack -- scoring runs out of band in the worker.
+[[tool.importlinter.contracts]]
+name = "api-not-scoring"
+type = "forbidden"
+source_modules = ["app.main", "app.api.**", "app.clients.**"]
+forbidden_modules = ["app.runners", "app.deepeval", "app.phoenix", "app.metrics"]

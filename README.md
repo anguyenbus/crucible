@@ -3,10 +3,10 @@
 Crucible evaluates RAG (Retrieval-Augmented Generation) systems with DeepEval
 LLM-judge metrics and Arize Phoenix observability, and compares candidate
 deployments against a baseline via production-traffic replay. Its internals are
-shaped as three strictly-layered packages — `kernel` (pure), `service`
-(infra-coupled), `local` (demo/CLI) — so the codebase can migrate into the
-`genai-backend/services/eval/app/` monorepo as a directory copy plus a single
-mechanical import rewrite, a property proven continuously by a rehearsal script.
+developed directly in the monorepo target shape under `services/eval/`: the
+`app/` package migrates 1:1 into `genai-backend/services/eval/app/` as a literal
+`cp -r app/` (zero import rewrites), while the sibling `dev/` package holds the
+local-only ChromaDB stub + `eval-rag` CLI and never migrates.
 
 ## Table of Contents
 
@@ -25,44 +25,51 @@ mechanical import rewrite, a property proven continuously by a rehearsal script.
 
 ## Architecture
 
-The package is split into three layers with a one-way dependency rule. The split
-mirrors the monorepo target one-to-one: `kernel/` → `app/kernel/`, each `service/`
-child → `app/<child>/`, and `local/` never migrates.
+`services/eval/` splits into two siblings: `app/` (the deliverable) and `dev/`
+(local-only). Within `app/`, the import-pure `kernel/` is a real subpackage and the
+service children are flattened (`app/deepeval/`, `app/phoenix/`, ...). `dev/` never
+migrates and never ships in the wheel or Docker image.
 
 ```
-src/crucible/
-├── kernel/              # PURE — copies verbatim to app/kernel/ (no infra, no env, no network)
-│   ├── rag_metrics/     #   DeepEvalEvaluator (metrics injected), sample transform,
-│   │                    #   metric_specs (au.* defaults, assert_distinct), telemetry opt-out
-│   ├── replay_stats/    #   comparison.py — Wilcoxon + Cliff's Delta (scipy mandatory)
-│   ├── validation/      #   schema_validator — importlib.resources default + injectable schema_path
-│   └── interfaces.py    #   RagAdapter + JudgeProvider / RateLimiter / ClaimStore protocols
-├── service/             # INFRA-COUPLED — each child copies to app/<child>/
-│   ├── deepeval/        #   bedrock_provider (env/boto/dotenv/judge resolution), embeddings
-│   ├── phoenix/         #   adapter, experiments, evaluators, replay_client, annotations (§8.2)
-│   ├── datasets/        #   legal_rag_bench + gst_legal_rag loaders, resolve.py (single gst_ dispatch)
+services/eval/
+├── app/                 # MIGRATES 1:1 → genai-backend/services/eval/app/ (cp -r app/)
+│   ├── kernel/          # PURE subpackage (no infra, no env, no network)
+│   │   ├── rag_metrics/ #   DeepEvalEvaluator (metrics injected), sample transform, metric_specs
+│   │   ├── replay_stats/#   comparison.py — Wilcoxon + Cliff's Delta (scipy mandatory)
+│   │   ├── validation/  #   schema_validator — importlib.resources anchored on app.contracts
+│   │   └── interfaces.py#   RagAdapter + JudgeProvider / RateLimiter / ClaimStore protocols
+│   ├── deepeval/        # ADAPTER — bedrock_provider, embeddings (forbidden to the kernel)
+│   ├── phoenix/         #   experiments, evaluators
+│   ├── datasets/        #   legal_rag_bench + gst_legal_rag loaders, resolve.py
 │   ├── metrics/         #   regression_check, csv_writer
-│   ├── runners/         #   run_golden_set / run_phoenix_native / run_replay → RunResult
-│   └── config.py        #   YAML + env config (load_dotenv only behind from_dotenv=True)
-├── local/               # NEVER migrates — quarantined behind the `demo` extra
-│   ├── cli/             #   thin shells: eval-rag / eval-replay / generate-spans / crucible check
-│   └── stubs/           #   demo RAG (ChromaDB + sentence-transformers), Zvec service, span generator
-└── contracts/           # single-sourced JSON schemas (the importlib.resources anchor)
+│   ├── runners/         #   golden_set / replay / http_client → RunResult
+│   ├── config.py        #   YAML + env config (load_dotenv only behind from_dotenv=True) + Settings
+│   ├── contracts/       #   single-sourced JSON schemas (the importlib.resources anchor)
+│   ├── api/ clients/ schemas/ main.py worker.py   # control/data-plane skin
+├── dev/                 # LOCAL-ONLY — never migrates, never packaged, never in image
+│   ├── cli/             #   thin shells: eval-rag / eval-replay / generate-spans / eval check
+│   ├── stubs/           #   demo RAG (ChromaDB + sentence-transformers), Zvec service, span generator
+│   ├── scripts/         #   corpus-prep utilities
+│   └── fixtures/        #   data/chromadb, data/rag corpus, eval_config.yaml
+├── tests/               # app-tests (must NOT import dev) + tests/dev/ (local-only)
+├── pyproject.toml       # name=eval, scripts→dev.cli.*, 3 import-linter contracts
+├── Dockerfile           # Python 3.12; CMD uvicorn app.main:app
+└── .dockerignore        # excludes dev/, tests/, caches
 ```
 
 **The one-way dependency rule (enforced, not aspirational):**
 
-- **`kernel/`** may import only stdlib, `pydantic`, `jsonschema`, `scipy`,
-  `deepeval`, `beartype`. It must **never** import `boto3`, `phoenix`/`arize`,
-  `dotenv`, `crucible.service`, `crucible.local`, nor read/write `os.environ`
-  (except one allowlisted telemetry line).
-- **`service/`** may import `crucible.kernel.*` (absolute) and third-party infra.
-  It must **never** import `crucible.local`.
-- **`local/`** may import anything; nothing in `kernel`/`service` imports it.
+- **`app/kernel/`** may import only stdlib, `pydantic`, `jsonschema`, `scipy`,
+  `deepeval`, `beartype`. It must **never** import the `app.deepeval` adapter, the
+  other service children, `boto3`, `phoenix`/`arize`, `dotenv`, `dev`, nor
+  read/write `os.environ` (except one allowlisted telemetry line).
+- **`app/*`** (the service children + the control-plane skin) may import
+  `app.kernel.*` and third-party infra. It must **never** import `dev`.
+- **`dev/`** may import anything (including `app.*`); nothing in `app/` imports it.
 
-These are enforced by `import-linter` (`kernel-pure`, `service-not-local`,
-`nothing-imports-local`) and a kernel grep-gate pre-commit hook — see
-[Development](#development).
+These are enforced by three `import-linter` contracts in
+`services/eval/pyproject.toml` — `kernel-pure`, `app-not-dev`, `api-not-scoring`
+— see [Development](#development).
 
 ## Installation
 
@@ -241,57 +248,43 @@ Each is backed by a test or a CI gate, not a code-review hope:
   `from_dotenv=True`.
 - **Kernel purity.** `import-linter` + a grep-gate forbid infra imports and
   `os.environ` access under `kernel/`; `tests/kernel/` passes in a zero-extras venv.
-- **Single-source contracts.** The four JSON schemas live in `src/crucible/contracts/`
+- **Single-source contracts.** The four JSON schemas live in `app/contracts/`
   (each with a `schema_version`); the validator resolves them by logical name via
-  `importlib.resources` (run-from-anywhere) or an injectable `schema_path`.
+  `importlib.resources` anchored on `app.contracts` (run-from-anywhere) or an
+  injectable `schema_path`.
 - **Claims/idempotency seam.** Runners accept an optional two-phase `ClaimStore`
   protocol (`claim(repro_key)` → `finalize(repro_key, result_uri)`) so the monorepo's
   idempotency layer plugs in without reshaping the library signatures.
 
 ## Migration Readiness
 
-The migration into `genai-backend/services/eval/app/` is **exactly** a directory
-copy plus these import rewrites — nothing else moves:
+The package `crucible` was renamed to `app` and the repo collapsed onto a single
+`services/eval/` developed in the monorepo target shape. There is **no transform
+left to rehearse**: migrating into `genai-backend/services/eval/app/` is now a
+literal `cp -r app/` with **zero import rewrites**. The earlier
+`scripts/rehearse_migration.sh` (which copy-and-rewrote `src/crucible` into the
+scaffold) has been **retired**, and `src/` is gone.
 
-| Rewrite | Effect |
-|---|---|
-| `crucible.kernel` → `app.kernel` | `kernel/` copies whole to `app/kernel/` |
-| `crucible.service.` → `app.` | service children flatten into `app/` (`service/config.py` → `app/config.py`; there is no `app/service/`) |
-| `crucible.contracts` → `app.contracts` | `contracts/` copies to `app/contracts/`; the validator resolves it via `importlib.resources` |
-| `from crucible[.service] import` → `from app import` | defensive bare top-level forms |
+Layering carried over verbatim, only renamed: `crucible.kernel` → `app.kernel`,
+the `crucible.service.<child>` children flatten to `app.<child>`,
+`crucible.contracts` → `app.contracts` (the four JSON schemas, anchored via
+`importlib.resources`), and the local-only `crucible.local` zone → the sibling
+`dev/` package. Zero `crucible` references survive anywhere under `services/eval/`.
 
-After the rewrite, **zero dotted `crucible.` references** may survive (the proper
-noun "Crucible" in prose is fine — the assertion is dotted).
-
-`scripts/rehearse_migration.sh` proves this continuously: it copies the three
-buckets into a fresh `app/` under `services/eval/` (the committed scaffold), applies
-the rewrites, asserts zero `crucible.`, runs `uv sync --frozen` against the scaffold's
-lockfile, import-smokes every `app.*` module, and runs the mirrored test suite. The
-generated `app/` packages + copied tests are gitignored (reproduced on demand from
-`src/`); only the scaffold is committed. **Green = the migration is proven by
-construction.**
-
-```bash
-bash scripts/rehearse_migration.sh            # rehearse into services/eval (the scaffold)
-bash scripts/rehearse_migration.sh <DEST>     # rehearse into a real destination on migration day
-```
-
-It is idempotent and self-contained. It is a **required pre-merge gate** (run on
-demand; not a pre-commit hook — the venv build is slow and there is no CI). On
-migration day, run it against the real `genai-backend/services/eval/` and wire the
-monorepo's repo-level contracts via the injectable `schema_path`; carry along the
-repo-root `eval_config.yaml` (its config-shape test self-skips when absent).
+On migration day, copy `services/eval/app/` into `genai-backend/services/eval/app/`,
+wire the monorepo's repo-level contracts via the injectable `schema_path`, and
+carry the local-only `dev/fixtures/eval_config.yaml` only if running the dev CLI.
 
 ## Development
 
+All tooling now targets `services/eval/` (run from there, or with
+`uv run --project services/eval`):
+
 ```bash
+cd services/eval
 uv run pytest                       # full suite (set CRUCIBLE_GENERATOR_MODEL for hermetic runs)
 uv run ruff check --fix && uv run ruff format
-uv run lint-imports                 # kernel-pure / service-not-local / nothing-imports-local
-bash scripts/check_kernel_clean.sh  # tests/kernel/ green in a zero-extras venv
-bash scripts/check_wheel_contents.sh  # the 4 schemas ship in the built wheel
-bash scripts/check_kernel_grep_gate.sh  # no forbidden code under kernel/
-pre-commit install
+uv run lint-imports                 # kernel-pure / app-not-dev / api-not-scoring
 ```
 
 Phoenix integration tests are marked `phoenix_integration` and skipped by default
@@ -304,10 +297,12 @@ Phoenix integration tests are marked `phoenix_integration` and skipped by defaul
 
 ## Docker
 
+The image builds from `services/eval/` on Python 3.12 and runs the FastAPI
+control plane (`uvicorn app.main:app`). `.dockerignore` keeps `dev/`, `tests/`,
+and caches out of the image, so ONLY `app/` ships.
+
 ```bash
-docker-compose build
-docker-compose -f docker-compose.yml -f docker-compose.observability.yml up -d
-docker-compose run crucible eval-rag --slice gst_pico --rag stub-local
+docker build -t eval-service services/eval
 ```
 
 ## Documentation
