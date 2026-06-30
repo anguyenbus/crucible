@@ -5,7 +5,7 @@ DeepEval metrics evaluator (pure kernel, inverted constructor).
 INVERTED the constructor: it now receives an already-constructed metrics dict
 (``DeepEvalEvaluator(metrics=...)``) and NEVER imports the service config. The
 service builds the metrics (via
-``crucible.service.deepeval.bedrock_provider.create_deepeval_metrics``) and
+``app.deepeval.bedrock_provider.create_deepeval_metrics``) and
 injects them, keeping the kernel pure (no boto3/config reach-in).
 
 Tracing suppression is also INJECTED: the kernel must not import ``phoenix``, so
@@ -22,7 +22,7 @@ import time
 from beartype import beartype
 from beartype.typing import Any, Callable, ContextManager, Dict, List
 
-from crucible.kernel.rag_metrics.samples import (
+from app.kernel.rag_metrics.samples import (
     noop_suppression,
     transform_to_deepeval_sample,
 )
@@ -58,7 +58,7 @@ class DeepEvalEvaluator:
         _suppress: Injected tracing-suppression factory (defaults to no-op).
 
     Example:
-        >>> from crucible.service.deepeval.bedrock_provider import create_deepeval_metrics
+        >>> from app.deepeval.bedrock_provider import create_deepeval_metrics
         >>> metrics = create_deepeval_metrics(llm_provider="bedrock", judge_model=...)
         >>> evaluator = DeepEvalEvaluator(metrics=metrics)
         >>> scores = evaluator.compute_metrics(rag_output, reference_answer)

@@ -7,7 +7,7 @@ while gaining Phoenix's experiment tracking, comparison UI, and schema.
 
 Example:
     >>> from phoenix.client import Client
-    >>> from crucible.service.phoenix.evaluators import (
+    >>> from app.phoenix.evaluators import (
     ...     create_faithfulness_evaluator,
     ...     create_context_precision_evaluator,
     ... )
@@ -35,11 +35,11 @@ from beartype.typing import Callable
 
 # SECURITY (telemetry ordering): this module imports ``deepeval.metrics`` lazily
 # inside its evaluator factories, but it is NOT inside an allowlisted opt-out
-# package. Importing ``crucible.service.deepeval`` here runs that package's
+# package. Importing ``app.deepeval`` here runs that package's
 # ``__init__`` (which sets ``DEEPEVAL_TELEMETRY_OPT_OUT="YES"``) at module load,
 # guaranteeing the opt-out fires before any lazy ``deepeval`` import below —
 # structurally, not by caller ordering. Do NOT remove.
-import crucible.service.deepeval as _deepeval_optout  # noqa: F401
+import app.deepeval as _deepeval_optout  # noqa: F401
 
 # Phoenix evaluator decorator
 try:

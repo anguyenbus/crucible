@@ -17,10 +17,10 @@ import os
 # may contain sensitive query data; telemetry to external servers is a privacy /
 # compliance hazard.
 #
-# This is the ONE os.environ write permitted inside crucible.kernel: it is
+# This is the ONE os.environ write permitted inside app.kernel: it is
 # explicitly allowlisted by the kernel grep-gate pre-commit hook. Phase 4
 # collapsed the opt-out to exactly TWO library sites -- this kernel line and
-# crucible.service.deepeval.__init__ -- each set before its package imports
+# app.deepeval.__init__ -- each set before its package imports
 # deepeval. import-linter cannot see attribute access, so the grep-gate is what
 # allows exactly this line.
 # ====================================================================

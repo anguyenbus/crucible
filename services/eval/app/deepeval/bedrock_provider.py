@@ -5,7 +5,7 @@ This module holds the IMPURE half of the former ``metrics/deepeval_config.py``:
 the env reads, boto/session wiring, judge provider/model/region
 resolution, the concurrency env read, and the DeepEval metric factory. It imports
 the PURE constants and the ``assert_distinct`` self-grading guard BACK from the
-kernel (``crucible.kernel.rag_metrics.metric_specs``) -- the kernel remains the
+kernel (``app.kernel.rag_metrics.metric_specs``) -- the kernel remains the
 single source of truth for the au.* constants and the judge != generator
 invariant (service-ish -> kernel is allowed; the kernel never imports this
 module, so there is no cycle).
@@ -29,7 +29,7 @@ from beartype.typing import Dict
 # the bedrock-model sniff, and the judge != generator guard) live in the kernel.
 # The impure resolvers below import them BACK from there
 # (service -> kernel is allowed; the kernel never imports this module).
-from crucible.kernel.rag_metrics.metric_specs import (
+from app.kernel.rag_metrics.metric_specs import (
     DEFAULT_BEDROCK_MODEL,
     DEFAULT_GENERATOR_MODEL,
     DEFAULT_JUDGE_MODEL,

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 
 if TYPE_CHECKING:
-    from crucible.service.runners.golden_set import RunResult
+    from app.runners.golden_set import RunResult
 
 
 def write_results(results: list[dict[str, Any]], output_path: Path) -> None:

@@ -13,9 +13,9 @@ import os
 # Evaluation runs may contain sensitive query data; telemetry to external
 # servers is a privacy / compliance hazard.
 #
-# This is one of exactly TWO os.environ writes permitted in crucible library
-# code (the other is crucible.kernel.rag_metrics.__init__). The redundant
-# writes in crucible/__init__.py, bedrock_provider.py, and the local/cli/*
+# This is one of exactly TWO os.environ writes permitted in app library
+# code (the other is app.kernel.rag_metrics.__init__). The redundant
+# writes in the package root, bedrock_provider.py, and the dev/cli/*
 # shells were removed in Phase 4 -- both allowlisted package __init__ sites set
 # the opt-out before their package's deepeval import, which is the whole
 # safety basis. DO NOT REMOVE OR MODIFY.

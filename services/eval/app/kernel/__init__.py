@@ -1,7 +1,7 @@
 """
 Pure, infra-free evaluation kernel.
 
-``crucible.kernel`` holds the import-pure core (comparison stats, schema
+``app.kernel`` holds the import-pure core (comparison stats, schema
 validation, RAG/judge interfaces, DeepEval metric specs + evaluator) that copies
 verbatim into the monorepo ``app/kernel/``. The kernel may import only stdlib,
 ``pydantic``, ``jsonschema``, ``scipy``, ``deepeval`` and ``beartype``. It must

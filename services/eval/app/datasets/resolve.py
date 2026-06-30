@@ -22,8 +22,8 @@ from typing import Final
 from beartype import beartype
 from beartype.typing import Callable
 
-from crucible.service.datasets.gst_legal_rag import load_gst_legal_rag
-from crucible.service.datasets.legal_rag_bench import load_legal_rag_bench
+from app.datasets.gst_legal_rag import load_gst_legal_rag
+from app.datasets.legal_rag_bench import load_legal_rag_bench
 
 # Routing keys/names per dataset family. The GST family is selected by the
 # ``gst_`` slice prefix; everything else routes to Legal RAG Bench.

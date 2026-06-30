@@ -1,24 +1,24 @@
 """Dataset loaders for the eval service."""
 
-from crucible.service.datasets.gst_legal_rag import (
+from app.datasets.gst_legal_rag import (
     DATASET_NAME as GST_DATASET_NAME,
 )
-from crucible.service.datasets.gst_legal_rag import (
+from app.datasets.gst_legal_rag import (
     SLICE_FULL as GST_SLICE_FULL,
 )
-from crucible.service.datasets.gst_legal_rag import (
+from app.datasets.gst_legal_rag import (
     SLICE_MINI as GST_SLICE_MINI,
 )
-from crucible.service.datasets.gst_legal_rag import (
+from app.datasets.gst_legal_rag import (
     SLICE_NANO as GST_SLICE_NANO,
 )
-from crucible.service.datasets.gst_legal_rag import (
+from app.datasets.gst_legal_rag import (
     SLICE_PICO as GST_SLICE_PICO,
 )
-from crucible.service.datasets.gst_legal_rag import (
+from app.datasets.gst_legal_rag import (
     load_gst_legal_rag,
 )
-from crucible.service.datasets.legal_rag_bench import (
+from app.datasets.legal_rag_bench import (
     DATASET_NAME,
     DEFAULT_HF_TOKEN_PATH,
     HF_TOKEN_ENV,
@@ -26,7 +26,7 @@ from crucible.service.datasets.legal_rag_bench import (
     SLICE_PICO,
     load_legal_rag_bench,
 )
-from crucible.service.datasets.resolve import resolve_loader
+from app.datasets.resolve import resolve_loader
 
 __all__ = [
     # Legal RAG Bench exports

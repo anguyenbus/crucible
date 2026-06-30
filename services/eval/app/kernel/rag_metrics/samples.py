@@ -1,7 +1,7 @@
 """
 DeepEval sample transform (pure kernel).
 
-Transforms crucible RAG query output into the DeepEval ``LLMTestCase`` format and
+Transforms RAG query output into the DeepEval ``LLMTestCase`` format and
 provides a PURE no-op tracing-suppression context manager.
 
 PURITY NOTE: the kernel must never import ``phoenix`` (forbidden by the
@@ -33,9 +33,9 @@ def transform_to_deepeval_sample(
     reference_answer: str,
 ) -> Any:
     """
-    Transform crucible RAG output to DeepEval LLMTestCase format.
+    Transform RAG output to DeepEval LLMTestCase format.
 
-    Maps the crucible RAG query output structure to DeepEval LLMTestCase
+    Maps the RAG query output structure to DeepEval LLMTestCase
     which requires: input, retrieval_context, actual_output, expected_output.
 
     Args:

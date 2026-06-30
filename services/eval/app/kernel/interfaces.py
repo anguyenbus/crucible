@@ -5,7 +5,7 @@ Holds the concrete ``RagAdapter`` (moved here from ``adapters/rag_adapter.py`` i
 Phase 2) plus the structural protocols the monorepo implements later:
 ``JudgeProvider``, ``RateLimiter`` and the two-phase ``ClaimStore``. Phase 2 wires
 only the metrics-dict injection (see
-``crucible.kernel.rag_metrics.evaluator.DeepEvalEvaluator``); the protocols are
+``app.kernel.rag_metrics.evaluator.DeepEvalEvaluator``); the protocols are
 stubs for the monorepo to satisfy with concrete adapters.
 
 RagAdapter validates output via the kernel schema validator's
@@ -19,7 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final, Protocol, runtime_checkable
 
-from crucible.kernel.validation.schema_validator import validate as schema_validate
+from app.kernel.validation.schema_validator import validate as schema_validate
 
 # Type alias for query callable
 QueryCallable = Callable[[str, Path], dict[str, Any]]
@@ -127,7 +127,7 @@ class RagAdapter:
                 (question: str, corpus_dir: Path) -> dict. The core adapter never
                 defaults to a demo backend; demo callers must pass the stub query
                 explicitly (any ``(question, corpus_dir) -> dict`` callable;
-                demo stubs are available in the standalone crucible repo).
+                demo stubs are available in the standalone dev package).
             embedder: Optional shared embedder instance. If provided and the
                 query callable accepts an embedder kwarg, it will be passed
                 through. This allows sharing embedders between RAG and RAGAS.
@@ -143,7 +143,7 @@ class RagAdapter:
         if query_callable is _MISSING or query_callable is None:
             raise TypeError(
                 "query_callable is required; pass a `(question, corpus_dir) -> dict` "
-                "callable. Demo stubs are available in the standalone crucible repo."
+                "callable. Demo stubs are available in the standalone dev package."
             )
         self._query = query_callable
         self._embedder = embedder

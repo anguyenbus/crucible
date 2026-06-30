@@ -14,7 +14,7 @@ import time
 from beartype import beartype
 from beartype.typing import Any, Final
 
-from crucible.service.runners.candidate_config import CandidateConfig
+from app.runners.candidate_config import CandidateConfig
 
 # Constants
 HEALTH_CHECK_TIMEOUT: Final[int] = 5

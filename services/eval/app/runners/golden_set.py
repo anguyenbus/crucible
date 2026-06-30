@@ -13,7 +13,7 @@ injectable library functions:
   Phoenix wiring.
 - ``run_phoenix_native(...)`` -- the Phoenix-native Datasets & Experiments path
   (the ONLY Phoenix path). It has a different dependency set + return shape and
-  delegates to ``crucible.service.phoenix.experiments``.
+  delegates to ``app.phoenix.experiments``.
 
 All infra (evaluator, RAG adapter, metrics) is BUILT IN THE SHELL and injected;
 the library never builds boto/phoenix clients itself.
@@ -29,7 +29,7 @@ from typing import Any, Final
 from beartype import beartype
 from beartype.typing import Protocol
 
-from crucible.kernel.interfaces import ClaimStore, RagAdapter
+from app.kernel.interfaces import ClaimStore, RagAdapter
 
 # Faithfulness threshold for the PASS / NEEDS_REVIEW verdict (pinned from the
 # former run_rag_eval shell; the shell behavior is preserved this phase).
@@ -151,7 +151,7 @@ def run_golden_set(
         evaluator: The injected metrics evaluator (kernel ``DeepEvalEvaluator``).
         config: Loaded configuration dict (read-only here).
         claims: Optional two-phase ``ClaimStore`` idempotency seam (monorepo
-            concern; no-op when ``None`` in crucible standalone).
+            concern; no-op when ``None`` in standalone dev).
         corpus_dir: Optional corpus directory passed through to the adapter. The
             shell resolves the path from config; the library carries no default.
 
@@ -160,7 +160,7 @@ def run_golden_set(
 
     """
     _ = config  # config is reserved for future per-run knobs; read-only here.
-    _ = claims  # no-op idempotency seam in crucible standalone.
+    _ = claims  # no-op idempotency seam in standalone dev.
     rows: list[QueryRow] = []
     success_count = 0
     error_count = 0
@@ -237,7 +237,7 @@ def run_phoenix_native(
     """
     Run the Phoenix-native experiment path (different deps + return shape).
 
-    Delegates to ``crucible.service.phoenix.experiments.run_phoenix_experiment``.
+    Delegates to ``app.phoenix.experiments.run_phoenix_experiment``.
     The CLI shell exports the returned experiment object via
     ``export_experiment_results``.
 
@@ -253,7 +253,7 @@ def run_phoenix_native(
         The Phoenix ``RanExperiment`` object (or dict) for the shell to export.
 
     """
-    from crucible.service.phoenix.experiments import run_phoenix_experiment
+    from app.phoenix.experiments import run_phoenix_experiment
 
     return run_phoenix_experiment(
         rag_adapter=rag_adapter,

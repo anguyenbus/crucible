@@ -6,7 +6,7 @@ injectable library function. Replay is reserved Appendix-A machinery (kept
 working but not yet fully implemented); the structure-preserving move keeps the
 ``http_client`` / ``candidate_config`` / ``tasks`` modules separate under
 ``service/runners/`` and the comparison statistics in
-``crucible.kernel.replay_stats.comparison``.
+``app.kernel.replay_stats.comparison``.
 
 The library performs NO file I/O: the CLI shell resolves the candidate spec /
 baseline and persists any comparison output.
@@ -48,7 +48,7 @@ def run_replay(
     Run replay evaluation comparing a candidate service against a baseline.
 
     Reserved Appendix-A machinery: the candidate/baseline replay + statistical
-    comparison (``crucible.kernel.replay_stats.comparison``) is not yet fully
+    comparison (``app.kernel.replay_stats.comparison``) is not yet fully
     wired. This library function pins the injectable signature + return shape so
     the CLI shell stays a thin wrapper.
 

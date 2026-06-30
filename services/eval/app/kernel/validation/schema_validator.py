@@ -4,8 +4,8 @@ JSON schema validation using JSON Schema Draft 2020-12.
 This module provides schema validation for parser output and RAG query output.
 All validation uses JSON Schema Draft 2020-12.
 
-It is part of the pure ``crucible.kernel`` and resolves packaged schemas via
-``importlib.resources`` against ``crucible.contracts`` -- there is NO
+It is part of the pure ``app.kernel`` and resolves packaged schemas via
+``importlib.resources`` against ``app.contracts`` -- there is NO
 CWD-relative ``Path(...)`` anywhere in this module. Callers pass either a logical
 schema name (``schema="rag_query_output"``) or an explicit ``schema_path`` (which
 WINS, for tests/local callers).
@@ -22,7 +22,7 @@ from jsonschema import Draft202012Validator, ValidationError
 
 # Packaged schemas live in the in-package vendored copy that ships in the wheel.
 # (Top-level contracts/ single-sourcing is Phase 5.)
-_CONTRACTS_PACKAGE: Final[str] = "crucible.contracts"
+_CONTRACTS_PACKAGE: Final[str] = "app.contracts"
 
 # Major schema version this kernel understands. The loaded schema's
 # ``schema_version`` const is parsed and its major compared against this; an
@@ -86,7 +86,7 @@ def _load_schema_by_name(schema: str) -> dict:
     """
     Load a packaged schema by logical name via importlib.resources.
 
-    Resolves ``<schema>.schema.json`` inside the packaged ``crucible.contracts``
+    Resolves ``<schema>.schema.json`` inside the packaged ``app.contracts``
     (no CWD-relative paths). This is the run-from-anywhere path (Finding A fix).
 
     Args:
@@ -195,7 +195,7 @@ def validate(
     Resolution order:
     - An explicit ``schema_path`` WINS (injectable, for tests/local callers).
     - Otherwise ``schema`` is a logical name resolved via ``importlib.resources``
-      against the packaged ``crucible.contracts`` (run-from-anywhere; no CWD path).
+      against the packaged ``app.contracts`` (run-from-anywhere; no CWD path).
 
     The loaded schema must declare ``$schema`` Draft 2020-12, and its
     ``schema_version`` const (if present) must have a supported major version.

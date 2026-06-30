@@ -14,7 +14,7 @@ from typing import Any, Final
 from beartype import beartype
 from beartype.typing import Callable
 
-from crucible.service.phoenix.evaluators import (
+from app.phoenix.evaluators import (
     create_answer_relevancy_evaluator,
     create_context_precision_evaluator,
     create_context_recall_evaluator,
@@ -47,7 +47,7 @@ def _build_judge(judge_model: str) -> Any:
     the Bedrock judge MUST be passed as an ``AmazonBedrockModel`` *instance*. This
     project is Bedrock-only.
     """
-    from crucible.service.deepeval.bedrock_provider import get_deepeval_llm
+    from app.deepeval.bedrock_provider import get_deepeval_llm
 
     return get_deepeval_llm(provider="bedrock", model=judge_model)
 
@@ -549,7 +549,7 @@ def create_phoenix_dataset(
         raise ValueError(f"Corpus directory does not exist: {corpus_dir}")
 
     # Route to the appropriate loader through the SINGLE resolve dispatch point.
-    from crucible.service.datasets.resolve import resolve_routing
+    from app.datasets.resolve import resolve_routing
 
     routing = resolve_routing(slice_name)
     load_fn = routing.loader
@@ -616,7 +616,7 @@ def get_phoenix_dataset(
         return None
 
     # Route to the appropriate base name through the SINGLE resolve dispatch point.
-    from crucible.service.datasets.resolve import resolve_routing
+    from app.datasets.resolve import resolve_routing
 
     base_name = resolve_routing(slice_name).dataset_name
 

@@ -7,7 +7,7 @@ metric-name registry, default thresholds, the ``_looks_like_bedrock_model``
 sniff, and the pure ``assert_distinct`` self-grading guard.
 
 It imports NOTHING impure (no ``os``, no ``deepeval``, no ``dotenv``). The impure
-resolvers in ``crucible.service.deepeval.bedrock_provider`` import these names BACK from
+resolvers in ``app.deepeval.bedrock_provider`` import these names BACK from
 here (service-ish -> kernel is allowed; the kernel never imports deepeval_config,
 so there is no cycle).
 """
@@ -39,7 +39,7 @@ DEFAULT_GENERATOR_MODEL: Final[str] = "au.anthropic.claude-sonnet-4-6"
 # DEFAULT_BEDROCK_MODEL is the resolved au.-profile judge default. It replaces
 # the former bare-family ID (anthropic.claude-3-5-sonnet-20241022-v2:0), which
 # violated the inference-profile requirement (Showstopper A). Re-exported from
-# crucible.service.deepeval.bedrock_provider; keep that export in sync with this value.
+# app.deepeval.bedrock_provider; keep that export in sync with this value.
 DEFAULT_BEDROCK_MODEL: Final[str] = DEFAULT_JUDGE_MODEL
 
 # Numeric defaults (pure).
