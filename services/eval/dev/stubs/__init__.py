@@ -1,3 +1,3 @@
-"""Stub implementations for crucible."""
+"""Stub implementations for the eval dev CLI."""
 
 # Placeholder for stub implementations

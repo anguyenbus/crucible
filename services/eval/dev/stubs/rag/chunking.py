@@ -173,7 +173,7 @@ class FixedChunker:
 
     def __init__(self) -> None:
         """Initialize the fixed chunker with configured size and overlap."""
-        from crucible.local.stubs.rag.chromadb_config import CHUNK_OVERLAP, CHUNK_SIZE
+        from dev.stubs.rag.chromadb_config import CHUNK_OVERLAP, CHUNK_SIZE
 
         self._chunker: ConfigurableChunker = ConfigurableChunker(
             chunk_size=CHUNK_SIZE,

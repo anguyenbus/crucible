@@ -146,3 +146,52 @@ def load_config(
     config = _expand_env_vars_recursive(config, default_env_val)
 
     return config
+
+
+# ---------------------------------------------------------------------------
+# Env-driven infra settings (Phase 1 restructure).
+#
+# These expose the infra endpoints from the environment so that LOCAL vs the
+# MONOREPO deployment differ by ENV ONLY, not by code. The settings surface is
+# intentionally lightweight (stdlib dataclass; no extra deps). Nothing in this
+# package is REQUIRED to consume these yet -- runtime wiring (RDS-backed store,
+# Phoenix write-back endpoint, ingestion calls) lands in Phase 2. The
+# eval_config.yaml loader above and its ${VAR:-default} expansion semantics are
+# UNCHANGED; this only ADDS the env-driven settings surface.
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass  # noqa: E402
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Infra endpoints resolved from the environment.
+
+    Local and monorepo deployments differ ONLY by these env values, never by
+    code. All fields default to None / a sentinel so importing this module never
+    requires the environment to be configured (settings are exposed, not
+    consumed, in this phase).
+    """
+
+    # RDS / run store (system of record for the run ledger in Phase 2).
+    database_url: str | None = None
+    # Phoenix observability write-back endpoint.
+    phoenix_endpoint: str | None = None
+    # Upstream ingestion / RAG service the worker calls to score runs.
+    rag_endpoint: str | None = None
+    # AWS region for the Bedrock judge (no us-east-1 default -- data residency).
+    bedrock_region: str | None = None
+
+
+def get_settings() -> Settings:
+    """Build a :class:`Settings` snapshot from the current environment.
+
+    Reads each endpoint from its environment variable; missing values stay
+    None. AWS region resolves from AWS_REGION then AWS_DEFAULT_REGION (matching
+    the Bedrock judge's native resolution).
+    """
+    return Settings(
+        database_url=os.environ.get("DATABASE_URL"),
+        phoenix_endpoint=os.environ.get("PHOENIX_ENDPOINT"),
+        rag_endpoint=os.environ.get("RAG_ENDPOINT") or os.environ.get("INGESTION_ENDPOINT"),
+        bedrock_region=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
+    )

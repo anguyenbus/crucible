@@ -13,8 +13,8 @@ import chromadb
 from chromadb.utils import embedding_functions
 from rich.console import Console
 
-from crucible.local.stubs.rag.chromadb_config import CHROMADB_PERSIST_DIR, EMBEDDING_MODEL
-from crucible.local.stubs.rag.exceptions import ChromaDBInitError, CollectionNotFoundError
+from dev.stubs.rag.chromadb_config import CHROMADB_PERSIST_DIR, EMBEDDING_MODEL
+from dev.stubs.rag.exceptions import ChromaDBInitError, CollectionNotFoundError
 
 console = Console()
 

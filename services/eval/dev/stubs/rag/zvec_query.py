@@ -13,9 +13,9 @@ from pathlib import Path
 
 from rich.console import Console
 
-from crucible.local.stubs.rag.chunker import FixedChunker
-from crucible.local.stubs.rag.embedder import SentenceTransformersEmbedder
-from crucible.local.stubs.rag.generator import ClaudeGenerator
+from dev.stubs.rag.chunker import FixedChunker
+from dev.stubs.rag.embedder import SentenceTransformersEmbedder
+from dev.stubs.rag.generator import ClaudeGenerator
 
 console = Console()
 

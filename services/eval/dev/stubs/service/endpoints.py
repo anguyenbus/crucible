@@ -158,8 +158,8 @@ async def _query_with_span(
     """
     from openinference.semconv.trace import OpenInferenceSpanKindValues
 
-    from crucible.local.stubs.rag.chromadb_query import query
-    from crucible.local.stubs.span_generator.span_schema import (
+    from dev.stubs.rag.chromadb_query import query
+    from dev.stubs.span_generator.span_schema import (
         INPUT_VALUE,
         LATENCY_GENERATION_MS,
         LATENCY_RETRIEVAL_MS,
@@ -227,7 +227,7 @@ async def _query_without_span(
     """
     # Route to appropriate backend
     if config.retrieval_backend == "zvec":
-        from crucible.local.stubs.rag.zvec_query import query as zvec_query
+        from dev.stubs.rag.zvec_query import query as zvec_query
 
         result = zvec_query(
             question=request.question,
@@ -238,7 +238,7 @@ async def _query_without_span(
         )
     else:
         # Default to ChromaDB
-        from crucible.local.stubs.rag.chromadb_query import query
+        from dev.stubs.rag.chromadb_query import query
 
         result = query(
             question=request.question,

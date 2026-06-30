@@ -15,19 +15,19 @@ from typing import Any
 
 from rich.console import Console
 
-from crucible.local.stubs.rag.chromadb_client import ChromaDBManager
-from crucible.local.stubs.rag.chromadb_config import (
+from dev.stubs.rag.chromadb_client import ChromaDBManager
+from dev.stubs.rag.chromadb_config import (
     CORPUS_LOADER_VERSION,
     DEFAULT_TOP_K,
     EMBEDDING_MODEL,
     GENERATOR_MODEL,
     PIPELINE_VERSION,
 )
-from crucible.local.stubs.rag.citations import extract_citations
-from crucible.local.stubs.rag.generator import ClaudeGenerator
-from crucible.local.stubs.rag.ingestion import DocumentIngester
-from crucible.local.stubs.rag.retriever import SemanticRetriever
-from crucible.local.stubs.rag.schema_conformance import validate_rag_output
+from dev.stubs.rag.citations import extract_citations
+from dev.stubs.rag.generator import ClaudeGenerator
+from dev.stubs.rag.ingestion import DocumentIngester
+from dev.stubs.rag.retriever import SemanticRetriever
+from dev.stubs.rag.schema_conformance import validate_rag_output
 
 console = Console()
 
@@ -53,7 +53,7 @@ def _get_embedder() -> Any:
 
     # Otherwise, create and cache local embedder
     if _cached_embedder is None:
-        from crucible.local.stubs.rag.embedder import SentenceTransformersEmbedder
+        from dev.stubs.rag.embedder import SentenceTransformersEmbedder
 
         _cached_embedder = SentenceTransformersEmbedder()
     return _cached_embedder
@@ -127,7 +127,7 @@ def query(
         set_external_embedder(embedder)
 
     # Import classes here to avoid circular imports
-    from crucible.local.stubs.rag.chunker import FixedChunker
+    from dev.stubs.rag.chunker import FixedChunker
 
     # Generate query_id from question hash
     query_hash = hashlib.md5(question.encode()).hexdigest()[:8]
@@ -169,7 +169,7 @@ def query(
 
             # Initialize ingestion pipeline
             if chunk_size is not None:
-                from crucible.local.stubs.rag.chunking import ConfigurableChunker
+                from dev.stubs.rag.chunking import ConfigurableChunker
 
                 chunker = ConfigurableChunker(
                     chunk_size=chunk_size,

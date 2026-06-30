@@ -8,7 +8,7 @@ which splits documents into fixed-size chunks for embedding and retrieval.
 
 from __future__ import annotations
 
-from crucible.local.stubs.rag.chromadb_config import CHUNK_OVERLAP, CHUNK_SIZE
+from dev.stubs.rag.chromadb_config import CHUNK_OVERLAP, CHUNK_SIZE
 
 
 class FixedChunker:

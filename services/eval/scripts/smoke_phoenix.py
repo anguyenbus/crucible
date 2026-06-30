@@ -19,9 +19,9 @@ round-trip, with NO `local`/`demo`/ChromaDB code (none migrates).
 The judge runs on AWS Bedrock (resolved via env: CRUCIBLE_JUDGE_PROVIDER=bedrock,
 CRUCIBLE_JUDGE_MODEL=<bedrock inference-profile id>).
 
-Usage (from services/eval, with its venv + env from crucible/.env):
+Usage (from services/eval, with its venv + env from the repo .env):
 
-    GST_CACHE_DIR=/abs/path/to/crucible/data/rag/gst_legal_rag \\
+    GST_CACHE_DIR=/abs/path/to/services/eval/dev/fixtures/data/rag/gst_legal_rag \\
     SLICE=gst_pico \\
     ./.venv/bin/python scripts/smoke_phoenix.py
 

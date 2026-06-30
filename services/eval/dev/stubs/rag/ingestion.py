@@ -15,8 +15,8 @@ from typing import Any
 from rich.console import Console
 from rich.progress import Progress
 
-from crucible.local.stubs.rag.chromadb_config import BATCH_SIZE
-from crucible.local.stubs.rag.chunking import ChunkingStrategy
+from dev.stubs.rag.chromadb_config import BATCH_SIZE
+from dev.stubs.rag.chunking import ChunkingStrategy
 
 console = Console()
 

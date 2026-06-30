@@ -1,5 +1,5 @@
 """
-Health check commands for crucible dependencies.
+Health check commands for eval dependencies.
 
 This module provides CLI commands to verify connectivity and configuration
 of external services (Phoenix, ChromaDB, etc.) before running evaluations.
@@ -88,7 +88,7 @@ def bedrock_preflight() -> None:
             AWS_DEFAULT_REGION is unset (fail-loud, no us-east-1 default).
 
     """
-    from crucible.local.stubs.rag.generator import (
+    from dev.stubs.rag.generator import (
         _client_error_code,
         _resolve_generator_provider_and_model,
         _resolve_region,
@@ -176,9 +176,9 @@ def phoenix(endpoint: str, timeout: int) -> None:
     evaluation.
 
     Examples:
-        crucible check phoenix
-        crucible check phoenix --endpoint https://phoenix.prod.example.com
-        crucible check phoenix --endpoint http://localhost:6006 --timeout 10
+        eval check phoenix
+        eval check phoenix --endpoint https://phoenix.prod.example.com
+        eval check phoenix --endpoint http://localhost:6006 --timeout 10
 
     Exit codes:
         0: Phoenix is reachable
@@ -196,7 +196,7 @@ def phoenix(endpoint: str, timeout: int) -> None:
         req = urllib.request.Request(
             ui_url,
             method="GET",
-            headers={"User-Agent": "crucible/1.0"},
+            headers={"User-Agent": "eval/1.0"},
         )
         with urllib.request.urlopen(req, timeout=timeout) as response:
             if response.status == 200:
@@ -221,7 +221,7 @@ def phoenix(endpoint: str, timeout: int) -> None:
             req = urllib.request.Request(
                 otlp_url,
                 method="POST",
-                headers={"User-Agent": "crucible/1.0"},
+                headers={"User-Agent": "eval/1.0"},
                 data=b"{}",  # Empty payload
             )
             with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -348,7 +348,7 @@ def bedrock() -> None:
         1: the preflight failed (creds / region / model-access)
 
     """
-    from crucible.local.stubs.rag.generator import _resolve_generator_provider_and_model
+    from dev.stubs.rag.generator import _resolve_generator_provider_and_model
 
     provider, model = _resolve_generator_provider_and_model()
     if provider != "bedrock":

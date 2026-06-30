@@ -12,7 +12,7 @@ Phoenix-native Datasets & Experiments flow via the service library
 experiment in the Phoenix UI plus the canonical CSV/parquet/JSON artifacts via
 ``export_experiment_results``.
 
-A running Phoenix server is REQUIRED for ``eval-rag``; ``crucible check phoenix``
+A running Phoenix server is REQUIRED for ``eval-rag``; ``eval check phoenix``
 is the fail-fast preflight. There is no offline/no-server CLI scoring path.
 
 NOTE: stub-local uses a ChromaDB reference implementation for demonstration only.
@@ -46,7 +46,7 @@ def load_dataset(slice_name: str, config: dict) -> Any:
         Iterator over dataset query tuples.
 
     """
-    from crucible.service.datasets.resolve import resolve_routing
+    from app.datasets.resolve import resolve_routing
 
     routing = resolve_routing(slice_name)
     dataset_config = config["datasets"].get(routing.config_key, {})
@@ -74,8 +74,8 @@ def get_rag(
         A configured ``RagAdapter``.
 
     """
-    from crucible.kernel.interfaces import RagAdapter
-    from crucible.local.stubs.rag.chromadb_query import query as chromadb_query
+    from app.kernel.interfaces import RagAdapter
+    from dev.stubs.rag.chromadb_query import query as chromadb_query
 
     def chromadb_wrapper(question: str, corpus_dir: Path, embedder: Any = None) -> dict[str, Any]:
         return chromadb_query(
@@ -121,9 +121,9 @@ def _default_output_dir(args: Any) -> Path:
 
 
 def _phoenix_native(args: Any, config: dict, get_deepeval_config: Any, get_embedder: Any) -> None:
-    from crucible.service.datasets.resolve import resolve_routing
-    from crucible.service.phoenix.experiments import export_experiment_results
-    from crucible.service.runners.golden_set import run_phoenix_native
+    from app.datasets.resolve import resolve_routing
+    from app.phoenix.experiments import export_experiment_results
+    from app.runners.golden_set import run_phoenix_native
 
     routing = resolve_routing(args.slice)
     dataset_config = config["datasets"].get(routing.config_key, {})
@@ -146,10 +146,10 @@ def _phoenix_native(args: Any, config: dict, get_deepeval_config: Any, get_embed
 
 def main() -> None:
     """Parse args, build injected deps, and run the Phoenix-native experiment."""
-    from crucible.local.cli.check import bedrock_preflight
-    from crucible.service.config import load_config
-    from crucible.service.deepeval.bedrock_provider import get_deepeval_config
-    from crucible.service.deepeval.embeddings import get_embedder
+    from dev.cli.check import bedrock_preflight
+    from app.config import load_config
+    from app.deepeval.bedrock_provider import get_deepeval_config
+    from app.deepeval.embeddings import get_embedder
 
     args = _build_args()
     try:
@@ -167,7 +167,7 @@ def main() -> None:
         sys.exit(1)
 
     # Flow B (Phoenix-native Datasets & Experiments) is the ONLY path. A running
-    # Phoenix server is REQUIRED; `crucible check phoenix` is the preflight.
+    # Phoenix server is REQUIRED; `eval check phoenix` is the preflight.
     return _phoenix_native(args, config, get_deepeval_config, get_embedder)
 
 

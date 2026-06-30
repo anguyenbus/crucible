@@ -80,12 +80,12 @@ def cli(
     Start the stub RAG HTTP service.
 
     Example:
-        uv run python -m crucible.local.stubs.service \
+        uv run python -m dev.stubs.service \
             --config configs/stubs/chunking-512.yaml --port 8081
 
     """
-    from crucible.local.stubs.service import create_app
-    from crucible.local.stubs.service.config import StubConfig
+    from dev.stubs.service import create_app
+    from dev.stubs.service.config import StubConfig
 
     console = Console()
 

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from crucible.kernel.validation.schema_validator import SchemaValidationError
-from crucible.kernel.validation.schema_validator import (
+from app.kernel.validation.schema_validator import SchemaValidationError
+from app.kernel.validation.schema_validator import (
     validate as schema_validate,
 )
 
@@ -33,7 +33,7 @@ def validate_rag_output(output: dict[str, Any]) -> None:
 
     """
     # Resolve the packaged schema by logical name (run-from-anywhere; no
-    # CWD-relative path). The kernel validator anchors on crucible.contracts
+    # CWD-relative path). The kernel validator anchors on app.contracts
     # via importlib.resources, so this works in the source tree and an installed
     # wheel alike (Finding A).
     schema_validate(output, schema="rag_query_output")
@@ -56,7 +56,7 @@ def _validate_version_constants(output: dict[str, Any]) -> None:
         SchemaValidationError: If version constants don't match.
 
     """
-    from crucible.local.stubs.rag.chromadb_config import (
+    from dev.stubs.rag.chromadb_config import (
         CORPUS_LOADER_VERSION,
         EMBEDDING_MODEL,
         GENERATOR_MODEL,

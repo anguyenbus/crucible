@@ -2,14 +2,14 @@
 Stub HTTP service for RAG evaluation.
 
 This module provides a FastAPI-based HTTP service that wraps the ChromaDB RAG pipeline,
-enabling crucible to test against services running as separate HTTP processes.
+enabling eval to test against services running as separate HTTP processes.
 """
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 
-from crucible.local.stubs.service.config import StubConfig
+from dev.stubs.service.config import StubConfig
 
 
 def create_app(config: StubConfig) -> FastAPI:
@@ -41,8 +41,8 @@ def create_app(config: StubConfig) -> FastAPI:
     )
 
     # Setup Phoenix tracer for span emission (only if export_spans is enabled)
-    from crucible.local.stubs.service.config import DEFAULT_PROJECT_NAME
-    from crucible.local.stubs.service.tracing import setup_phoenix_tracer
+    from dev.stubs.service.config import DEFAULT_PROJECT_NAME
+    from dev.stubs.service.tracing import setup_phoenix_tracer
 
     if config.export_spans:
         tracer_provider, tracer = setup_phoenix_tracer(
@@ -57,7 +57,7 @@ def create_app(config: StubConfig) -> FastAPI:
     app.state.export_spans = config.export_spans
 
     # Import and include routes
-    from crucible.local.stubs.service.endpoints import router
+    from dev.stubs.service.endpoints import router
 
     app.include_router(router)
 

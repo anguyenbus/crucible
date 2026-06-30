@@ -6,7 +6,7 @@ Usage:
 
 Parses args, validates the config, and delegates to the service library
 ``service/runners/replay.run_replay``. Replay is reserved Appendix-A machinery
-(comparison stats live in ``crucible.kernel.replay_stats.comparison``).
+(comparison stats live in ``app.kernel.replay_stats.comparison``).
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ def main() -> None:
     """Parse args, validate config, call the replay service library."""
     import argparse
 
-    from crucible.service.config import load_config
-    from crucible.service.runners.replay import run_replay
+    from app.config import load_config
+    from app.runners.replay import run_replay
 
     parser = argparse.ArgumentParser(
         description="Replay evaluation comparing candidate service against production baseline"

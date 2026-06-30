@@ -6,12 +6,12 @@ need the phoenix-native path: it uploads the slice as a Phoenix *dataset* and ru
 Phoenix *experiment* with the four DeepEval metrics as evaluators.
 
 This drives the migrated `app.runners.golden_set.run_phoenix_native` with a REAL
-injected RAG (crucible's ChromaDB stub, reusing the persisted gst collection). The
+injected RAG (the dev ChromaDB stub, reusing the persisted gst collection). The
 injected RAG does not migrate; this driver is the shell (app never imports
-local/crucible).
+dev)..
 
 Run from the CRUCIBLE REPO ROOT (so the stub's CWD-relative data/chromadb resolves
-to the ingested collection), service venv + crucible/src on PYTHONPATH:
+to the ingested collection), service venv + services/eval on PYTHONPATH:
 
     set -a; . .env; set +a
     GST_CORPUS_DIR=data/rag/gst_legal_rag SLICE=gst_pico \\
@@ -29,7 +29,7 @@ from app.deepeval.bedrock_provider import get_deepeval_config
 from app.kernel.interfaces import RagAdapter
 from app.runners.golden_set import run_phoenix_native
 
-from crucible.local.stubs.rag.chromadb_query import query as stub_query
+from dev.stubs.rag.chromadb_query import query as stub_query
 
 
 def main() -> None:

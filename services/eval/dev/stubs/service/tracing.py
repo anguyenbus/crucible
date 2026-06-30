@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Final
 
 # Constants
-DEFAULT_TRACER_NAME: Final[str] = "crucible.stub-service"
+DEFAULT_TRACER_NAME: Final[str] = "eval.stub-service"
 
 
 def extract_trace_context(headers: dict[str, str]) -> dict[str, str] | None:
@@ -55,7 +55,7 @@ def setup_phoenix_tracer(
     if phoenix_endpoint is None:
         return None, None
 
-    from crucible.local.stubs.span_generator.tracer import setup_tracer
+    from dev.stubs.span_generator.tracer import setup_tracer
 
     return setup_tracer(
         phoenix_endpoint=phoenix_endpoint,

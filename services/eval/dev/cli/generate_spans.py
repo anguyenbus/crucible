@@ -22,7 +22,7 @@ def main() -> None:
     """Generate Phoenix spans from RAG queries."""
     import argparse
 
-    from crucible.service.config import load_config
+    from app.config import load_config
 
     parser = argparse.ArgumentParser(
         description="Generate Phoenix spans from RAG queries for replay testing"

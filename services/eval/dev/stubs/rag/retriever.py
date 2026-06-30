@@ -19,7 +19,7 @@ def _get_tracer():
     global _tracer
     if _tracer is None:
         try:
-            from crucible.local.stubs.span_generator.tracer import setup_tracer
+            from dev.stubs.span_generator.tracer import setup_tracer
 
             _, _tracer = setup_tracer()
         except (ImportError, Exception):
