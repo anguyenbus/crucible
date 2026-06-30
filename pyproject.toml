@@ -96,9 +96,6 @@ source-include = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-# services/eval/ is the migration scaffold (its own pyproject + uv.lock); crucible's
-# tooling must not lint it. Its app/ + copied tests are rehearsal-generated from src/.
-extend-exclude = ["services/eval"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "D"]
@@ -123,55 +120,3 @@ branch = true
 precision = 2
 show_missing = true
 skip_covered = false
-
-
-# import-linter: kernel-pure is REAL in Phase 2.
-#
-# Phase 1 left these contracts VACUOUS-BUT-ARMED: crucible.kernel/crucible.service
-# did not exist so their "crucible.kernel.**" / "crucible.service.**" wildcards
-# matched ZERO modules and passed trivially. Phase 2 creates crucible.kernel, so
-# the kernel-pure contract now matches real modules and ENFORCES purity (confirm
-# via `uv run lint-imports`: kernel-pure reports a non-zero module count, not the
-# vacuous "no source modules"). service-not-local and nothing-imports-local stay
-# armed-but-vacuous (crucible.service does not exist until Phase 3). The repo has
-# no CI, so pre-commit (lint-imports + the kernel grep-gate) is the gate.
-[tool.importlinter]
-root_package = "crucible"
-# Required because kernel-pure forbids EXTERNAL packages (boto3/arize/phoenix/
-# dotenv): import-linter only graphs external modules when this is enabled.
-include_external_packages = true
-
-# Phase 2: crucible.kernel (comparison stats, schema validation, RAG/judge
-# interfaces, DeepEval metric specs + evaluator) must stay import-pure. It may
-# only import stdlib, pydantic, jsonschema, scipy, deepeval, beartype. It must
-# NEVER import the quarantined demo/CLI code (crucible.local), the migrating eval
-# service (crucible.service), nor infra libs (boto3, arize, phoenix, dotenv).
-# import-linter cannot see attribute access (os.environ); the kernel grep-gate
-# pre-commit hook covers the one allowlisted DeepEval telemetry line.
-[[tool.importlinter.contracts]]
-name = "kernel-pure"
-type = "forbidden"
-source_modules = ["crucible.kernel.**"]
-forbidden_modules = [
-    "crucible.local",
-    "crucible.service",
-    "boto3",
-    "arize",
-    "phoenix",
-    "dotenv",
-]
-
-# Phase 3: crucible.service (the migrating eval service) must not depend on the
-# non-migrating crucible.local code.
-[[tool.importlinter.contracts]]
-name = "service-not-local"
-type = "forbidden"
-source_modules = ["crucible.service.**"]
-forbidden_modules = ["crucible.local"]
-
-# Neither future migrating package may reach into crucible.local.
-[[tool.importlinter.contracts]]
-name = "nothing-imports-local"
-type = "forbidden"
-source_modules = ["crucible.kernel.**", "crucible.service.**"]
-forbidden_modules = ["crucible.local"]

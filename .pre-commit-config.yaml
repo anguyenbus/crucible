@@ -11,29 +11,18 @@ repos:
 
   - repo: local
     hooks:
-      # import-linter boundary gate. Phase 2: kernel-pure is now REAL --
-      # crucible.kernel exists and the contract forbids crucible.local/
-      # crucible.service/boto3/arize/phoenix/dotenv. The repo has no CI, so
-      # pre-commit is the only gate.
+      # import-linter boundary gate for services/eval: kernel-pure / app-not-dev /
+      # api-not-scoring (root_package = "app"). The repo has no CI, so pre-commit
+      # is the only gate.
       - id: lint-imports
         name: lint-imports
-        entry: uv run lint-imports
-        language: system
-        pass_filenames: false
-        always_run: true
-      # Kernel grep-gate. import-linter cannot see attribute access (os.environ)
-      # or dynamic reads; this forbids os.environ/os.getenv/load_dotenv/boto3/
-      # phoenix CODE usage under src/crucible/kernel/, allowlisting exactly the
-      # one DeepEval telemetry opt-out line.
-      - id: kernel-grep-gate
-        name: kernel-grep-gate
-        entry: bash scripts/check_kernel_grep_gate.sh
+        entry: uv run --project services/eval lint-imports
         language: system
         pass_filenames: false
         always_run: true
       - id: pytest
         name: pytest
-        entry: uv run pytest
+        entry: uv run --project services/eval pytest
         language: system
         pass_filenames: false
         always_run: true
