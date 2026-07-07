@@ -29,10 +29,14 @@ datasets:
     # Cache directory for HuggingFace dataset
     cache_path: ${CACHE_DIR:-data/rag}/legal_rag_bench
 
-    # Embedder configuration for retrieval
-    embeddings:
-      provider: huggingface
-      model: sentence-transformers/all-MiniLM-L6-v2
+    # Embedder configuration for retrieval.
+    # INTENTIONALLY no explicit provider here (2026-07-07): the CLI's
+    # _build_embedder resolves the default per RAG backend -- `--rag opensearch`
+    # -> bedrock (Titan V2, matches the legal-rag-bench index embeddings);
+    # `--rag stub-local` -> huggingface (sentence-transformers/all-MiniLM-L6-v2).
+    # Pinning `provider: huggingface` here would override that and hand the
+    # OpenSearch retriever a 384-dim MiniLM embedder against a 1024-dim
+    # Titan index.
 
   gst_legal_rag:
     # Path to GST Legal RAG corpus
@@ -41,10 +45,13 @@ datasets:
     # Cache directory for GST dataset (vendored local files)
     cache_path: ${CACHE_DIR:-data/rag}/gst_legal_rag
 
-    # Embedder configuration for retrieval
-    embeddings:
-      provider: huggingface
-      model: sentence-transformers/all-MiniLM-L6-v2
+    # Embedder configuration for retrieval.
+    # INTENTIONALLY no explicit provider here (2026-07-07, same reasoning as
+    # legal_rag_bench above): the CLI's _build_embedder resolves the default
+    # per RAG backend. Pinning `provider: huggingface` here handed a 384-dim
+    # MiniLM embedder to `--rag opensearch` against a 1024-dim Titan index.
+    # The stub-local backend still defaults to huggingface/MiniLM without
+    # this pin.
 
 metrics:
   # RAG quality metrics (computed by DeepEval)

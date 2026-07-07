@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Eval POC - small OpenSearch domain, VPC-only. Network access is
+  restricted to the dev instance security group; API access to the instance
+  role. Deleting this stack removes the domain and its security group, which
+  stops all charges.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: eval-poc
+    AllowedPattern: "[a-z][a-z0-9-]{2,27}"
+    Description: OpenSearch domain name (3-28 chars, lowercase).
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-0cca2a182dde486ac
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-09817b2362ae73059
+  InstanceSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Default: sg-0efa748c5160eda97
+    Description: SG of the dev instance; sole network source allowed on 443.
+  InstanceRoleArn:
+    Type: String
+    Default: arn:aws:iam::740349584216:role/ato-role-instance-sdpaap-genai-poc-de-instance-profile
+    Description: IAM role allowed to call the domain APIs (SigV4).
+  EngineVersion:
+    Type: String
+    Default: OpenSearch_2.19
+    Description: Keep on 2.x - burstable (t3) instances are not supported on 3.x.
+  InstanceType:
+    Type: String
+    Default: t3.small.search
+  VolumeSizeGiB:
+    Type: Number
+    Default: 10
+
+Resources:
+  DomainSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "OpenSearch ${DomainName}: HTTPS from dev instance SG only"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref InstanceSecurityGroupId
+          Description: HTTPS from dev instance SG
+      Tags:
+        - Key: project
+          Value: eval-poc
+
+  OpenSearchDomain:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      DomainName: !Ref DomainName
+      EngineVersion: !Ref EngineVersion
+      ClusterConfig:
+        InstanceType: !Ref InstanceType
+        InstanceCount: 1
+        DedicatedMasterEnabled: false
+        ZoneAwarenessEnabled: false
+      EBSOptions:
+        EBSEnabled: true
+        VolumeType: gp3
+        VolumeSize: !Ref VolumeSizeGiB
+      VPCOptions:
+        SubnetIds:
+          - !Ref SubnetId
+        SecurityGroupIds:
+          - !Ref DomainSecurityGroup
+      EncryptionAtRestOptions:
+        Enabled: true
+      NodeToNodeEncryptionOptions:
+        Enabled: true
+      DomainEndpointOptions:
+        EnforceHTTPS: true
+      AccessPolicies:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref InstanceRoleArn
+            Action: "es:ESHttp*"
+            Resource: !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${DomainName}/*"
+      Tags:
+        - Key: project
+          Value: eval-poc
+
+Outputs:
+  DomainEndpoint:
+    Description: VPC-internal HTTPS endpoint (no public address exists).
+    Value: !GetAtt OpenSearchDomain.DomainEndpoint
+  DomainArn:
+    Value: !GetAtt OpenSearchDomain.Arn
+  DomainSecurityGroupId:
+    Value: !Ref DomainSecurityGroup

@@ -26,7 +26,7 @@ from app.runners.golden_set import (
 def _fake_rag_output(answer: str = "ans") -> dict:
     """A schema-conformant rag_query_output dict (so RagAdapter.query validates)."""
     return {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "system_version": {"pipeline_version": "1.0.0"},
         "query": {"query_id": "q1", "text": "What is X?"},
         "answer": {"text": answer, "citations": []},

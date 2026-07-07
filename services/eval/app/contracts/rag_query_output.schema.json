@@ -15,7 +15,7 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "1.0.0"
+      "const": "1.1.0"
     },
     "system_version": {
       "type": "object",
@@ -89,7 +89,7 @@
       "description": "All chunks the retriever surfaced for this query, in rank order (rank 0 = highest). Even chunks not used in the answer must be listed — eval needs the full retrieved set to compute recall and precision.",
       "items": {
         "type": "object",
-        "required": ["chunk_id", "rank", "score", "doc_id", "text", "char_span"],
+        "required": ["chunk_id", "rank", "score", "doc_id", "text"],
         "additionalProperties": false,
         "properties": {
           "chunk_id": {
@@ -117,7 +117,7 @@
           },
           "char_span": {
             "type": "array",
-            "description": "[start, end) character offsets into the source document's full text. This is the canonical evidence locator — it joins directly against LegalBench-RAG-style gold spans.",
+            "description": "OPTIONAL since 1.1.0 (real provider indexes may not store char offsets). [start, end) character offsets into the source document's full text. When present it is the canonical evidence locator — it joins directly against LegalBench-RAG-style gold spans.",
             "items": { "type": "integer", "minimum": 0 },
             "minItems": 2,
             "maxItems": 2

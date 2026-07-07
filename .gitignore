@@ -231,7 +231,3 @@ references/
 results/
 .claude/
 agent-os/
-services/*
-# ...but track the services/eval migration scaffold (its own .gitignore drops the
-# generated app/ packages + mirrored tests, which rehearse_migration.sh reproduces).
-!services/eval/

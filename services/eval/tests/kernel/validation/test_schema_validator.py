@@ -29,12 +29,12 @@ from app.kernel.validation.schema_validator import (
     validate,
 )
 
-# A minimal valid rag_query_output payload (schema_version "1.0.0", all required
+# A minimal valid rag_query_output payload (schema_version "1.1.0", all required
 # keys present). The packaged rag_query_output schema requires schema_version,
 # system_version (object with pipeline_version), query (query_id + text), answer
 # (text + citations), and retrieved_chunks (array).
 _VALID_RAG_OUTPUT = {
-    "schema_version": "1.0.0",
+    "schema_version": "1.1.0",
     "system_version": {"pipeline_version": "1.0.0"},
     "query": {"query_id": "q1", "text": "What is the termination clause?"},
     "answer": {"text": "The contract may be terminated with notice.", "citations": []},

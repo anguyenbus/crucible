@@ -15,10 +15,14 @@ from app.kernel.validation.schema_validator import (
     validate as schema_validate,
 )
 
+# query_id prefix stamped by the ChromaDB stub backend. The version-constant
+# self-check below is ChromaDB-specific and only applies to its outputs.
+_CHROMADB_QUERY_ID_PREFIX = "chromadb_"
+
 
 def validate_rag_output(output: dict[str, Any]) -> None:
     """
-    Validate RAG query output against rag_query_output.schema.json.
+    Validate RAG query output against rag_query_output.schema.json (v1.1.0).
 
     This function ensures that the RAG output conforms to the expected
     schema structure, including all required fields and version constants.
@@ -38,19 +42,27 @@ def validate_rag_output(output: dict[str, Any]) -> None:
     # wheel alike (Finding A).
     schema_validate(output, schema="rag_query_output")
 
-    # Additional validation for version constants
-    _validate_version_constants(output)
+    # Additional validation for version constants (ChromaDB-stub outputs only;
+    # other backends stamp their own system_version pins).
+    if _is_chromadb_output(output):
+        _validate_version_constants(output)
 
     # Additional validation for citations
     _validate_citations(output)
 
 
+def _is_chromadb_output(output: dict[str, Any]) -> bool:
+    """Return True when the output was produced by the ChromaDB stub backend."""
+    query_id = output.get("query", {}).get("query_id", "")
+    return query_id.startswith(_CHROMADB_QUERY_ID_PREFIX)
+
+
 def _validate_version_constants(output: dict[str, Any]) -> None:
     """
-    Validate that version constants match expected values.
+    Validate that version constants match the ChromaDB stub's expected values.
 
     Args:
-        output: RAG query output dictionary.
+        output: RAG query output dictionary (ChromaDB-stub-produced).
 
     Raises:
         SchemaValidationError: If version constants don't match.
@@ -103,6 +115,10 @@ def _validate_citations(output: dict[str, Any]) -> None:
     """
     Validate that citations reference valid chunk_ids.
 
+    NOTE: schema v1.1.0 makes ``char_span`` OPTIONAL on retrieved_chunks (real
+    provider indexes may not store char offsets), so there is deliberately no
+    char_span presence check here anymore.
+
     Args:
         output: RAG query output dictionary.
 
@@ -124,11 +140,3 @@ def _validate_citations(output: dict[str, Any]) -> None:
                     f"Citation references invalid chunk_id: '{chunk_id}'",
                     field_path="answer.citations",
                 )
-
-    # Validate all retrieved_chunks have char_span
-    for chunk in retrieved_chunks:
-        if "char_span" not in chunk:
-            raise SchemaValidationError(
-                "Retrieved chunk missing char_span",
-                field_path="retrieved_chunks",
-            )

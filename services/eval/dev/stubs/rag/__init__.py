@@ -1,76 +1,73 @@
-"""RAG stub implementations for the eval dev CLI."""
+"""
+RAG stub implementations for the eval dev CLI.
 
-from dev.stubs.rag.chromadb_client import ChromaDBManager
-from dev.stubs.rag.chromadb_config import (
-    BATCH_SIZE,
-    CHUNK_OVERLAP,
-    CHUNK_SIZE,
-    COLLECTION_NAME,
-    CORPUS_LOADER_VERSION,
-    DEFAULT_DB_PATH,
-    EMBEDDING_MODEL,
-    GENERATOR_MODEL,
-    PIPELINE_VERSION,
-)
-from dev.stubs.rag.chromadb_query import query as chromadb_query
-from dev.stubs.rag.chunker import FixedChunker
-from dev.stubs.rag.chunking import ChunkingStrategy, ConfigurableChunker
-from dev.stubs.rag.chunking import FixedChunker as FixedChunkerV2
-from dev.stubs.rag.citations import extract_citations
-from dev.stubs.rag.embedder import (
-    SentenceTransformersEmbedder,
-    get_embedder,
-)
-from dev.stubs.rag.exceptions import (
-    ChromaDBInitError,
-    CollectionNotFoundError,
-    EmbeddingError,
-)
-from dev.stubs.rag.generator import ClaudeGenerator
-from dev.stubs.rag.ingestion import DocumentIngester
-from dev.stubs.rag.retriever import SemanticRetriever
-from dev.stubs.rag.schema_conformance import validate_rag_output
-from dev.stubs.rag.tracing import PhoenixTracer
-from dev.stubs.rag.zvec_query import query as zvec_query
+Exports are resolved lazily (PEP 562) so that importing this package -- or
+any single submodule such as ``dev.stubs.rag.bedrock_embedder`` -- does not
+require the optional heavy dependencies of OTHER backends (chromadb /
+sentence-transformers from the ``demo`` extra, opensearch-py from the
+``opensearch`` extra). Each backend's dependencies are imported only when its
+symbol is actually accessed.
+"""
 
-__all__ = [
+from importlib import import_module
+from typing import Any
+
+# Export name -> (module path, attribute name).
+_EXPORTS: dict[str, tuple[str, str]] = {
     # Chunking
-    "FixedChunker",
-    "FixedChunkerV2",
-    "ConfigurableChunker",
-    "ChunkingStrategy",
+    "FixedChunker": ("dev.stubs.rag.chunker", "FixedChunker"),
+    "FixedChunkerV2": ("dev.stubs.rag.chunking", "FixedChunker"),
+    "ConfigurableChunker": ("dev.stubs.rag.chunking", "ConfigurableChunker"),
+    "ChunkingStrategy": ("dev.stubs.rag.chunking", "ChunkingStrategy"),
     # ChromaDB
-    "ChromaDBManager",
-    "chromadb_query",
-    "COLLECTION_NAME",
-    "DEFAULT_DB_PATH",
-    "CHUNK_SIZE",
-    "CHUNK_OVERLAP",
-    "BATCH_SIZE",
+    "ChromaDBManager": ("dev.stubs.rag.chromadb_client", "ChromaDBManager"),
+    "chromadb_query": ("dev.stubs.rag.chromadb_query", "query"),
+    "COLLECTION_NAME": ("dev.stubs.rag.chromadb_config", "COLLECTION_NAME"),
+    "DEFAULT_DB_PATH": ("dev.stubs.rag.chromadb_config", "DEFAULT_DB_PATH"),
+    "CHUNK_SIZE": ("dev.stubs.rag.chromadb_config", "CHUNK_SIZE"),
+    "CHUNK_OVERLAP": ("dev.stubs.rag.chromadb_config", "CHUNK_OVERLAP"),
+    "BATCH_SIZE": ("dev.stubs.rag.chromadb_config", "BATCH_SIZE"),
     # Constants
-    "PIPELINE_VERSION",
-    "CORPUS_LOADER_VERSION",
-    "EMBEDDING_MODEL",
-    "GENERATOR_MODEL",
+    "PIPELINE_VERSION": ("dev.stubs.rag.chromadb_config", "PIPELINE_VERSION"),
+    "CORPUS_LOADER_VERSION": ("dev.stubs.rag.chromadb_config", "CORPUS_LOADER_VERSION"),
+    "EMBEDDING_MODEL": ("dev.stubs.rag.chromadb_config", "EMBEDDING_MODEL"),
+    "GENERATOR_MODEL": ("dev.stubs.rag.chromadb_config", "GENERATOR_MODEL"),
     # Embedders
-    "SentenceTransformersEmbedder",
-    "get_embedder",
+    "SentenceTransformersEmbedder": ("dev.stubs.rag.embedder", "SentenceTransformersEmbedder"),
+    "get_embedder": ("dev.stubs.rag.embedder", "get_embedder"),
+    "BedrockTitanEmbedder": ("dev.stubs.rag.bedrock_embedder", "BedrockTitanEmbedder"),
+    "get_bedrock_embedder": ("dev.stubs.rag.bedrock_embedder", "get_bedrock_embedder"),
     # Generator
-    "ClaudeGenerator",
+    "ClaudeGenerator": ("dev.stubs.rag.generator", "ClaudeGenerator"),
     # Exceptions
-    "ChromaDBInitError",
-    "CollectionNotFoundError",
-    "EmbeddingError",
+    "ChromaDBInitError": ("dev.stubs.rag.exceptions", "ChromaDBInitError"),
+    "CollectionNotFoundError": ("dev.stubs.rag.exceptions", "CollectionNotFoundError"),
+    "EmbeddingError": ("dev.stubs.rag.exceptions", "EmbeddingError"),
     # Ingestion
-    "DocumentIngester",
+    "DocumentIngester": ("dev.stubs.rag.ingestion", "DocumentIngester"),
     # Retrieval
-    "SemanticRetriever",
+    "SemanticRetriever": ("dev.stubs.rag.retriever", "SemanticRetriever"),
+    "opensearch_query": ("dev.stubs.rag.opensearch_query", "query"),
     # Citations
-    "extract_citations",
+    "extract_citations": ("dev.stubs.rag.citations", "extract_citations"),
     # Schema validation
-    "validate_rag_output",
+    "validate_rag_output": ("dev.stubs.rag.schema_conformance", "validate_rag_output"),
     # Tracing
-    "PhoenixTracer",
-    # Zvec
-    "zvec_query",
-]
+    "PhoenixTracer": ("dev.stubs.rag.tracing", "PhoenixTracer"),
+}
+
+__all__ = sorted(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve exports lazily on first access (PEP 562)."""
+    try:
+        module_path, attribute = _EXPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    return getattr(import_module(module_path), attribute)
+
+
+def __dir__() -> list[str]:
+    """Expose lazy exports to dir()/completion."""
+    return __all__

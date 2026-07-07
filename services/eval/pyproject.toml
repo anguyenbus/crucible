@@ -55,6 +55,13 @@ demo = [
     "click>=8.0.0",
     "aiohttp",
 ]
+# Local-only OpenSearch retrieval backend for the sibling dev/ tooling
+# (`--rag opensearch`). Auth is SigV4 via the boto3 credential chain (boto3
+# comes with the `bedrock` extra), so opensearch-py is the only dep here --
+# no static keys, no FGAC, no extra auth libraries.
+opensearch = [
+    "opensearch-py",
+]
 
 # NOTE: intentionally NO [project.scripts]. The dev CLIs (eval, eval-rag,
 # generate-spans, eval-replay) live in the LOCAL-ONLY dev/ package, which is NOT

@@ -108,7 +108,7 @@ def query(
 
     Returns:
         Dictionary conforming to rag_query_output.schema.json with:
-            - schema_version: "1.0.0"
+            - schema_version: "1.1.0"
             - system_version: Version info for all components
             - query: Query metadata
             - answer: Generated answer with citations
@@ -207,7 +207,7 @@ def query(
 
         # Build output
         output = {
-            "schema_version": "1.0.0",
+            "schema_version": "1.1.0",
             "system_version": {
                 "pipeline_version": PIPELINE_VERSION,
                 "corpus_loader_version": CORPUS_LOADER_VERSION,

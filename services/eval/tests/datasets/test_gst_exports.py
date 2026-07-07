@@ -45,7 +45,11 @@ def test_eval_config_has_gst_block():
     gst_config = config["datasets"]["gst_legal_rag"]
     assert gst_config["path"] == "data/rag/gst_legal_rag"
     assert gst_config["cache_path"] == "data/rag/gst_legal_rag"
-    assert "embeddings" in gst_config
+    # No `embeddings` pin (2026-07-07): the embedder provider is resolved
+    # per RAG backend by the CLI's _build_embedder; a hardcoded huggingface
+    # pin here handed a 384-dim MiniLM embedder to --rag opensearch against
+    # a 1024-dim Titan index.
+    assert "embeddings" not in gst_config
     # The judge ("deepeval") config is no longer per-dataset: it now lives in the
     # top-level global `judge:` block (see eval_config.yaml / get_deepeval_config).
 

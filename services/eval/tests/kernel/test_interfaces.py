@@ -25,7 +25,7 @@ from app.kernel.interfaces import (
 # A fully-conformant rag_query_output payload (so the importlib.resources schema
 # load + validate path is exercised on a passing case).
 _VALID_RAG_OUTPUT = {
-    "schema_version": "1.0.0",
+    "schema_version": "1.1.0",
     "system_version": {"pipeline_version": "1.0.0"},
     "query": {"query_id": "q1", "text": "What is the termination clause?"},
     "answer": {"text": "The contract may be terminated with notice.", "citations": []},
