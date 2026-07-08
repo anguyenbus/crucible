@@ -1,10 +1,57 @@
 # Comparing Chunking Strategies with OpenSearch + Phoenix
 
-**Date:** 2026-07-07 · **Dataset:** legal-rag-bench (4,876 passages, `nano` slice = 10 QA) · **Status:** harness proven; nano-scale scores below
-
 **📺 Video demo:** [watch the walkthrough on YouTube](https://www.youtube.com/watch?v=BSDB7oXit8Q)
 
 This document records how we compared two chunking strategies end-to-end — ingest → OpenSearch index → retrieval → LLM-judged evaluation → side-by-side comparison in Phoenix — and serves as a **guide for anyone who wants to compare a new approach** (a different chunker, embedder, top-k, hybrid weighting, …). The pattern is always the same: *one index per approach, one Phoenix experiment per approach, all experiments on the same Phoenix dataset.*
+
+---
+
+## Repo map — where ingestion and evaluation live
+
+Two services share this repo with a strict division of labor: **ingestion writes the index, evaluation reads it** (the "BYO-index" contract). Nothing in `services/eval` ever creates or mutates an OpenSearch index.
+
+```
+.  (repo root)
+├── Makefile                              # domain + ingest entry points (opensearch-up/-down/-ingest/-smoke)
+├── infra/
+│   └── opensearch-poc/template.yaml      # CloudFormation: the VPC-only OpenSearch domain (eval-poc)
+├── docs/
+│   ├── byo-index-contract.md             # the contract between the two services
+│   └── chunking-strategy-comparison.md   # this document
+└── services/
+    ├── ingestion/                        # ← INGESTION happens here (owns the index)
+    │   ├── app/
+    │   │   ├── main.py                   # FastAPI service: POST /ingest, POST /search
+    │   │   ├── config.py                 # INGESTION_* settings: index name, chunk_strategy/tokens/overlap
+    │   │   ├── api/                      # ingest.py / search.py endpoints
+    │   │   ├── clients/                  # bedrock.py (Titan embeddings), opensearch.py (SigV4 client)
+    │   │   └── pipeline/                 # fetch → normalize → hash_dedup → chunk → embed → index
+    │   │       └── chunk.py              # ★ the chunking strategies (recursive | fixed) live here
+    │   ├── scripts/create_index.py       # provisions index mapping + hybrid-search-pipeline
+    │   └── tests/
+    └── eval/                             # ← EVALUATION happens here (reads the index, never writes)
+        ├── app/                          # shippable library
+        │   ├── kernel/                   # RagAdapter seam — backend-agnostic query interface
+        │   ├── contracts/                # rag_query_output.schema.json (retriever output contract)
+        │   ├── datasets/                 # legal-rag-bench loader + slices (pico/nano/full)
+        │   ├── deepeval/                 # the 4 judge metrics, judge on Bedrock
+        │   ├── phoenix/                  # experiments.py: Phoenix datasets, experiments, exports
+        │   └── runners/                  # golden_set.py: the Phoenix-native run path
+        ├── dev/                          # local-only tooling (never shipped)
+        │   ├── cli/run_rag_eval.py       # ★ THE eval entry point (--rag, --slice, --experiment-name)
+        │   ├── scripts/
+        │   │   └── ingest_legal_rag_bench_via_service.py   # corpus driver → POSTs to the service
+        │   ├── stubs/rag/opensearch_query.py               # ★ the hybrid retriever (BM25 + k-NN)
+        │   └── fixtures/eval_config.yaml # eval configuration (datasets, judge)
+        ├── results/eval_rag/             # exported experiment artifacts (gitignored)
+        └── tests/
+```
+
+How a comparison flows through this layout:
+
+1. **Ingestion is made in `services/ingestion`.** The FastAPI service receives one document per `POST /ingest` and runs it through `app/pipeline/`: fetch → normalize → sha256 dedup → **`chunk.py`** (this is the file you touch to add a chunking strategy) → Titan embedding (`clients/bedrock.py`) → bulk index into OpenSearch. All knobs are env vars read by `app/config.py` (`INGESTION_INDEX_NAME`, `INGESTION_CHUNK_STRATEGY`, …), so different experiment arms are just different launch environments — no code forks.
+2. **The corpus driver bridges the two services** but lives on the eval side (`services/eval/dev/scripts/ingest_legal_rag_bench_via_service.py`): it walks the benchmark corpus and feeds each passage to the running ingestion service. It knows the dataset; the service knows the index.
+3. **Evaluation is made in `services/eval`.** The entry point is `dev/cli/run_rag_eval.py`; per question it calls the retriever (`dev/stubs/rag/opensearch_query.py` — embeds the question, runs the hybrid query against whatever index `EVAL_OPENSEARCH_INDEX` points at, generates an answer), then the Phoenix runner (`app/phoenix/experiments.py`) scores everything with the DeepEval judge metrics (`app/deepeval/`) and records the experiment. The `app/` vs `dev/` split matters: `app/` is the shippable library, `dev/` is local experiment tooling.
 
 ---
 
