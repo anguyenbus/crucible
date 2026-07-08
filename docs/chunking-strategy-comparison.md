@@ -2,6 +2,8 @@
 
 **Date:** 2026-07-07 · **Dataset:** legal-rag-bench (4,876 passages, `nano` slice = 10 QA) · **Status:** harness proven; nano-scale scores below
 
+**📺 Video demo:** [watch the walkthrough on YouTube](https://www.youtube.com/watch?v=BSDB7oXit8Q)
+
 This document records how we compared two chunking strategies end-to-end — ingest → OpenSearch index → retrieval → LLM-judged evaluation → side-by-side comparison in Phoenix — and serves as a **guide for anyone who wants to compare a new approach** (a different chunker, embedder, top-k, hybrid weighting, …). The pattern is always the same: *one index per approach, one Phoenix experiment per approach, all experiments on the same Phoenix dataset.*
 
 ---
