@@ -144,6 +144,10 @@ def _build_args() -> Any:
     # --rag opensearch (eval reads an externally owned index, never builds it).
     parser.add_argument("--force-reingest", action="store_true")
     parser.add_argument("--top-k", type=int, default=5)
+    # Phoenix experiment name; defaults to "{dataset}-{slice}". Give each arm of
+    # an A/B comparison (e.g. chunking strategies) a distinct name so the runs
+    # are tellable apart in the Phoenix experiments table.
+    parser.add_argument("--experiment-name", type=str, default=None)
     return parser.parse_args()
 
 
@@ -198,7 +202,7 @@ def _phoenix_native(args: Any, config: dict, get_deepeval_config: Any, get_embed
         corpus_dir=corpus_dir,
         endpoint=os.environ.get("PHOENIX_ENDPOINT", "http://localhost:6006"),
         slice_name=args.slice,
-        experiment_name=f"{routing.dataset_name}-{args.slice}",
+        experiment_name=args.experiment_name or f"{routing.dataset_name}-{args.slice}",
         judge_model=get_deepeval_config(config)["judge_model"],
     )
     _ = export_experiment_results(experiment, output_dir)

@@ -26,7 +26,10 @@ class Settings(BaseSettings):
     embed_model_id: str = "amazon.titan-embed-text-v2:0"
     embed_dimensions: int = 1024
 
-    # Chunking (recursive token chunker, tiktoken cl100k)
+    # Chunking (tiktoken cl100k). Strategies: "recursive" (LangChain
+    # RecursiveCharacterTextSplitter, splits at natural separators) or
+    # "fixed" (hard token windows, ignores separators).
+    chunk_strategy: str = "recursive"
     chunk_tokens: int = 800
     chunk_overlap: int = 120
     max_chunks_per_doc: int = 100
