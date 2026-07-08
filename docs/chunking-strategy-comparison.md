@@ -42,7 +42,7 @@ Both live in the ingestion service (`services/ingestion/app/pipeline/chunk.py`),
 
 ## 2. What was created in OpenSearch
 
-One index per arm, all on the shared POC domain (`eval-poc`, VPC-only, t3.small.search), all with the identical mapping the ingestion service provisions (fields: `doc_id`, `chunk_index`, `content`, `content_vector` (1024-dim faiss k-NN), `sha256`, `source_uri`, `created_at`; `_id = "{doc_id}:{chunk_index}"`):
+One index per arm, all on the shared POC domain (`eval-poc`, VPC-only, t3.small.search, managed by the `opensearch-poc` CloudFormation stack — `make opensearch-up`/`opensearch-status`). Each index is provisioned by the ingestion service's `scripts/create_index.py`, which creates two things: the **index** with the service's standard mapping (fields: `doc_id`, `chunk_index`, `content`, `content_vector` — a 1024-dim `knn_vector` using the faiss engine — `sha256`, `source_uri`, `created_at`; `_id = "{doc_id}:{chunk_index}"`), and the **`hybrid-search-pipeline`** search pipeline (min-max normalization + 0.5/0.5 arithmetic-mean combination of BM25 and k-NN scores; created once, shared by all indexes):
 
 | Index | Strategy | Chunks | Distinct docs | Chunks/passage |
 |---|---|---|---|---|
@@ -168,3 +168,43 @@ Artifacts: Phoenix UI → dataset `legal-rag-bench-nano` → Experiments; file e
 7. Run the cheap slice (`nano`) first to shake out plumbing, then **decide on `full`**. Don't conclude from n=10.
 8. Read the **per-question compare view** for the diverging questions — the aggregate table tells you *whether*, the compare view tells you *why*.
 9. On the t3.small POC domain, space heavy operations out: sustained ingest+eval load drove JVM pressure to ~80% and eventually wedged the node for ~16 minutes (TLS handshake timeouts). Bump the node size before iterating seriously.
+10. **Clean up experiment indexes when you're done** (see below) — every extra index costs memory on the shared node permanently, not just while you're testing.
+
+---
+
+## 7. Cleaning up after testing
+
+Three layers hold state after a comparison; clean them up from cheapest to most drastic.
+
+### 7.1 Delete the experiment indexes (usual case)
+
+The per-arm indexes are disposable — they can be rebuilt from the corpus at any time (~1.5–2 h each). Deleting them matters beyond tidiness: on the 2 GB t3.small, the extra faiss graphs are a standing memory cost (the three-index setup ran at ~80% JVM pressure and wedged the node once).
+
+```bash
+EP=<domain-endpoint>
+uvx awscurl --service es --region ap-southeast-2 -X DELETE "https://$EP/lrb-rec-256-50"
+uvx awscurl --service es --region ap-southeast-2 -X DELETE "https://$EP/lrb-fix-256-50"
+
+# confirm what remains
+uvx awscurl --service es --region ap-southeast-2 "https://$EP/_cat/indices?v"
+```
+
+Keep `legal-rag-bench` (the production baseline index) unless you mean to rebuild it. Deletion is immediate and irreversible — there is no recycle bin. The shared `hybrid-search-pipeline` is *not* deleted with the indexes and should stay (the baseline index uses it).
+
+Also stop any leftover local processes from the ingest (`uvicorn app.main:app` on port 8000) — each arm's service instance is only needed during its ingest.
+
+### 7.2 Phoenix experiments and local exports (optional)
+
+- **Phoenix** stores datasets and experiments in `~/.phoenix/phoenix.db` on the machine running the server. They cost nothing while idle and are useful history — the usual move is to keep them. To remove one anyway, use the Phoenix UI (dataset page → delete experiment/dataset).
+- **File exports** live under `services/eval/results/eval_rag/chunking_nano/<experiment-name>/` (CSV/JSON/parquet). `results/` is gitignored; delete freely, but note these are your only copies outside Phoenix.
+
+### 7.3 Tear down the whole domain (when the POC is over)
+
+The domain bills ~US$0.05/h while it exists, regardless of activity. When nobody needs *any* index anymore:
+
+```bash
+make opensearch-down    # deletes the CloudFormation stack: domain, all indexes, SG (~10–20 min)
+make opensearch-status  # should report: stack not found, no charges
+```
+
+This destroys **every** index including `legal-rag-bench` — after this, a full re-ingest is required before any evaluation can run. `make opensearch-up` recreates the empty domain from the same template.
