@@ -1,0 +1,90 @@
+{
+  "post": {
+    "description": "Answer a single-turn RAG query with the LIVE pipeline.\n\nConfig resolution is REAL (pins echoed in ``result.system_version``,\nincl. ``config_sha256``); the chain is policy_router \u2192 query_rewrite \u2192\nembed \u2192 retrieve \u2192 rerank \u2192 assemble \u2192 prompt \u2192 generate \u2192 guardrails \u2192\ncite, with clients pulled from ``app.state`` and spans/timings recorded\nOUTSIDE the pure stages. The ``result`` block validates verbatim against\neval's rag_query_output v1.1.0.",
+    "operationId": "post_query_query_post",
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/QueryRequest"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/QueryResponse"
+            }
+          }
+        },
+        "description": "Successful Response"
+      },
+      "404": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/NotFoundErrorResponse"
+            }
+          }
+        },
+        "description": "Unknown (but well-formed) pipeline_config reference."
+      },
+      "422": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ValidationErrorResponse"
+            }
+          }
+        },
+        "description": "Request validation failed (e.g. malformed pipeline_config ref)."
+      },
+      "500": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/InternalErrorResponse"
+            }
+          }
+        },
+        "description": "Packaged config artifact failed integrity verification."
+      },
+      "502": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/DependencyErrorResponse"
+            }
+          }
+        },
+        "description": "An upstream dependency failed: OpenSearch search failure, or a non-throttle Bedrock error. The body names the dependency."
+      },
+      "503": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/DependencyErrorResponse"
+            }
+          }
+        },
+        "description": "Bedrock throttling persisted past the bounded retry budget. Transient \u2014 retry after the Retry-After interval.",
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds to wait before retrying the query.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "summary": "Post Query",
+    "tags": [
+      "query"
+    ]
+  }
+}

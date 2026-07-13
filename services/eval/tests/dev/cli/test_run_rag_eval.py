@@ -200,3 +200,44 @@ def test_build_embedder_keeps_huggingface_for_stub_local():
 
     _build_embedder({}, _fake_get_embedder, rag_name="stub-local")
     assert seen["provider"] == "huggingface"
+
+
+# ---------------------------------------------------------------------------
+# --rag orchestrator (HTTP backend; no live orchestrator, no network)
+# ---------------------------------------------------------------------------
+
+
+def test_orchestrator_registers_with_no_query_side_embedder():
+    """--rag orchestrator builds a RagAdapter and _build_embedder yields None."""
+    from app.kernel.interfaces import RagAdapter
+    from dev.cli.run_rag_eval import _build_embedder, get_rag
+
+    def _unused_get_embedder(**kwargs):  # pragma: no cover - must not be called
+        raise AssertionError("orchestrator must not build a query-side embedder")
+
+    # The orchestrator embeds server-side: no huggingface/bedrock embedder is
+    # built (a sentence-transformers download here would be a regression).
+    assert _build_embedder({}, _unused_get_embedder, rag_name="orchestrator") is None
+
+    adapter = get_rag("orchestrator", embedder=None)
+    assert isinstance(adapter, RagAdapter)
+
+
+def test_top_k_with_orchestrator_fails_loudly(capsys):
+    """BINDING (spec Q11): --top-k + --rag orchestrator is an error, never a no-op."""
+    import pytest
+    from dev.cli.run_rag_eval import _build_args
+
+    with pytest.raises(SystemExit) as exc_info:
+        _build_args(["--rag", "orchestrator", "--top-k", "5"])
+
+    assert exc_info.value.code != 0
+    err = capsys.readouterr().err
+    assert "pipeline config owns top_k" in err
+    assert "ORCHESTRATOR_PIPELINE_CONFIG" in err
+
+    # Without an explicit --top-k the orchestrator backend parses fine (the
+    # guard fires only on an EXPLICITLY provided flag, never the default).
+    args = _build_args(["--rag", "orchestrator"])
+    assert args.rag == "orchestrator"
+    assert args.top_k is None

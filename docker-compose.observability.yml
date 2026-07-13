@@ -22,5 +22,44 @@ services:
     depends_on:
       - phoenix
 
+  # Orchestrator service (Phase 2): the real query pipeline, traced to the
+  # SAME Phoenix service above (never a second Phoenix). Host port 8000 maps
+  # to the image's uvicorn on 8080.
+  #
+  # Dev-only convenience: the orchestrator's target runtime is an independent
+  # pod on the shared Kubernetes platform (creds via IRSA there); nothing in
+  # the service code depends on this compose wiring.
+  #
+  # AWS credentials — primary path is the host's ~/.aws mounted read-only into
+  # the runtime user's home plus AWS_PROFILE. Alternative (documented, not
+  # relied on): on EC2 the container can reach the instance role via IMDS if
+  # the instance's metadata options set HttpPutResponseHopLimit=2 (the default
+  # of 1 drops IMDSv2 token responses at the docker bridge hop):
+  #   aws ec2 modify-instance-metadata-options --instance-id <id> \
+  #     --http-put-response-hop-limit 2 --http-endpoint enabled
+  orchestrator:
+    build:
+      context: ./services/orchestrator
+    image: orchestrator:latest
+    container_name: orchestrator
+    ports:
+      - "8000:8080"
+    environment:
+      # Location facts only (BYO contract) — behavior pins (top_k, models,
+      # budgets, template) live in the pinned pipeline config YAML in the image.
+      - ORCHESTRATOR_OPENSEARCH_ENDPOINT=${ORCHESTRATOR_OPENSEARCH_ENDPOINT:-}
+      - ORCHESTRATOR_OPENSEARCH_INDEX=${ORCHESTRATOR_OPENSEARCH_INDEX:-legal-rag-bench}
+      - PHOENIX_ENDPOINT=http://phoenix:6006
+      # Pass-through: set AWS_PROFILE on the host when using the mounted
+      # ~/.aws; left unset, boto3 walks its standard chain (mounted files,
+      # then IMDS). An empty value would be treated as a profile name.
+      - AWS_PROFILE
+      - AWS_REGION=${AWS_REGION:-ap-southeast-2}
+    volumes:
+      - ${HOME}/.aws:/home/orchestrator/.aws:ro
+    depends_on:
+      - phoenix
+    restart: unless-stopped
+
 volumes:
   phoenix-data:

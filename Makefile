@@ -160,3 +160,12 @@ opensearch-smoke: ## One hardcoded query end-to-end vs the live index (SMOKE PAS
 		AWS_REGION="$(AWS_REGION)" \
 		uv run --extra opensearch --extra bedrock \
 		python -m dev.stubs.rag.opensearch_query
+
+# Orchestrator contract tooling — the SINGLE code path behind the committed
+# OpenAPI contract at services/orchestrator/openapi.json. Humans run this
+# target after changing the API surface; the Tier 1 pre-commit hook runs the
+# same export in --check mode and fails on uncommitted contract drift.
+.PHONY: orchestrator-openapi
+
+orchestrator-openapi: ## Export the orchestrator OpenAPI contract to services/orchestrator/openapi.json
+	cd services/orchestrator && uv run python scripts/export_openapi.py

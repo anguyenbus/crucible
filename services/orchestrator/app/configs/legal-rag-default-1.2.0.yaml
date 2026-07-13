@@ -1,0 +1,61 @@
+# Pinned pipeline config: legal-rag-default 1.2.0
+#
+# IMMUTABLE once released — never edit this file. Any change requires a NEW
+# {name}-{semver} file plus a new entry in manifest.sha256 (enforced by the
+# immutability test).
+#
+# Phase B multi-turn config and the Chainlit demo UI's default config ref
+# (eval's ORCHESTRATOR_PIPELINE_CONFIG stays on legal-rag-default-1.1.0).
+# Carries 1.1.0's generator/embedder/retrieval/context/guardrails pins
+# forward UNCHANGED and adds the history pins block plus the history-aware
+# prompt template ({history} renders to an empty string when the request has
+# no history, making the prompt equivalent to 1.1.0's). EVERY pin is explicit
+# (schema defaults exist only for backward resolution of released configs,
+# never for authoring); the template is INLINED as a block scalar so
+# config_sha256 covers every prompt byte.
+name: legal-rag-default
+version: 1.2.0
+region: ap-southeast-2
+generator:
+  model_id: au.anthropic.claude-sonnet-4-6
+  temperature: 0.0
+  max_tokens: 1024
+embedder:
+  model_id: amazon.titan-embed-text-v2:0
+prompt_template:
+  version: 1.2.0
+  # {history}, {context} and {question} are replace-rendered by the prompt
+  # builder; every other brace in the template is literal text. {history}
+  # renders either to an empty string (no history) or to a delimited
+  # "Conversation so far:" block of User:/Assistant: lines ENDING in a blank
+  # line — so the Context section below always starts flush-left either way.
+  text: |-
+    You are a helpful assistant that answers questions based on the provided context.
+
+    Each context block below starts with its chunk id in square brackets, in the
+    form [doc_id:chunk_idx]. When answering, you MUST cite your sources by
+    repeating the chunk id VERBATIM in square brackets immediately after the
+    claim it supports, e.g. "The supply is GST-free [gst-act-1999:4]."
+
+    If the context doesn't contain enough information to answer the question
+    confidently, say "I don't have enough information to answer this question."
+
+    {history}Context:
+    {context}
+
+    Question: {question}
+
+    Answer:
+retrieval:
+  top_k: 8
+  params:
+    search_type: hybrid
+context:
+  char_budget: 32000
+history:
+  rewrite_window_user_turns: 3
+  rewrite_char_budget: 1500
+  prompt_window_turns: 6
+  prompt_char_budget: 6000
+guardrails:
+  policy_version: 0.0.0

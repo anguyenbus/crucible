@@ -1,0 +1,98 @@
+"""
+Infrastructure clients (OpenSearch retrieval, Bedrock embed/generate).
+
+Import discipline: ALL infra libraries (boto3, opensearch-py, OpenTelemetry)
+are confined to this package and injected into the pipeline stages — the
+``app.orchestrator`` stage modules must never import them directly (enforced
+by the ``stages-pure`` import-linter contract in ``pyproject.toml``).
+
+:class:`AppClients` is the bundle FastAPI lifespan constructs ONCE (via
+:func:`build_app_clients`) and stores on ``app.state``; the router threads
+the instances into the pure stages per request. Tests substitute mock
+instances on ``app.state`` BEFORE lifespan runs — lifespan only constructs
+clients when none are pre-installed, so pytest never touches AWS.
+
+OpenTelemetry still does not appear here — clients return PLAIN DATA and the
+router owns span creation.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from app.clients.bedrock import TITAN_EMBEDDING_DIMENSIONS, BedrockClient
+from app.clients.errors import OpenSearchNotReadyError
+from app.clients.opensearch import OpenSearchSearchClient
+from app.config import DEFAULT_PIPELINE_CONFIG_REF, Settings, resolve_pipeline_config
+
+
+@dataclass
+class AppClients:
+    """
+    The once-per-process client bundle living on ``app.state.clients``.
+
+    ``search`` is ``None`` when the OpenSearch client could not be
+    constructed (no endpoint configured, ``_meta`` mismatch, or the domain
+    was unreachable at startup) — the service then renders not-ready on
+    ``readyz`` and maps ``/query`` to 502 (dependency: opensearch), instead
+    of crashing at startup.
+
+    Fields are duck-typed ``Any`` so tests install mock instances directly.
+    """
+
+    bedrock: Any
+    search: Any | None = None
+    # Human-readable reason search is None; surfaced by readyz and the 502.
+    opensearch_unavailable_reason: str | None = None
+
+
+def build_app_clients(settings: Settings) -> AppClients:
+    """
+    Construct the real client bundle from Settings location facts (lifespan).
+
+    Construction-time pins (region, query-side embedder for the ``_meta``
+    guard) come from the documented default acceptance config
+    (:data:`app.config.DEFAULT_PIPELINE_CONFIG_REF`); per-request behavior
+    pins (model ids, temperature, budgets) still arrive per call from each
+    request's resolved config.
+
+    An OpenSearch client that cannot be constructed NEVER crashes startup:
+    the reason is recorded so ``readyz`` reports 503 and ``/query`` maps to
+    502 naming the dependency.
+    """
+    default_config = resolve_pipeline_config(DEFAULT_PIPELINE_CONFIG_REF).config
+    bedrock = BedrockClient(region=default_config.region)
+
+    if settings.opensearch_endpoint is None:
+        return AppClients(
+            bedrock=bedrock,
+            search=None,
+            opensearch_unavailable_reason=(
+                "ORCHESTRATOR_OPENSEARCH_ENDPOINT is not set — the service "
+                "has no OpenSearch domain to retrieve from."
+            ),
+        )
+
+    try:
+        search = OpenSearchSearchClient(
+            endpoint=settings.opensearch_endpoint,
+            index=settings.opensearch_index,
+            embedder_model_id=default_config.embedder.model_id,
+            embedder_dimensions=TITAN_EMBEDDING_DIMENSIONS,
+            region=default_config.region,
+        )
+    except OpenSearchNotReadyError as exc:
+        # _meta present-but-mismatched: not-ready, with the guard's own prose.
+        return AppClients(bedrock=bedrock, search=None, opensearch_unavailable_reason=str(exc))
+    except Exception as exc:  # noqa: BLE001 — startup must degrade, not crash
+        # The init-time mapping fetch hit a transport/credential failure;
+        # record a CLEAN reason (class name only, never raw internals).
+        return AppClients(
+            bedrock=bedrock,
+            search=None,
+            opensearch_unavailable_reason=(
+                f"OpenSearch was unreachable at startup ({type(exc).__name__})."
+            ),
+        )
+    return AppClients(bedrock=bedrock, search=search)

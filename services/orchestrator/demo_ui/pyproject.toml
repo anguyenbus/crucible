@@ -1,0 +1,43 @@
+# Chainlit demo UI for the orchestrator — a SEPARATE uv project by design.
+#
+# Dependency firewall (spec 2026-07-13-chainlit-chat-ui, Q8): Chainlit's heavy,
+# fast-moving dependency tree must NEVER enter the orchestrator service venv,
+# uv.lock, or Docker image. This project talks to the orchestrator ONLY over
+# HTTP (ORCHESTRATOR_URL) and never imports app.*.
+#
+# Dependencies are EXACTLY these five (no httpx-sse, no extra SSE client —
+# text/event-stream framing is parsed directly from httpx streamed lines):
+# - chainlit: pinned EXACTLY (==) — a version bump is a deliberate event.
+# - httpx: HTTP + SSE streaming to the orchestrator.
+# - opentelemetry-sdk + opentelemetry-exporter-otlp-proto-http: the UI's OWN
+#   tracer provider, OTLP-HTTP to {PHOENIX_ENDPOINT}/v1/traces.
+# - openinference-semantic-conventions: attribute NAMES only, so Phoenix
+#   renders the per-message CHAIN span.
+
+[project]
+name = "demo-ui"
+version = "0.1.0"
+description = "Chainlit chat UI over the orchestrator's live RAG pipeline (HTTP-only; streaming + memory + joined tracing)."
+requires-python = ">=3.12"
+dependencies = [
+    "chainlit==2.11.1",
+    "httpx",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-http",
+    "openinference-semantic-conventions",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+# Not a distributable package: uv installs only the dependencies; app.py and
+# chat_ui/ run from source (pytest resolves chat_ui via pythonpath below).
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"

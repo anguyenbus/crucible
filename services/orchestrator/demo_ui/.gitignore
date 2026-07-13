@@ -1,0 +1,9 @@
+# Local venv + tool caches (uv.lock IS committed — the chainlit pin is exact).
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# Chainlit runtime artifacts (generated on run; config is defaults-only).
+.chainlit/
+.files/

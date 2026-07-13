@@ -1,0 +1,49 @@
+# Pinned pipeline config: legal-rag-default 1.1.0
+#
+# IMMUTABLE once released — never edit this file. Any change requires a NEW
+# {name}-{semver} file plus a new entry in manifest.sha256 (enforced by the
+# immutability test).
+#
+# Phase 2 walking-skeleton config: EVERY pin is explicit (schema defaults
+# exist only for backward resolution of 1.0.0, never for authoring). The
+# prompt template is INLINED as a block scalar so config_sha256 covers every
+# prompt byte. This is the documented default config for acceptance and for
+# eval's ORCHESTRATOR_PIPELINE_CONFIG.
+name: legal-rag-default
+version: 1.1.0
+region: ap-southeast-2
+generator:
+  model_id: au.anthropic.claude-sonnet-4-6
+  temperature: 0.0
+  max_tokens: 1024
+embedder:
+  model_id: amazon.titan-embed-text-v2:0
+prompt_template:
+  version: 1.1.0
+  # {context} and {question} are replace-rendered by the prompt builder;
+  # every other brace in the template is literal text.
+  text: |-
+    You are a helpful assistant that answers questions based on the provided context.
+
+    Each context block below starts with its chunk id in square brackets, in the
+    form [doc_id:chunk_idx]. When answering, you MUST cite your sources by
+    repeating the chunk id VERBATIM in square brackets immediately after the
+    claim it supports, e.g. "The supply is GST-free [gst-act-1999:4]."
+
+    If the context doesn't contain enough information to answer the question
+    confidently, say "I don't have enough information to answer this question."
+
+    Context:
+    {context}
+
+    Question: {question}
+
+    Answer:
+retrieval:
+  top_k: 8
+  params:
+    search_type: hybrid
+context:
+  char_budget: 32000
+guardrails:
+  policy_version: 0.0.0

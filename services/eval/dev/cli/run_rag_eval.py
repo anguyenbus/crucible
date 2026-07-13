@@ -4,11 +4,13 @@ CLI shell for RAG evaluation on Legal RAG Bench (thin wrapper).
 Usage:
     uv run eval-rag --slice full --rag stub-local
     uv run eval-rag --slice pico --rag opensearch
+    uv run eval-rag --slice pico --rag orchestrator
 
 This is a LOCAL/demo shell: it parses args, resolves the judge provider/model and
-builds the ``RagAdapter`` (stub-local ChromaDB demo backend, or the OpenSearch
-retrieval backend), then runs the Phoenix-native Datasets & Experiments flow via
-the service library (``service/runners/golden_set.run_phoenix_native`` ->
+builds the ``RagAdapter`` (stub-local ChromaDB demo backend, the OpenSearch
+retrieval backend, or the orchestrator HTTP backend), then runs the
+Phoenix-native Datasets & Experiments flow via the service library
+(``service/runners/golden_set.run_phoenix_native`` ->
 ``service/phoenix/experiments``). Every run produces a per-question, scored
 experiment in the Phoenix UI plus the canonical CSV/parquet/JSON artifacts via
 ``export_experiment_results``.
@@ -19,6 +21,10 @@ is the fail-fast preflight. There is no offline/no-server CLI scoring path.
 NOTE: stub-local uses a ChromaDB reference implementation for demonstration only.
 ``--rag opensearch`` queries an externally owned OpenSearch index (config via
 ``EVAL_OPENSEARCH_*`` env vars; see ``dev.stubs.rag.opensearch_query``).
+``--rag orchestrator`` drives a running orchestrator service over HTTP
+(``ORCHESTRATOR_URL`` / ``ORCHESTRATOR_PIPELINE_CONFIG`` env vars; see
+``dev.stubs.rag.orchestrator_query``) — its pinned pipeline config owns
+``top_k``, so ``--top-k`` is rejected loudly for that backend.
 The judge runs on AWS Bedrock only.
 """
 
@@ -35,6 +41,10 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file (Phase 4 owns side-effect cleanup).
 load_dotenv()
+
+# Retrieval depth used when --top-k is not given (stub-local/opensearch only;
+# the orchestrator backend's pinned pipeline config owns top_k).
+DEFAULT_TOP_K = 5
 
 
 def load_dataset(slice_name: str, config: dict) -> Any:
@@ -75,12 +85,19 @@ def get_rag(
       OpenSearch index (``opensearch`` extra; config via ``EVAL_OPENSEARCH_*``
       env vars). ``force_reingest`` is a documented NO-OP here — eval never
       builds or mutates the index (the ingestion service owns it).
+    - ``orchestrator``: HTTP calls to a running orchestrator service
+      (``ORCHESTRATOR_URL`` / ``ORCHESTRATOR_PIPELINE_CONFIG`` env vars; no
+      extra needed beyond httpx). ``top_k`` is OWNED by the orchestrator's
+      pinned pipeline config — the ``top_k`` argument is deliberately not
+      forwarded (the CLI rejects an explicit ``--top-k`` for this backend).
 
     Args:
-        rag_name: RAG system name ('stub-local' or 'opensearch').
+        rag_name: RAG system name ('stub-local', 'opensearch' or
+            'orchestrator').
         force_reingest: Force corpus re-ingestion (stub-local only; no-op for
-            opensearch).
-        top_k: Number of chunks to retrieve.
+            opensearch/orchestrator).
+        top_k: Number of chunks to retrieve (stub-local/opensearch only; the
+            orchestrator's pinned config owns it).
         embedder: Optional shared embedder.
 
     Returns:
@@ -91,6 +108,18 @@ def get_rag(
 
     """
     from app.kernel.interfaces import RagAdapter
+
+    if rag_name == "orchestrator":
+        from dev.stubs.rag.orchestrator_query import query as orchestrator_query
+
+        def orchestrator_wrapper(question: str, corpus_dir: Path) -> dict[str, Any]:
+            # top_k / force_reingest are deliberately NOT forwarded: the
+            # orchestrator's pinned pipeline config owns retrieval behavior,
+            # and the backend is read-only over HTTP.
+            return orchestrator_query(question=question, corpus_dir=corpus_dir)
+
+        # No query-side embedder: the orchestrator embeds server-side.
+        return RagAdapter(query_callable=orchestrator_wrapper, embedder=None)
 
     if rag_name == "opensearch":
         from dev.stubs.rag.opensearch_query import query as opensearch_query
@@ -125,10 +154,12 @@ def get_rag(
 
         return RagAdapter(query_callable=chromadb_wrapper, embedder=embedder)
 
-    raise ValueError(f"Unknown RAG backend: {rag_name!r} (use 'stub-local' or 'opensearch')")
+    raise ValueError(
+        f"Unknown RAG backend: {rag_name!r} (use 'stub-local', 'opensearch' or 'orchestrator')"
+    )
 
 
-def _build_args() -> Any:
+def _build_args(argv: list[str] | None = None) -> Any:
     import argparse
 
     parser = argparse.ArgumentParser(description="Evaluate RAG with DeepEval metrics")
@@ -137,26 +168,41 @@ def _build_args() -> Any:
         choices=["pico", "nano", "full", "gst_pico", "gst_nano", "gst_mini", "gst_full"],
         default="pico",
     )
-    parser.add_argument("--rag", required=True, choices=["stub-local", "opensearch"])
+    parser.add_argument(
+        "--rag", required=True, choices=["stub-local", "opensearch", "orchestrator"]
+    )
     parser.add_argument("--config", type=Path, default=Path("eval_config.yaml"))
     parser.add_argument("--output-dir", type=Path, default=None)
     # --force-reingest applies to stub-local only; it is a documented no-op for
     # --rag opensearch (eval reads an externally owned index, never builds it).
     parser.add_argument("--force-reingest", action="store_true")
-    parser.add_argument("--top-k", type=int, default=5)
+    # Default is None (not 5) so an EXPLICIT --top-k is distinguishable from
+    # the defaulted value; unset resolves to DEFAULT_TOP_K downstream.
+    parser.add_argument("--top-k", type=int, default=None)
     # Phoenix experiment name; defaults to "{dataset}-{slice}". Give each arm of
     # an A/B comparison (e.g. chunking strategies) a distinct name so the runs
     # are tellable apart in the Phoenix experiments table.
     parser.add_argument("--experiment-name", type=str, default=None)
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.rag == "orchestrator" and args.top_k is not None:
+        # BINDING (spec Q11): never a silent no-op in an evaluation tool.
+        parser.error(
+            "--top-k cannot be combined with --rag orchestrator: the pinned "
+            "pipeline config owns top_k. To change retrieval depth, publish "
+            "(or select) a different pipeline config version via the "
+            "ORCHESTRATOR_PIPELINE_CONFIG env var."
+        )
+    return args
 
 
 def _build_embedder(dataset_config: dict, get_embedder: Any, rag_name: str = "stub-local") -> Any:
     """
     Build the shared embedder for the selected backend.
 
-    Provider resolution: the dataset config's ``embeddings.provider`` wins;
-    otherwise ``--rag opensearch`` defaults to ``bedrock`` (Titan V2 — must
+    Provider resolution: ``--rag orchestrator`` needs NO query-side embedder
+    (the orchestrator embeds server-side) and always returns ``None``.
+    Otherwise the dataset config's ``embeddings.provider`` wins;
+    ``--rag opensearch`` defaults to ``bedrock`` (Titan V2 — must
     match the index embeddings) and ``stub-local`` keeps ``huggingface``
     (sentence-transformers).
 
@@ -164,6 +210,9 @@ def _build_embedder(dataset_config: dict, get_embedder: Any, rag_name: str = "st
     (lazy import; boto3 comes from the ``bedrock`` extra) — NOT by the app's
     placeholder BedrockEmbedder.
     """
+    if rag_name == "orchestrator":
+        return None
+
     cfg = dataset_config.get("embeddings", {})
     default_provider = "bedrock" if rag_name == "opensearch" else "huggingface"
     provider = cfg.get("provider", default_provider)
@@ -194,7 +243,8 @@ def _phoenix_native(args: Any, config: dict, get_deepeval_config: Any, get_embed
     dataset_config = config["datasets"].get(routing.config_key, {})
     corpus_dir = Path(dataset_config.get("path", f"data/rag/{routing.config_key}/corpus_files"))
     embedder = _build_embedder(dataset_config, get_embedder, rag_name=args.rag)
-    rag_adapter = get_rag(args.rag, args.force_reingest, args.top_k, embedder)
+    top_k = args.top_k if args.top_k is not None else DEFAULT_TOP_K
+    rag_adapter = get_rag(args.rag, args.force_reingest, top_k, embedder)
     output_dir = _default_output_dir(args)
     output_dir.mkdir(parents=True, exist_ok=True)
     experiment = run_phoenix_native(
@@ -211,10 +261,11 @@ def _phoenix_native(args: Any, config: dict, get_deepeval_config: Any, get_embed
 
 def main() -> None:
     """Parse args, build injected deps, and run the Phoenix-native experiment."""
-    from dev.cli.check import bedrock_preflight
     from app.config import load_config
     from app.deepeval.bedrock_provider import get_deepeval_config
     from app.deepeval.embeddings import get_embedder
+
+    from dev.cli.check import bedrock_preflight
 
     args = _build_args()
     try:

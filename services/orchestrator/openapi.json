@@ -1,0 +1,567 @@
+{
+  "components": {
+    "schemas": {
+      "DependencyErrorResponse": {
+        "description": "502/503 body: an upstream dependency failed (never a caller error).",
+        "properties": {
+          "dependency": {
+            "description": "Machine-readable name of the failing dependency, so callers (e.g. eval's runner) can distinguish stack-down from bad-request without parsing prose.",
+            "enum": [
+              "opensearch",
+              "bedrock"
+            ],
+            "title": "Dependency",
+            "type": "string"
+          },
+          "detail": {
+            "description": "Clean, human-readable failure summary. NEVER raw exception text; at most the AWS error code or exception class name.",
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail",
+          "dependency"
+        ],
+        "title": "DependencyErrorResponse",
+        "type": "object"
+      },
+      "GuardrailDecision": {
+        "description": "One guardrail evaluation outcome.\n\nMirrors the Bedrock Guardrails assessment shape \u2014 the likely Phase 3 wiring.\n\n``stage`` and ``decision`` are EXTENSIBLE open vocabularies: plain strings\nwith documented value sets, deliberately NOT closed ``Literal``/``Enum``\ntypes, so adding values later is non-breaking and does not fight the\noasdiff breaking-change gate.",
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Guardrail category (e.g. denied topic, PII, content filter).",
+            "title": "Category"
+          },
+          "decision": {
+            "description": "Guardrail outcome. Documented vocabulary: 'allow' | 'block' | 'flag' | 'transform'. EXTENSIBLE \u2014 additional values may be added in later phases without a breaking change.",
+            "title": "Decision",
+            "type": "string"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Human-readable explanation of why the decision was taken.",
+            "title": "Rationale"
+          },
+          "rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Identifier of the guardrail rule/policy element that fired.",
+            "title": "Rule Id"
+          },
+          "stage": {
+            "description": "Pipeline stage the guardrail ran at. Documented vocabulary: 'input' | 'output'. EXTENSIBLE \u2014 additional values may be added in later phases without a breaking change.",
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "decision"
+        ],
+        "title": "GuardrailDecision",
+        "type": "object"
+      },
+      "HealthzResponse": {
+        "description": "``GET /healthz`` body: process liveness only.",
+        "properties": {
+          "status": {
+            "description": "Always 'ok' while the process serves requests.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "HealthzResponse",
+        "type": "object"
+      },
+      "HistoryTurn": {
+        "additionalProperties": false,
+        "description": "One prior conversation turn, oldest-first in ``QueryRequest.history``.\n\nREQUEST-ONLY input to the deterministic query rewrite and the prompt\nhistory block \u2014 never echoed in ``result``. Unknown keys are rejected\n(``extra=\"forbid\"``) so contract drift fails loudly.",
+        "properties": {
+          "role": {
+            "description": "Who spoke the turn: the user or the assistant.",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "description": "The turn's text (max 8,000 chars; longer turns are rejected with 422).",
+            "maxLength": 8000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "text"
+        ],
+        "title": "HistoryTurn",
+        "type": "object"
+      },
+      "InternalErrorResponse": {
+        "description": "500 body: a packaged config artifact failed integrity verification.",
+        "properties": {
+          "detail": {
+            "description": "Clear error message naming the config reference whose packaged artifact is corrupt or mismatches the committed hash manifest. Internal service \u2014 messages are deliberately specific.",
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "InternalErrorResponse",
+        "type": "object"
+      },
+      "NotFoundErrorResponse": {
+        "description": "404 body: the requested pinned config reference does not exist.",
+        "properties": {
+          "detail": {
+            "description": "Clear error message naming the unknown {name}-{semver} config reference. Unknown refs are never resolved by fallback.",
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "NotFoundErrorResponse",
+        "type": "object"
+      },
+      "QueryRequest": {
+        "additionalProperties": false,
+        "description": "RAG query request: the current question plus optional bounded history.\n\nUnknown/extra fields are rejected (``extra=\"forbid\"``) so contract drift \u2014\ne.g. a ``top_k`` override \u2014 fails loudly at validation. ``history`` is the\nONE deliberate session field (Phase B), superseding the earlier\n\"session fields fail loudly\" note; it is request-only and never echoed.",
+        "properties": {
+          "history": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/HistoryTurn"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional prior conversation turns, oldest first (max 20 turns, 8,000 chars per turn). Consumed ONLY by the deterministic history-aware query rewrite and the prompt history block (windows and char budgets are pinned in the pipeline config). REQUEST-ONLY: never echoed anywhere in result \u2014 result.query.text echoes the current question verbatim, so rag_query_output v1.1.0 is unchanged and absent history behaves exactly like a single-turn request. The rewritten retrieval query is observable in the retrieval span's INPUT_VALUE.",
+            "title": "History"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional opaque object echoed back VERBATIM in result.query.metadata and NEVER read by any pipeline stage \u2014 pipeline behavior is metadata-invariant. Enables eval dataset joins for replay (parallels eval's query.metadata).",
+            "title": "Metadata"
+          },
+          "pipeline_config": {
+            "description": "REQUIRED fully-qualified pinned-config reference in {name}-{semver} form, e.g. 'legal-rag-default-1.0.0'. Exact match only: no floating refs, no 'latest' alias, no default-to-newest. Unknown-but-well-formed refs return 404; refs not matching this shape return 422.",
+            "pattern": "^([a-z0-9]+(?:[-_][a-z0-9]+)*)-(\\d+\\.\\d+\\.\\d+)$",
+            "title": "Pipeline Config",
+            "type": "string"
+          },
+          "query_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional stable identifier for the query; echoed back in result.query.query_id. Eval joins on this field to ground truth.",
+            "title": "Query Id"
+          },
+          "question": {
+            "description": "The user question to answer (the current turn).",
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "pipeline_config"
+        ],
+        "title": "QueryRequest",
+        "type": "object"
+      },
+      "QueryResponse": {
+        "description": "Orchestrator-owned ``/query`` response envelope.\n\n``result`` is deliberately an OPAQUE ``dict[str, Any]`` passed through\nverbatim \u2014 it is NEVER re-modeled as nested Pydantic models, which could\nstrip or inject keys and neuter the eval schema's ``additionalProperties:\nfalse`` drift detection. Conformance of ``result`` is proven by jsonschema\nvalidation (Draft 2020-12) against the packaged\n``rag_query_output.schema.json``, not by Pydantic.\n\nOrchestrator extensions live ONLY at this envelope's top level (eval's\npayload is ``additionalProperties: false``): currently the\n``generation_mode`` marker and ``guardrail_decisions``.",
+        "properties": {
+          "generation_mode": {
+            "description": "Machine-readable generation-mode marker: always 'live' from Phase 2 (real retrieval + generation). 'stub' survives only as an enum value for contract stability \u2014 no reachable code path produces it.",
+            "enum": [
+              "stub",
+              "live"
+            ],
+            "title": "Generation Mode",
+            "type": "string"
+          },
+          "guardrail_decisions": {
+            "description": "REQUIRED list of guardrail outcomes. Empty in every Phase 2 response; populated when Bedrock Guardrails are wired in Phase 3.",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailDecision"
+            },
+            "title": "Guardrail Decisions",
+            "type": "array"
+          },
+          "result": {
+            "additionalProperties": true,
+            "description": "Eval rag_query_output v1.1.0 payload, passed through VERBATIM. Validates against the packaged rag_query_output.schema.json as-is (no key stripping anywhere). Includes the declared optional trace and timings_ms slots (trace only when Phoenix tracing is configured).",
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result",
+          "guardrail_decisions",
+          "generation_mode"
+        ],
+        "title": "QueryResponse",
+        "type": "object"
+      },
+      "ReadyzResponse": {
+        "description": "``GET /readyz`` body: readiness to serve queries.",
+        "properties": {
+          "released_configs": {
+            "description": "Number of released pipeline configs listed in the manifest.",
+            "title": "Released Configs",
+            "type": "integer"
+          },
+          "status": {
+            "description": "'ready' when the readiness checks pass.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "released_configs"
+        ],
+        "title": "ReadyzResponse",
+        "type": "object"
+      },
+      "ValidationErrorItem": {
+        "description": "One field-level validation error (FastAPI/Pydantic shape).",
+        "properties": {
+          "loc": {
+            "description": "Path to the failing field.",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Loc",
+            "type": "array"
+          },
+          "msg": {
+            "description": "Human-readable validation message.",
+            "title": "Msg",
+            "type": "string"
+          },
+          "type": {
+            "description": "Machine-readable error type.",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationErrorItem",
+        "type": "object"
+      },
+      "ValidationErrorResponse": {
+        "description": "422 body: request validation failed (e.g. malformed pipeline_config ref).",
+        "properties": {
+          "detail": {
+            "description": "Field-level validation errors (FastAPI shape). Resolver-detected malformed references emit the SAME list shape via the app-level handler, so this is the only 422 body variant.",
+            "items": {
+              "$ref": "#/components/schemas/ValidationErrorItem"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ValidationErrorResponse",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "RAG query-path orchestrator. Phase 2 (walking skeleton): /query runs the real OpenSearch retrieval + Bedrock generation pipeline, marked generation_mode='live', with per-stage OpenInference spans exported to Phoenix when PHOENIX_ENDPOINT is set.",
+    "title": "orchestrator",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/healthz": {
+      "get": {
+        "description": "Liveness probe: returns 200 whenever the process is serving.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthzResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Healthz",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/query": {
+      "post": {
+        "description": "Answer a single-turn RAG query with the LIVE pipeline.\n\nConfig resolution is REAL (pins echoed in ``result.system_version``,\nincl. ``config_sha256``); the chain is policy_router \u2192 query_rewrite \u2192\nembed \u2192 retrieve \u2192 rerank \u2192 assemble \u2192 prompt \u2192 generate \u2192 guardrails \u2192\ncite, with clients pulled from ``app.state`` and spans/timings recorded\nOUTSIDE the pure stages. The ``result`` block validates verbatim against\neval's rag_query_output v1.1.0.",
+        "operationId": "post_query_query_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown (but well-formed) pipeline_config reference."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (e.g. malformed pipeline_config ref)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalErrorResponse"
+                }
+              }
+            },
+            "description": "Packaged config artifact failed integrity verification."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DependencyErrorResponse"
+                }
+              }
+            },
+            "description": "An upstream dependency failed: OpenSearch search failure, or a non-throttle Bedrock error. The body names the dependency."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DependencyErrorResponse"
+                }
+              }
+            },
+            "description": "Bedrock throttling persisted past the bounded retry budget. Transient \u2014 retry after the Retry-After interval.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying the query.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Post Query",
+        "tags": [
+          "query"
+        ]
+      }
+    },
+    "/query/stream": {
+      "post": {
+        "description": "Answer a RAG query with the LIVE pipeline, streamed as SSE.\n\nOptionally multi-turn: the bounded request-only ``history`` field feeds\nthe deterministic query rewrite and the prompt history block and is never\nechoed in the ``final`` envelope (rag_query_output v1.1.0 unchanged).\nSame request model and pre-generation chain as ``POST /query``; only\ndelivery differs: generation streams from Bedrock and each text delta is\nforwarded raw as an SSE ``token`` event, then guardrails + citation build\nrun over the FULL accumulated answer and the complete QueryResponse\nenvelope is emitted as the single ``final`` event. Pre-generation\nfailures raise BEFORE the stream starts (plain HTTP errors via the\napp-level handlers); post-commit failures become exactly one typed\n``error`` event. See the 200 response description for the event contract.",
+        "operationId": "post_query_stream_query_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Server-Sent Events stream (OpenAPI cannot express event streams; the contract is documented here). Events, in order:\n\n- `event: token` \u2014 `data: {\"text\": \"<delta>\"}` per Bedrock content delta, forwarded RAW as received (citation markers included, unresolved).\n- `event: final` \u2014 `data:` the full QueryResponse envelope, identical in shape to POST /query's 200 body (result validates against rag_query_output v1.1.0; citations built over the FULL accumulated text). Emitted exactly once.\n- `event: error` \u2014 `data: {\"detail\": str, \"dependency\"?: \"opensearch\"|\"bedrock\", \"retry_after_seconds\"?: int, \"http_equivalent\": int}`, mirroring the JSON error taxonomy, for failures AFTER the 200 is committed (e.g. a mid-stream throttle); the stream then closes.\n\nEvery stream ends in EXACTLY ONE terminal event (`final` or `error`) \u2014 silent truncation is forbidden. Pre-generation failures are raised BEFORE the stream starts and return the plain HTTP errors documented below."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown (but well-formed) pipeline_config reference."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (e.g. malformed pipeline_config ref)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalErrorResponse"
+                }
+              }
+            },
+            "description": "Packaged config artifact failed integrity verification."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DependencyErrorResponse"
+                }
+              }
+            },
+            "description": "An upstream dependency failed BEFORE streaming began: OpenSearch failure, or a non-throttle Bedrock error during query embedding. The body names the dependency."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DependencyErrorResponse"
+                }
+              }
+            },
+            "description": "Bedrock throttling persisted past the bounded retry budget BEFORE streaming began. Transient \u2014 retry after the Retry-After interval.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying the query.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Post Query Stream",
+        "tags": [
+          "query"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "description": "Readiness probe (ready = able to serve /query). Verifies that the packaged config manifest loads, that the configured OpenSearch index exists (indices.exists), and that the AWS credential chain resolves credentials for Bedrock. HONEST LIMIT: this verifies reachability and credentials only \u2014 it does NOT verify Bedrock invoke permission (no paid probe is made; invoke permission is proven by the first real generation). Results are cached for ~20 seconds. Any dependency down returns 503 with a detail naming the failing dependency.",
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyzResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readyz",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  }
+}

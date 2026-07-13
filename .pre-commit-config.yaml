@@ -36,3 +36,53 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      # Orchestrator gates (services/orchestrator), parallel to eval's above but
+      # scoped to orchestrator file changes.
+      - id: orchestrator-lint-imports
+        name: orchestrator-lint-imports
+        entry: bash -c 'cd services/orchestrator && uv run lint-imports'
+        language: system
+        pass_filenames: false
+        files: ^services/orchestrator/
+      # Orchestrator parallel of kernel-grep-gate: pipeline stages under
+      # app/orchestrator/ must never read the environment (os.environ,
+      # os.getenv, load_dotenv) -- behavior comes ONLY from the pinned config.
+      - id: orchestrator-stages-grep-gate
+        name: orchestrator-stages-grep-gate
+        entry: bash services/orchestrator/scripts/check_stages_grep_gate.sh
+        language: system
+        pass_filenames: false
+        files: ^services/orchestrator/
+      # Two-tier OpenAPI contract gate. Tier 1 (pure Python, zero external
+      # deps): re-exports the spec and fails if it differs from the committed
+      # services/orchestrator/openapi.json. Runs on ANY orchestrator change --
+      # the committed contract can only drift when services/orchestrator/
+      # changes, so unrelated commits skip it. Ordered BEFORE the pytest hook:
+      # the cheap gate fails first.
+      - id: orchestrator-openapi-check
+        name: orchestrator-openapi-check
+        entry: bash -c 'cd services/orchestrator && uv run python scripts/export_openapi.py --check'
+        language: system
+        pass_filenames: false
+        files: ^services/orchestrator/
+      # The eval canonical-schema path is in the trigger set because the
+      # orchestrator test suite carries the byte-equality schema-sync test:
+      # the commit that edits eval's rag_query_output.schema.json must re-run
+      # orchestrator tests so mirror drift fails on THAT commit, not later.
+      - id: orchestrator-pytest
+        name: orchestrator-pytest
+        entry: bash -c 'cd services/orchestrator && uv run pytest'
+        language: system
+        pass_filenames: false
+        files: ^(services/orchestrator/|services/eval/app/contracts/rag_query_output\.schema\.json)
+      # Tier 2 (oasdiff, local Go binary): classifies committed spec diffs as
+      # breaking vs non-breaking against the git baseline (HEAD). HARD-FAILS
+      # with a one-line install command if the binary is missing -- never
+      # silently skips; no Docker-wrapped oasdiff (commits must not depend on a
+      # Docker daemon).
+      - id: orchestrator-openapi-breaking
+        name: orchestrator-openapi-breaking
+        entry: bash -c 'cd services/orchestrator && uv run python scripts/check_openapi_breaking.py'
+        language: system
+        pass_filenames: false
+        files: ^services/orchestrator/openapi\.json$

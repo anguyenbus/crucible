@@ -32,6 +32,8 @@ pip-log.txt
 pip-delete-directory.txt
 Pipfile.lock
 poetry.lock
+# Stray root uv.lock (the repo root is not a uv project; services/*/uv.lock ARE committed)
+/uv.lock
 .pdm.toml
 __pypackages__/
 

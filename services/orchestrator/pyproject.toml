@@ -1,0 +1,79 @@
+[build-system]
+requires = ["uv_build>=0.9,<0.12"]
+build-backend = "uv_build"
+
+[project]
+name = "orchestrator"
+version = "0.1.0"
+description = "Orchestrator service: RAG query-path API packaged as the app/ deliverable (Phase 1: contracts-first)."
+requires-python = ">=3.12"
+# Phase 2 (walking skeleton): FastAPI control plane, Pydantic v2 models,
+# jsonschema for contract conformance, pyyaml for the pinned config artifacts,
+# boto3 (Bedrock) + opensearch-py (retrieval) confined to app/clients/.
+# Observability is deliberately minimal: opentelemetry-sdk (tracer provider),
+# the OTLP HTTP exporter (Phoenix accepts OTLP-HTTP on the shared
+# PHOENIX_ENDPOINT UI port at /v1/traces — no gRPC stack needed), and
+# openinference-semantic-conventions (attribute NAMES only) so Phoenix parses
+# spans as CHAIN/EMBEDDING/RETRIEVER/LLM kinds.
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic>=2",
+    "jsonschema>=4",
+    "pyyaml",
+    "boto3>=1.43.46",
+    "opensearch-py>=3.2.0",
+    "opentelemetry-sdk>=1.29",
+    "opentelemetry-exporter-otlp-proto-http>=1.29",
+    "openinference-semantic-conventions>=0.1.0",
+]
+
+# NOTE: intentionally NO [project.scripts] — no console scripts are baked into
+# the wheel (mirrors eval's convention).
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "import-linter",
+    "ruff",
+    "httpx>=0.28.1",
+]
+
+# uv_build packages the module tree into the wheel; source-include makes the
+# in-package contract JSON mirror and the pinned config YAMLs + hash manifest
+# an EXPLICIT, non-regressing guarantee. Runtime resolution anchors on
+# app.contracts / app.configs via importlib.resources, so these files must ship.
+[tool.uv.build-backend]
+# The package is `app` at the project ROOT (not the default src/<name> layout),
+# mirroring services/eval: point uv_build at module `app` with an empty
+# module-root so ONLY app/ is packaged.
+module-name = "app"
+module-root = ""
+source-include = ["app/contracts/*.json", "app/configs/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
+
+# import-linter: the stages-pure contract mirrors eval's kernel-pure
+# discipline. root_package = "app"; include_external_packages is REQUIRED
+# because the contract forbids EXTERNAL packages — import-linter only graphs
+# external modules when this is enabled. Run via `uv run lint-imports`.
+[tool.importlinter]
+root_package = "app"
+include_external_packages = true
+
+# app.orchestrator pipeline stages must never import infra libraries directly:
+# boto3 (Bedrock), opensearchpy (opensearch-py), opentelemetry (OTel). Infra is
+# confined to app.clients and injected into the stages.
+[[tool.importlinter.contracts]]
+name = "stages-pure"
+type = "forbidden"
+source_modules = ["app.orchestrator.**"]
+forbidden_modules = [
+    "boto3",
+    "opensearchpy",
+    "opentelemetry",
+    "dotenv",
+]

@@ -1,0 +1,28 @@
+# Keep local-only code, tests, and build artifacts OUT of the image.
+# Only app/ (+ pyproject.toml/uv.lock for the build) ship.
+
+# Tests are not part of the runtime image.
+tests/
+
+# Contract-gate tooling (OpenAPI export / oasdiff check) is commit-time only.
+scripts/
+openapi.json
+
+# Resolved virtualenvs / build outputs.
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Python + tooling caches.
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.import_linter_cache/
+
+# The Chainlit demo UI is a SEPARATE uv project (its own venv + lock) and must
+# never enter the orchestrator image (dependency firewall; the independent-K8s
+# pod future depends on it). The Dockerfile COPYs only app/, but the exclusion
+# also keeps demo_ui/ out of the build context entirely.
+demo_ui/
