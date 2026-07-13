@@ -21,6 +21,7 @@ from __future__ import annotations
 import atexit
 
 import chainlit as cl
+from chat_elements import numbered_source_elements
 from chat_ui import client, config, history, render, tracing
 
 # One tracer for the process (pattern-copied from the service's lifespan
@@ -81,18 +82,6 @@ async def on_chat_start() -> None:
         await cl.Message(content=_welcome_text()).send()
 
 
-def _source_elements(final: render.FinalRender) -> list[cl.Text]:
-    """Build the retrieved-chunk side elements (rank, chunk_id, score, text)."""
-    return [
-        cl.Text(
-            name=f"rank {source.rank}: {source.chunk_id} (score {source.score:.4f})",
-            content=source.text,
-            display="side",
-        )
-        for source in final.sources
-    ]
-
-
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     """One chat turn: stream tokens live, then render the final envelope."""
@@ -118,7 +107,9 @@ async def on_message(message: cl.Message) -> None:
         try:
             async for event in client.stream_query(config.orchestrator_url(), payload, headers):
                 if event.event == "token":
-                    # Real deltas only — no client-side typewriter pacing.
+                    # Real deltas only — no client-side typewriter pacing. Raw
+                    # [chunk_id] markers stream as-is; the final branch swaps
+                    # them for [n] (show-then-swap, T3).
                     await answer_msg.stream_token(event.data["text"])
                     streamed_any = True
                 elif event.event == "final":
@@ -143,15 +134,25 @@ async def on_message(message: cl.Message) -> None:
             tracing.set_turn_output(turn_span, outcome.answer_text)
 
     if isinstance(outcome, render.FinalRender):
-        if not streamed_any:
-            # Edge: a final with no token deltas — show the envelope's answer
-            # (the same text token concatenation would have produced).
-            answer_msg.content = outcome.answer_text
+        # Show-then-swap (T3): the streamed content is the raw [chunk_id] text;
+        # overwrite it with the numbered [n] form and attach one clickable side
+        # element per cited chunk to THIS message (elements are for_id-scoped, so
+        # they must live on the answer to be clickable where the user reads —
+        # NOT on the details block). number_citations() derives everything from
+        # the final envelope, so this also covers the not-streamed_any edge:
+        # the answer shows the envelope text, now numbered. Zero citations →
+        # numbered.text == answer_text unchanged and no elements (honest, quiet).
+        numbered = render.number_citations(outcome)
+        answer_msg.content = numbered.text
+        answer_msg.elements = numbered_source_elements(numbered)
+        # send() ends the stream, re-emits the (now numbered) content, and
+        # attaches the elements for_id=answer_msg — the documented finalize for
+        # a streamed message in chainlit 2.11.1.
         await answer_msg.send()
-        await cl.Message(
-            content=render.format_final_details(outcome),
-            elements=_source_elements(outcome),
-        ).send()
+        # Details block keeps timings/provenance/Phoenix link and now cross-
+        # references the SAME [n] numbers; the clickable elements moved to the
+        # answer, so it no longer carries any.
+        await cl.Message(content=render.format_final_details(outcome, numbered)).send()
     elif isinstance(outcome, render.ErrorRender):
         if streamed_any:
             # Partial text stays visible but is clearly marked INCOMPLETE.
