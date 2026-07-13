@@ -19,6 +19,7 @@ Honesty rules enforced here:
 from __future__ import annotations
 
 import atexit
+from contextlib import aclosing
 
 import chainlit as cl
 from chat_elements import numbered_source_elements
@@ -46,15 +47,7 @@ PHOENIX_PROJECT_GID = client.resolve_phoenix_project_gid(
 def _welcome_text() -> str:
     """Welcome message: pinned config ref, per-turn cost, session-only memory."""
     return (
-        f"Connected to the LIVE RAG pipeline at `{config.orchestrator_url()}`.\n\n"
-        f"- **Pinned config**: `{config.pipeline_config_ref()}` (every behavior pin, "
-        "including the history windows and prompt template, is covered by its "
-        "`config_sha256`).\n"
-        "- **Cost**: each turn makes exactly ONE paid Bedrock generation plus one "
-        "Titan query embedding. The follow-up query rewrite is deterministic — it "
-        "adds no paid call.\n"
-        "- **Memory**: conversation history is PER-SESSION only (kept in this "
-        "browser session, sent with each request); nothing persists across sessions."
+        f"Connected to the RAG pipeline."
     )
 
 
@@ -105,23 +98,33 @@ async def on_message(message: cl.Message) -> None:
         # trace; empty under the no-op tracer (nothing worth injecting).
         headers = tracing.inject_trace_headers()
         try:
-            async for event in client.stream_query(config.orchestrator_url(), payload, headers):
-                if event.event == "token":
-                    # Real deltas only — no client-side typewriter pacing. Raw
-                    # [chunk_id] markers stream as-is; the final branch swaps
-                    # them for [n] (show-then-swap, T3).
-                    await answer_msg.stream_token(event.data["text"])
-                    streamed_any = True
-                elif event.event == "final":
-                    outcome = render.map_final_envelope(
-                        event.data,
-                        phoenix_endpoint=config.phoenix_endpoint(),
-                        project_gid=PHOENIX_PROJECT_GID,
-                    )
-                    break
-                elif event.event == "error":
-                    outcome = render.map_error_event(event.data)
-                    break
+            # aclosing() guarantees the SSE async generator is aclose()d in THIS
+            # event loop when we break out early (which we do on the terminal
+            # `final`/`error` event) — otherwise the generator, suspended inside
+            # httpx's `async with ...stream()`, would be closed later during GC
+            # outside the loop and raise "async generator ignored GeneratorExit"
+            # (its httpx teardown cannot await). A guard block makes this vivid:
+            # it sends exactly one `final` then closes, so the break is instant.
+            async with aclosing(
+                client.stream_query(config.orchestrator_url(), payload, headers)
+            ) as events:
+                async for event in events:
+                    if event.event == "token":
+                        # Real deltas only — no client-side typewriter pacing. Raw
+                        # [chunk_id] markers stream as-is; the final branch swaps
+                        # them for [n] (show-then-swap, T3).
+                        await answer_msg.stream_token(event.data["text"])
+                        streamed_any = True
+                    elif event.event == "final":
+                        outcome = render.map_final_envelope(
+                            event.data,
+                            phoenix_endpoint=config.phoenix_endpoint(),
+                            project_gid=PHOENIX_PROJECT_GID,
+                        )
+                        break
+                    elif event.event == "error":
+                        outcome = render.map_error_event(event.data)
+                        break
         except client.QueryHTTPError as error:
             # Pre-stream failure: the orchestrator's typed HTTP error, verbatim.
             outcome = render.ErrorRender(detail=error.detail, http_equivalent=error.status_code)

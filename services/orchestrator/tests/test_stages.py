@@ -174,5 +174,12 @@ def test_parked_stages_are_typed_identities_on_their_natural_types():
     assert reranker.rerank(chunks) is chunks
 
     answer = "answer text [d:0]"
-    assert guardrails.check_input(question) is question
+    # check_input is config-gated: with the guard OFF (the released
+    # 1.0.0/1.1.0/1.2.0 pins) it is a typed identity and never consults a
+    # classifier — the parked-behavior guarantee for the eval lane.
+    gate_off = resolve_pipeline_config("legal-rag-default-1.1.0").config.guardrails
+    assert gate_off.enabled is False
+    # check_input returns a GuardInputResult; gate-off carries the question
+    # unchanged (same object) and no classifier telemetry.
+    assert guardrails.check_input(question, pins=gate_off, classifier=None).question is question
     assert guardrails.check_output(answer) is answer

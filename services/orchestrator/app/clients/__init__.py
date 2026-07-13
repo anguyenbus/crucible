@@ -1,5 +1,5 @@
 """
-Infrastructure clients (OpenSearch retrieval, Bedrock embed/generate).
+Infrastructure clients (OpenSearch retrieval, Bedrock embed/generate, guard).
 
 Import discipline: ALL infra libraries (boto3, opensearch-py, OpenTelemetry)
 are confined to this package and injected into the pipeline stages — the
@@ -23,6 +23,7 @@ from typing import Any
 
 from app.clients.bedrock import TITAN_EMBEDDING_DIMENSIONS, BedrockClient
 from app.clients.errors import OpenSearchNotReadyError
+from app.clients.guardrail import GuardClassifier
 from app.clients.opensearch import OpenSearchSearchClient
 from app.config import DEFAULT_PIPELINE_CONFIG_REF, Settings, resolve_pipeline_config
 
@@ -38,11 +39,18 @@ class AppClients:
     ``readyz`` and maps ``/query`` to 502 (dependency: opensearch), instead
     of crashing at startup.
 
+    ``classifier`` is the injected Bedrock **Haiku** guard classifier. It is
+    consulted ONLY when the resolved config enables the input guard AND the
+    deterministic pre-filter hits — a distinct role from ``bedrock`` (the
+    generator) and from eval's judge; the no-self-grading invariant is
+    untouched. Constructing it makes NO paid call.
+
     Fields are duck-typed ``Any`` so tests install mock instances directly.
     """
 
     bedrock: Any
     search: Any | None = None
+    classifier: Any | None = None
     # Human-readable reason search is None; surfaced by readyz and the 502.
     opensearch_unavailable_reason: str | None = None
 
@@ -57,17 +65,24 @@ def build_app_clients(settings: Settings) -> AppClients:
     pins (model ids, temperature, budgets) still arrive per call from each
     request's resolved config.
 
-    An OpenSearch client that cannot be constructed NEVER crashes startup:
-    the reason is recorded so ``readyz`` reports 503 and ``/query`` maps to
-    502 naming the dependency.
+    The Bedrock generator AND the guard classifier are both constructed here
+    (neither makes a paid call at construction); the guard classifier is
+    injected into the input-guard stage exactly like the generator reaches the
+    generation stage. An OpenSearch client that cannot be constructed NEVER
+    crashes startup: the reason is recorded so ``readyz`` reports 503 and
+    ``/query`` maps to 502 naming the dependency.
     """
     default_config = resolve_pipeline_config(DEFAULT_PIPELINE_CONFIG_REF).config
     bedrock = BedrockClient(region=default_config.region)
+    # Distinct role from the generator: the guard classifier NEVER grades the
+    # generator's own output and never runs in eval. No paid call at build.
+    classifier = GuardClassifier(region=default_config.region)
 
     if settings.opensearch_endpoint is None:
         return AppClients(
             bedrock=bedrock,
             search=None,
+            classifier=classifier,
             opensearch_unavailable_reason=(
                 "ORCHESTRATOR_OPENSEARCH_ENDPOINT is not set — the service "
                 "has no OpenSearch domain to retrieve from."
@@ -84,15 +99,21 @@ def build_app_clients(settings: Settings) -> AppClients:
         )
     except OpenSearchNotReadyError as exc:
         # _meta present-but-mismatched: not-ready, with the guard's own prose.
-        return AppClients(bedrock=bedrock, search=None, opensearch_unavailable_reason=str(exc))
+        return AppClients(
+            bedrock=bedrock,
+            search=None,
+            classifier=classifier,
+            opensearch_unavailable_reason=str(exc),
+        )
     except Exception as exc:  # noqa: BLE001 — startup must degrade, not crash
         # The init-time mapping fetch hit a transport/credential failure;
         # record a CLEAN reason (class name only, never raw internals).
         return AppClients(
             bedrock=bedrock,
             search=None,
+            classifier=classifier,
             opensearch_unavailable_reason=(
                 f"OpenSearch was unreachable at startup ({type(exc).__name__})."
             ),
         )
-    return AppClients(bedrock=bedrock, search=search)
+    return AppClients(bedrock=bedrock, search=search, classifier=classifier)

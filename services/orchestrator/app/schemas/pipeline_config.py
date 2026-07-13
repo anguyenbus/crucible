@@ -22,6 +22,12 @@ Phase B evolution (multi-turn memory): the ``history`` pins block (rewrite/
 prompt windows and char budgets) follows the same pattern — schema defaults
 keep 1.0.0/1.1.0 resolvable; ``legal-rag-default-1.2.0`` pins the block
 explicitly alongside its history-aware prompt template.
+
+Phase 3 evolution (system-prompt-leakage input guard): the ``GuardrailsPin``
+gains ``enabled``/``classifier_model_id``/``input_categories`` — again with
+backward-RESOLUTION defaults so the pre-guard configs stay resolvable and are
+never edited; ``legal-rag-default-1.3.0`` pins them explicitly to enable the
+guard.
 """
 
 from typing import Any, Final
@@ -60,6 +66,9 @@ DEFAULT_PROMPT_TEMPLATE_TEXT: Final[str] = (
     "\n"
     "Answer:"
 )
+# Guard input categories (Phase 3): backward-RESOLUTION default so pre-guard
+# configs stay resolvable; only 'prompt_leak' is active in this slice.
+DEFAULT_GUARDRAIL_INPUT_CATEGORIES: Final[tuple[str, ...]] = ("prompt_leak",)
 
 
 class GeneratorPin(BaseModel):
@@ -218,13 +227,60 @@ class HistoryPins(BaseModel):
 
 
 class GuardrailsPin(BaseModel):
-    """Guardrail policy pin (consumed from Phase 3)."""
+    """
+    Guardrail policy pin (consumed from Phase 3).
+
+    Phase 3 evolution (system-prompt-leakage input guard): the ``enabled``/
+    ``classifier_model_id``/``input_categories`` fields carry backward-
+    RESOLUTION defaults so the released pre-guard configs (1.0.0/1.1.0/1.2.0)
+    stay resolvable with the guard OFF and are NEVER edited — the defaults
+    exist for backward RESOLUTION only, exactly like the Phase 2 template/
+    context and Phase B history pins. A ``policy_version`` string alone must
+    NOT switch behavior: ``enabled`` (plus a pinned classifier id) is the
+    actual gate.
+    """
 
     model_config = _PIN_MODEL_CONFIG
 
     policy_version: str = Field(
         description="Guardrail policy version applied to input/output stages.",
     )
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Master gate. False ⇒ check_input is a typed IDENTITY and NO "
+            "classifier client is consulted (the eval/1.0.0/1.1.0/1.2.0 path). "
+            "Default exists only so the released pre-guard configs stay "
+            "resolvable — new guard-enabling configs pin this explicitly."
+        ),
+    )
+    classifier_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Bedrock guard-classifier model/inference-profile id (au.* Haiku). "
+            "REQUIRED when enabled=True (validated at resolution); None when "
+            "the guard is off."
+        ),
+    )
+    input_categories: tuple[str, ...] = Field(
+        default=DEFAULT_GUARDRAIL_INPUT_CATEGORIES,
+        description=(
+            "Active input-guard detector classes. Only 'prompt_leak' in this "
+            "slice; the tuple is EXTENSIBLE. Default exists only for backward "
+            "resolution of released configs."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _require_classifier_when_enabled(self) -> "GuardrailsPin":
+        """enabled=True demands a pinned classifier id — fail loudly otherwise."""
+        if self.enabled and not self.classifier_model_id:
+            raise ValueError(
+                "guardrails.enabled is true but classifier_model_id is unset — "
+                "an enabled input guard MUST pin a Bedrock classifier model id "
+                "(the guard cannot be enabled by a policy_version string alone)."
+            )
+        return self
 
 
 class PipelineConfig(BaseModel):

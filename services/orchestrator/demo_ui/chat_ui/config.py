@@ -8,8 +8,10 @@ Env surface of the demo UI (read at call time so tests can monkeypatch).
   for the UI's own OTLP-HTTP exporter and the rendered trace links. Unset →
   a genuine no-op tracer; the UI stays fully functional.
 - ``DEMO_UI_PIPELINE_CONFIG`` — pinned pipeline config ref sent on every
-  request (default ``legal-rag-default-1.2.0``, the history-aware config;
-  eval's lane stays on ``legal-rag-default-1.1.0`` untouched).
+  request (default ``legal-rag-default-1.3.0``, the system-prompt-leakage
+  guard-enabled config; eval's lane stays on ``legal-rag-default-1.1.0``
+  untouched). A leak/injection attempt is refused verbatim; a benign question
+  streams and cites as before.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from __future__ import annotations
 import os
 
 DEFAULT_ORCHESTRATOR_URL = "http://localhost:8000"
-DEFAULT_PIPELINE_CONFIG = "legal-rag-default-1.2.0"
+DEFAULT_PIPELINE_CONFIG = "legal-rag-default-1.3.0"
 
 
 def orchestrator_url() -> str:

@@ -14,6 +14,8 @@ typed detail. Once the 200 is committed, failures arrive as exactly one SSE
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -113,17 +115,62 @@ async def stream_query(
 
     ``headers`` carries the injected ``traceparent`` (empty under the no-op
     tracer). Raises :class:`QueryHTTPError` for pre-stream HTTP errors.
+
+    The httpx request runs in a DEDICATED pump task, so the ``AsyncClient`` and
+    the streamed response are opened AND closed entirely within one task. httpx
+    (via anyio) binds its connection-pool cancel scopes to the task that entered
+    them; closing them from a DIFFERENT task raises "Attempted to exit cancel
+    scope in a different task". That is exactly what happened when this
+    generator — holding the httpx ``async with`` open across ``yield`` — was
+    ``aclose()``d by a consumer that broke early (on the terminal ``final``
+    event) under Chainlit, which can resume/close a coroutine on another task.
+    The pump hands events to this generator over a queue; on early break the
+    generator's ``finally`` cancels the pump, whose httpx teardown then runs in
+    the pump's OWN task — no cross-task cancel scope. Pair with
+    ``contextlib.aclosing`` on the consumer so this ``finally`` runs in the loop
+    (not deferred to GC, which cannot await the cancel).
     """
     url = f"{base_url}/query/stream"
-    async with httpx.AsyncClient(timeout=_STREAM_TIMEOUT) as client:
-        async with client.stream("POST", url, json=payload, headers=headers) as response:
-            if response.status_code != 200:
-                body = await response.aread()
-                raise QueryHTTPError(
-                    response.status_code, _error_detail(response.status_code, body)
-                )
-            parser = SSELineParser()
-            async for line in response.aiter_lines():
-                event = parser.feed(line)
-                if event is not None:
-                    yield event
+    # Unbounded: an SSE response is bounded, and never awaiting on ``put`` keeps
+    # the pump's ``finally`` (the sentinel) safe to run during cancellation.
+    queue: asyncio.Queue[SSEEvent | Exception | None] = asyncio.Queue()
+
+    async def _pump() -> None:
+        """Own the httpx lifecycle in one task; feed events/errors to the queue."""
+        try:
+            async with httpx.AsyncClient(timeout=_STREAM_TIMEOUT) as client:
+                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code != 200:
+                        body = await response.aread()
+                        queue.put_nowait(
+                            QueryHTTPError(
+                                response.status_code,
+                                _error_detail(response.status_code, body),
+                            )
+                        )
+                        return
+                    parser = SSELineParser()
+                    async for line in response.aiter_lines():
+                        event = parser.feed(line)
+                        if event is not None:
+                            queue.put_nowait(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — hand transport failures to the consumer
+            queue.put_nowait(exc)
+        finally:
+            queue.put_nowait(None)  # terminal sentinel (also runs on cancel)
+
+    pump = asyncio.create_task(_pump())
+    try:
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+    finally:
+        pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump

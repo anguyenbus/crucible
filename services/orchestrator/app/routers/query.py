@@ -9,6 +9,21 @@ is ``generation_mode: "live"`` — the Phase 1 canned path is deleted and no
 env flag or config ref can bring it back (``stub`` survives only as an
 enum value in the envelope).
 
+Phase 3 (system-prompt-leakage input guard): ``check_input`` is the FIRST
+stage in the pre-generation chain and is now config-gated. Under a config that
+enables the guard (``legal-rag-default-1.3.0``), a prompt-leak/injection
+attempt raises :class:`app.orchestrator.guardrails.GuardrailTripwire` BEFORE
+any paid call. That is a SUCCESSFUL, honest refusal — NOT an error: both
+routes catch it specifically and return a 200 canned refusal envelope (answer
+text = ``REFUSAL_TEXT``, empty citations, one ``block`` decision in
+``guardrail_decisions[]``), never a 5xx. The Haiku guard call itself is a
+``guardrail_input`` LLM span (model id + token counts + latency) recorded in
+``_run_pre_generation`` on BOTH a SAFE allow and a block. On
+``/query/stream`` the tripwire raises BEFORE ``StreamingResponse`` is built, so
+exactly one ``final`` event and ZERO ``token`` events are emitted — nothing
+leaks. Configs that leave the guard OFF (1.0.0/1.1.0/1.2.0, the eval lane)
+behave byte-for-byte as before: ``check_input`` is a typed identity.
+
 Error mapping lives in app-level exception handlers registered in
 ``app.main`` — never per-route try/except:
 - ``MalformedConfigRefError`` → 422, ``UnknownConfigError`` → 404,
@@ -17,6 +32,8 @@ Error mapping lives in app-level exception handlers registered in
   (dependency: bedrock)
 - OpenSearch failures / non-throttle Bedrock ``ClientError`` → 502 with the
   machine-readable ``dependency`` field
+(``GuardrailTripwire`` is deliberately NOT in that taxonomy — it is a 200, not
+a dependency failure.)
 
 ``POST /query/stream`` raises every PRE-generation failure through those same
 handlers BEFORE the streaming response begins; once the 200 is committed,
@@ -60,10 +77,12 @@ from app.observability import (
     retrieval_span,
     root_query_span,
     set_generation_attributes,
+    set_guardrail_input_attributes,
     set_retrieval_documents,
     span_context,
     start_citation_build_span,
     start_generation_span,
+    start_guardrail_input_span,
     start_root_query_span,
     trace_echo,
     use_context,
@@ -126,6 +145,13 @@ def _run_pre_generation(
     helpers exactly as the blocking path always recorded them. Must be called
     with the root query span CURRENT so stage spans parent correctly.
 
+    ``guardrails.check_input`` is FIRST and is config-gated: it receives the
+    resolved ``guardrails`` pins and the injected classifier. When the guard is
+    disabled (1.0.0/1.1.0/1.2.0) it is a typed identity — no behavior change and
+    no classifier call. When enabled and a system-prompt-leakage attempt is
+    detected it raises ``GuardrailTripwire``, which PROPAGATES here unchanged
+    (no try/except in the pure chain) for the routes to turn into a 200 refusal.
+
     ``request.history`` + the resolved config's history pins feed ONLY
     ``query_rewrite`` (the retrieval query — the history-prefixed rewrite is
     what embedding/retrieval run on, echoed in the retrieval span's
@@ -136,8 +162,45 @@ def _run_pre_generation(
     Failures raise UNCHANGED into the app-level exception handlers — no
     try/except here (per-route error mapping is forbidden by design).
     """
-    # Parked identity stages stay in-chain at their natural positions.
-    question = guardrails.check_input(request.question)
+    # Config-gated input guard, then the parked policy-router identity — both
+    # stay in-chain at their natural first positions.
+    guard_pins = resolved.config.guardrails
+    if guardrails.prefilter_hit(request.question, guard_pins) and clients.classifier is not None:
+        # The Haiku classifier WILL run: wrap it in an LLM span so the guard call
+        # is visible in Phoenix (model id, token counts, latency) on a SAFE allow
+        # AND a block — parents to the current root span (both routes). A block
+        # raises through here; we record the outcome and end the span CLEANLY
+        # (not an error) before re-raising for the route to turn into a refusal.
+        guard_span = start_guardrail_input_span(tracer, model_id=guard_pins.classifier_model_id)
+        try:
+            guard_result = guardrails.check_input(
+                request.question, pins=guard_pins, classifier=clients.classifier
+            )
+        except guardrails.GuardrailTripwire as tripwire:
+            set_guardrail_input_attributes(
+                guard_span,
+                decision=tripwire.decision.decision,
+                category=tripwire.decision.category,
+                rule_id=tripwire.decision.rule_id,
+                input_tokens=tripwire.input_tokens,
+                output_tokens=tripwire.output_tokens,
+            )
+            guard_span.end()
+            raise
+        set_guardrail_input_attributes(
+            guard_span,
+            decision="allow",
+            input_tokens=guard_result.input_tokens,
+            output_tokens=guard_result.output_tokens,
+        )
+        guard_span.end()
+        question = guard_result.question
+    else:
+        # Gate off, pre-filter miss, or misconfiguration (classifier None) → no
+        # classifier call and no span. Misconfiguration still raises loudly here.
+        question = guardrails.check_input(
+            request.question, pins=guard_pins, classifier=clients.classifier
+        ).question
     question = policy_router.route(question)
     # Deterministic history-aware rewrite: builds the RETRIEVAL query only.
     # With history absent it is the identity, so single-turn behavior (and
@@ -249,6 +312,35 @@ def _build_result(
     return result
 
 
+def _blocked_result(
+    request: QueryRequest,
+    resolved: ResolvedPipelineConfig,
+    settings: Settings,
+    *,
+    timings_ms: dict[str, float],
+    trace_block: dict[str, str] | None,
+) -> dict[str, Any]:
+    """
+    Build the schema-valid refusal ``result`` for a guard block.
+
+    A refusal is just an answer with the canned ``REFUSAL_TEXT``, an EMPTY
+    ``citations`` array, and an EMPTY ``retrieved_chunks`` array (the guard
+    short-circuits BEFORE retrieval). ``system_version`` still echoes the config
+    provenance honestly — the pinned config that decided to block is on record —
+    so this stays within the same ``rag_query_output`` v1.1.0 contract.
+    """
+    return _build_result(
+        request,
+        resolved,
+        settings,
+        retrieved_chunks=[],
+        answer_text=guardrails.REFUSAL_TEXT,
+        citations=[],
+        timings_ms=timings_ms,
+        trace_block=trace_block,
+    )
+
+
 @query_router.post(
     "/query",
     response_model=QueryResponse,
@@ -318,7 +410,26 @@ def post_query(request: QueryRequest, http_request: Request) -> QueryResponse:
         question=request.question,
         context=extract_trace_context(http_request.headers),
     ) as root_span:
-        pre = _run_pre_generation(request, resolved, settings, clients, tracer, timings_ms)
+        try:
+            pre = _run_pre_generation(request, resolved, settings, clients, tracer, timings_ms)
+        except guardrails.GuardrailTripwire as tripwire:
+            # A successful, honest refusal — NOT an error. The guardrail_input
+            # LLM span (with the block outcome) was already recorded and ended
+            # inside _run_pre_generation; here we just build the canned refusal
+            # envelope and return 200 with the block decision attached.
+            # perf_counter is called ONLY on this tripwire path so the allowed
+            # path's deterministic-clock ticks (the golden bytes) are unchanged.
+            timings_ms["guardrail"] = (time.perf_counter() - total_start) * 1000.0
+            trace_block = trace_echo(root_span)
+            timings_ms["total"] = (time.perf_counter() - total_start) * 1000.0
+            result = _blocked_result(
+                request, resolved, settings, timings_ms=timings_ms, trace_block=trace_block
+            )
+            return QueryResponse(
+                result=result,
+                guardrail_decisions=[tripwire.decision],
+                generation_mode="live",
+            )
 
         generator_pin = resolved.config.generator
         with (
@@ -521,6 +632,31 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
     try:
         with use_context(root_context):
             pre = _run_pre_generation(request, resolved, settings, clients, tracer, timings_ms)
+    except guardrails.GuardrailTripwire as tripwire:
+        # Config-gated input-guard BLOCK raised BEFORE StreamingResponse is
+        # constructed: a successful, honest refusal (NOT an error, distinct from
+        # the record_span_error/re-raise path below). The guardrail_input LLM
+        # span (block outcome) was already recorded inside _run_pre_generation
+        # (parented via the ambient root context); here we end the root cleanly
+        # and return a stream that emits EXACTLY one final refusal — no tokens.
+        timings_ms["guardrail"] = (time.perf_counter() - total_start) * 1000.0
+        trace_block = trace_echo(root_span)
+        timings_ms["total"] = (time.perf_counter() - total_start) * 1000.0
+        root_span.end()
+        result = _blocked_result(
+            request, resolved, settings, timings_ms=timings_ms, trace_block=trace_block
+        )
+        envelope = QueryResponse(
+            result=result,
+            guardrail_decisions=[tripwire.decision],
+            generation_mode="live",
+        )
+
+        def refusal_stream() -> Iterator[str]:
+            """Exactly ONE final event (the canned refusal); ZERO token events."""
+            yield _sse_event("final", envelope.model_dump(mode="json"))
+
+        return StreamingResponse(refusal_stream(), media_type="text/event-stream")
     except BaseException as error:
         # Pre-stream failure: span bookkeeping only (close the root span),
         # then re-raise UNCHANGED into the app-level exception handlers.

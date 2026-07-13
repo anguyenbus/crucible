@@ -321,3 +321,57 @@ def trace_echo(span: Span) -> dict[str, str] | None:
         "span_id": format_span_id(context.span_id),
         "phoenix_project": PHOENIX_PROJECT,
     }
+
+
+def start_guardrail_input_span(
+    tracer: Tracer, *, model_id: str, context: Context | None = None
+) -> Span:
+    """
+    Start the input-guard LLM span for the Haiku classifier call (explicit start).
+
+    Created by the router ONLY when the classifier actually runs (a pre-filter
+    hit), so a benign pre-filter miss adds no span. An OpenInference LLM span so
+    Phoenix renders the guard call with its model id, token counts, and latency —
+    on a SAFE allow AND a block (previously the SAFE call was invisible and a
+    block recorded only a zero-duration decision span). ``start_span`` (not
+    ``start_as_current_span``) is used so a block — which raises through the
+    caller — does NOT auto-mark the span as an ERROR: a block is an intentional
+    refusal, and the caller ends the span cleanly. Parents to the current span
+    (blocking route) or the explicit root ``context`` (streaming route).
+    """
+    return tracer.start_span(
+        "guardrail_input",
+        context=context,
+        attributes=_kinded_attributes(
+            OpenInferenceSpanKindValues.LLM,
+            {SpanAttributes.LLM_MODEL_NAME: model_id, "guardrail.stage": "input"},
+        ),
+    )
+
+
+def set_guardrail_input_attributes(
+    span: Span,
+    *,
+    decision: str,
+    category: str | None = None,
+    rule_id: str | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+) -> None:
+    """
+    Attach the guard outcome to the ``guardrail_input`` span before it is ended.
+
+    ``decision`` is ``"allow"`` (classified SAFE) or ``"block"``; ``category`` /
+    ``rule_id`` come from the block :class:`GuardrailDecision` (folded onto this
+    one span — there is no longer a separate decision span). Token counts render
+    the guard call's cost in Phoenix.
+    """
+    span.set_attribute("guardrail.decision", decision)
+    if category is not None:
+        span.set_attribute("guardrail.category", category)
+    if rule_id is not None:
+        span.set_attribute("guardrail.rule_id", rule_id)
+    if input_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_PROMPT, input_tokens)
+    if output_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_COMPLETION, output_tokens)
