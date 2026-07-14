@@ -182,4 +182,9 @@ def test_parked_stages_are_typed_identities_on_their_natural_types():
     # check_input returns a GuardInputResult; gate-off carries the question
     # unchanged (same object) and no classifier telemetry.
     assert guardrails.check_input(question, pins=gate_off, classifier=None).question is question
-    assert guardrails.check_output(answer) is answer
+    # check_output is config-gated too: the released 1.1.0 pin has an empty
+    # output_categories, so it is a typed identity — the answer passes through
+    # unchanged with no decisions (the eval-lane parked-behavior guarantee).
+    out = guardrails.check_output(answer, pins=gate_off)
+    assert out.answer_text is answer
+    assert out.decisions == ()

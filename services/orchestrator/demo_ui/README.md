@@ -42,7 +42,7 @@ deliberately NO degraded fake mode.
 | --- | --- | --- |
 | `ORCHESTRATOR_URL` | `http://localhost:8000` | Orchestrator base URL (the UI's only channel to the pipeline). |
 | `PHOENIX_ENDPOINT` | unset | Phoenix UI endpoint (e.g. `http://localhost:6006`). Unset → a genuine no-op tracer, no `traceparent` injected, no trace links rendered; the UI stays fully functional. |
-| `DEMO_UI_PIPELINE_CONFIG` | `legal-rag-default-1.2.0` | The single pinned config ref sent on every request. `1.2.0` is the history-aware config; eval's lane stays on `legal-rag-default-1.1.0`. |
+| `DEMO_UI_PIPELINE_CONFIG` | `legal-rag-default-1.4.0` | The single pinned config ref sent on every request. `1.4.0` adds the output PII/secrets guard (secrets refused, PII masked in place with an honest redaction note) plus the hardened input pre-filter; eval's lane stays on `legal-rag-default-1.1.0`. |
 
 ## Cost and honesty rules
 

@@ -56,3 +56,44 @@ def test_enabled_true_with_a_pinned_classifier_id_resolves():
     )
     assert pin.enabled is True
     assert pin.classifier_model_id == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+# ---------------------------------------------------------------------------
+# Output-guard gate (second slice, Task Group 1): the new backward-RESOLUTION
+# ``output_categories`` field. Empty default keeps 1.0.0-1.3.0 resolvable with
+# the OUTPUT guard OFF; the field is INDEPENDENT of classifier_model_id (the
+# output guard is pure regex, so NO cross-validator was added).
+# ---------------------------------------------------------------------------
+
+
+def test_output_categories_parses_from_yaml_values_into_a_tuple():
+    """A pin can opt a config into the output detector classes."""
+    pin = _pin(policy_version="2.0.0", output_categories=["pii", "secrets"])
+    assert pin.output_categories == ("pii", "secrets")
+
+
+def test_output_categories_defaults_to_empty_and_keeps_released_configs_off():
+    """A 1.1.0-shaped pin with no output_categories still resolves, guard OFF."""
+    pin = _pin(policy_version="0.0.0")
+    assert pin.output_categories == ()
+
+    from app.config import resolve_pipeline_config
+
+    for ref in (
+        "legal-rag-default-1.0.0",
+        "legal-rag-default-1.1.0",
+        "legal-rag-default-1.2.0",
+        "legal-rag-default-1.3.0",
+    ):
+        guardrails = resolve_pipeline_config(ref).config.guardrails
+        assert guardrails.output_categories == (), ref
+
+
+def test_output_categories_is_independent_of_classifier_model_id():
+    """No cross-validator: output_categories set + guard disabled still resolves."""
+    # enabled=False and no classifier id, yet output_categories is populated: the
+    # output guard is pure regex with NO model dependency, so this is valid.
+    pin = _pin(policy_version="2.0.0", output_categories=["secrets"])
+    assert pin.enabled is False
+    assert pin.classifier_model_id is None
+    assert pin.output_categories == ("secrets",)

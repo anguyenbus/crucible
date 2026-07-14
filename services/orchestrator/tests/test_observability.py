@@ -242,3 +242,67 @@ def test_result_trace_stays_omitted_under_the_noop_tracer_even_with_traceparent(
     import json as _json
 
     assert "trace" not in _json.loads(final_data)["result"]
+
+
+# ---------------------------------------------------------------------------
+# Output-stage guardrail span helpers (output+input-hardening Task Group 6).
+# The output guard is PURE regex with NO model call, so the span carries no
+# model id / token counts — only stage/decision/category/rule_id + a
+# redaction/flag count. A no-op under the NoOpTracer like every other helper.
+# Focused checks only (per task 6.1).
+# ---------------------------------------------------------------------------
+
+
+def test_guardrail_output_span_records_stage_decision_category_rule_and_count():
+    """On a decision the output span records the four attributes + a count."""
+    from app.observability import (
+        set_guardrail_output_attributes,
+        start_guardrail_output_span,
+    )
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test-output-span")
+
+    span = start_guardrail_output_span(tracer)
+    set_guardrail_output_attributes(
+        span,
+        decision="transform",
+        category="pii",
+        rule_id="output-pii-redact-v1",
+        count=2,
+    )
+    span.end()
+
+    finished = {s.name: s for s in exporter.get_finished_spans()}
+    attrs = finished["guardrail_output"].attributes
+    assert attrs["guardrail.stage"] == "output"
+    assert attrs["guardrail.decision"] == "transform"
+    assert attrs["guardrail.category"] == "pii"
+    assert attrs["guardrail.rule_id"] == "output-pii-redact-v1"
+    assert attrs["guardrail.count"] == 2
+    # Regex-only guard: NO model/token attributes on the span.
+    assert "llm.model_name" not in attrs
+    assert "llm.token_count.prompt" not in attrs
+
+
+def test_guardrail_output_span_helpers_are_a_noop_under_the_noop_tracer():
+    """Under the NoOpTracer the helpers do not crash and export nothing."""
+    from opentelemetry.trace import NoOpTracer
+
+    from app.observability import (
+        set_guardrail_output_attributes,
+        start_guardrail_output_span,
+    )
+
+    span = start_guardrail_output_span(NoOpTracer())
+    # A block carries only decision/category/rule_id (no count) — still a no-op.
+    set_guardrail_output_attributes(
+        span,
+        decision="block",
+        category="secrets",
+        rule_id="output-secrets-v1",
+    )
+    span.end()  # must not raise; nothing recorded/exported
+    assert span.is_recording() is False

@@ -84,13 +84,17 @@ class QueryResponse(BaseModel):
             "configured)."
         ),
     )
-    # Phase 3 (system-prompt-leakage input guard): this list is now POPULATED
-    # with a single 'block' GuardrailDecision when the config-gated input guard
-    # short-circuits a leak/injection attempt to a canned refusal (empty on an
-    # allowed request). The Field DESCRIPTION below is the frozen OpenAPI wire
-    # contract and is left byte-for-byte unchanged — only the runtime VALUES
-    # change, never the route/shape, so the committed openapi.json needs no
-    # regeneration.
+    # Phase 3 (input guard + deterministic output guard): this list is now
+    # POPULATED with guardrail outcomes. The input guard adds a single 'block'
+    # GuardrailDecision when a leak/injection attempt is short-circuited to a
+    # canned refusal. The output guard (config-gated by output_categories) adds
+    # an output-stage 'block' (secrets → canned refusal), 'transform' (PII
+    # redacted in place, with a count), and/or 'flag' (advisory email/phone,
+    # answer unchanged) — so an ALLOWED answer can now carry decisions too. The
+    # list stays empty on a clean request under a config that enables no guard.
+    # The Field DESCRIPTION below is the frozen OpenAPI wire contract and is left
+    # byte-for-byte unchanged — only the runtime VALUES change, never the
+    # route/shape, so the committed openapi.json needs no regeneration.
     guardrail_decisions: list[GuardrailDecision] = Field(
         description=(
             "REQUIRED list of guardrail outcomes. Empty in every Phase 2 "

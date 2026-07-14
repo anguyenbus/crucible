@@ -10,7 +10,10 @@ Honesty rules enforced here:
 - Startup gate: ``GET /readyz`` must return 200; otherwise the REAL
   dependency error is shown and the chat stops — no degraded fake mode.
 - Tokens render live via ``msg.stream_token()`` per SSE ``token`` event —
-  real deltas only, no client-side pacing or fake progress.
+  real deltas only, no client-side pacing or fake progress. When the pinned
+  config enables the output guard (``1.4.0``), the orchestrator BUFFERS the
+  stream (zero ``token`` events, one ``final``); the not-streamed branch below
+  renders that single ``final`` exactly as any other.
 - Citations/sources/timings/provenance render ONLY after the ``final`` event.
 - An ``error`` event renders typed; partial streamed text stays visible but
   is marked INCOMPLETE and the turn is NOT appended to session history.
@@ -47,7 +50,11 @@ PHOENIX_PROJECT_GID = client.resolve_phoenix_project_gid(
 def _welcome_text() -> str:
     """Welcome message: pinned config ref, per-turn cost, session-only memory."""
     return (
-        f"Connected to the RAG pipeline."
+        "Connected to the RAG pipeline. Guardrail is enabled "
+        "(output PII/secrets guard active: "
+        "secrets are refused, PII is masked in place with an honest redaction "
+        "note). Each turn costs one paid Bedrock generation plus one Titan query "
+        "embedding; conversation memory is per-session only."
     )
 
 
@@ -142,9 +149,10 @@ async def on_message(message: cl.Message) -> None:
         # element per cited chunk to THIS message (elements are for_id-scoped, so
         # they must live on the answer to be clickable where the user reads —
         # NOT on the details block). number_citations() derives everything from
-        # the final envelope, so this also covers the not-streamed_any edge:
-        # the answer shows the envelope text, now numbered. Zero citations →
-        # numbered.text == answer_text unchanged and no elements (honest, quiet).
+        # the final envelope, so this also covers the not-streamed_any edge (the
+        # buffered output-guard path, and any guard refusal): the answer shows
+        # the envelope text, now numbered. Zero citations → numbered.text ==
+        # answer_text unchanged and no elements (honest, quiet).
         numbered = render.number_citations(outcome)
         answer_msg.content = numbered.text
         answer_msg.elements = numbered_source_elements(numbered)
@@ -152,9 +160,10 @@ async def on_message(message: cl.Message) -> None:
         # attaches the elements for_id=answer_msg — the documented finalize for
         # a streamed message in chainlit 2.11.1.
         await answer_msg.send()
-        # Details block keeps timings/provenance/Phoenix link and now cross-
-        # references the SAME [n] numbers; the clickable elements moved to the
-        # answer, so it no longer carries any.
+        # Details block keeps timings/provenance/Phoenix link, cross-references
+        # the SAME [n] numbers, and — when the output guard redacted/flagged —
+        # carries the honest "N item(s) redacted/flagged" note; the clickable
+        # elements moved to the answer, so it no longer carries any.
         await cl.Message(content=render.format_final_details(outcome, numbered)).send()
     elif isinstance(outcome, render.ErrorRender):
         if streamed_any:

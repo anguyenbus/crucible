@@ -24,6 +24,20 @@ exactly one ``final`` event and ZERO ``token`` events are emitted — nothing
 leaks. Configs that leave the guard OFF (1.0.0/1.1.0/1.2.0, the eval lane)
 behave byte-for-byte as before: ``check_input`` is a typed identity.
 
+Phase 3 (deterministic output PII/secrets guard): after generation both routes
+run ``check_output(generation.text, pins=...)`` — a PURE regex scan gated by
+the config's ``output_categories``. A ``secrets`` hit raises ``GuardrailTripwire``
+(reusing the SAME 200 canned-refusal path as the input block — NEVER a 5xx);
+redactable PII is masked in place (a ``transform`` decision), advisory email/
+phone is flagged (a ``flag`` decision), and citations are built over the
+possibly-REDACTED text. On ``/query/stream`` a NON-EMPTY ``output_categories``
+switches to BUFFERED delivery: ``token`` events are suppressed, the full answer
+is accumulated and scanned, and exactly ONE ``final`` event carries the refusal
+(block) or the possibly-redacted answer + its decisions (allow/redact) — the
+only form that guarantees no secret byte reaches the user. An EMPTY
+``output_categories`` (eval/1.1.0/1.2.0/1.3.0) keeps live token streaming
+byte-for-byte.
+
 Error mapping lives in app-level exception handlers registered in
 ``app.main`` — never per-route try/except:
 - ``MalformedConfigRefError`` → 422, ``UnknownConfigError`` → 404,
@@ -78,11 +92,13 @@ from app.observability import (
     root_query_span,
     set_generation_attributes,
     set_guardrail_input_attributes,
+    set_guardrail_output_attributes,
     set_retrieval_documents,
     span_context,
     start_citation_build_span,
     start_generation_span,
     start_guardrail_input_span,
+    start_guardrail_output_span,
     start_root_query_span,
     trace_echo,
     use_context,
@@ -108,6 +124,8 @@ if TYPE_CHECKING:
 
     from app.clients import AppClients
     from app.clients.bedrock import GenerationResult
+    from app.schemas.envelope import GuardrailDecision
+    from app.schemas.pipeline_config import GuardrailsPin
 
 query_router = APIRouter(tags=["query"])
 
@@ -118,6 +136,69 @@ def endpoint_host(endpoint: str | None) -> str | None:
         return None
     stripped = endpoint.removeprefix("https://").removeprefix("http://").rstrip("/")
     return stripped.split("/")[0].split(":")[0]
+
+
+def _output_guard_active(pins: GuardrailsPin) -> bool:
+    """
+    Whether the deterministic output guard will actually scan for this config.
+
+    True iff ``output_categories`` is non-empty — the exact condition under which
+    ``check_output`` does real work (rather than returning a typed identity). The
+    output guard is pure regex with no model dependency, so this is INDEPENDENT of
+    ``enabled`` / the input classifier (matching the pure stage's own gate). The
+    released ``1.0.0``–``1.3.0`` configs (empty ``output_categories``) add NO
+    output-guard span and NO ``guardrail_output`` timing and stay byte-for-byte.
+    """
+    return bool(pins.output_categories)
+
+
+def _sum_rule_counts(rationale: str | None) -> int | None:
+    """
+    Sum the per-rule counts embedded in an output-guard decision rationale.
+
+    ``check_output`` builds a rationale like ``"ssn=2, credit_card=1"`` for a
+    ``transform``/``flag`` decision; this recovers the total span count (``3``)
+    for the ``guardrail.count`` span attribute. Returns ``None`` when the
+    rationale carries no ``label=N`` parts (e.g. a secrets block, whose rationale
+    names the secret class, not a count).
+    """
+    if not rationale:
+        return None
+    total = 0
+    found = False
+    for part in rationale.split(","):
+        _, sep, number = part.partition("=")
+        number = number.strip()
+        if sep and number.isdigit():
+            total += int(number)
+            found = True
+    return total if found else None
+
+
+def _record_output_guard_decisions(span: Span, decisions: tuple[GuardrailDecision, ...]) -> None:
+    """
+    Attach the (allow/transform/flag) output-guard outcome to its span.
+
+    A clean scan records ``decision="allow"`` with no category/rule/count; a
+    non-empty scan records the PRIMARY decision (redaction ranks above an
+    advisory flag, so ``decisions[0]`` — the ``transform`` when present) and a
+    ``count`` summed across ALL decisions (redactions + advisory flags), so a
+    turn that both masks and flags reports the full item total on the span. A
+    secrets BLOCK never reaches here (it raises ``GuardrailTripwire`` and is
+    recorded on the tripwire path instead).
+    """
+    if not decisions:
+        set_guardrail_output_attributes(span, decision="allow")
+        return
+    primary = decisions[0]
+    total = sum((_sum_rule_counts(d.rationale) or 0) for d in decisions) or None
+    set_guardrail_output_attributes(
+        span,
+        decision=primary.decision,
+        category=primary.category,
+        rule_id=primary.rule_id,
+        count=total,
+    )
 
 
 @dataclass(frozen=True)
@@ -324,10 +405,14 @@ def _blocked_result(
     Build the schema-valid refusal ``result`` for a guard block.
 
     A refusal is just an answer with the canned ``REFUSAL_TEXT``, an EMPTY
-    ``citations`` array, and an EMPTY ``retrieved_chunks`` array (the guard
-    short-circuits BEFORE retrieval). ``system_version`` still echoes the config
-    provenance honestly — the pinned config that decided to block is on record —
-    so this stays within the same ``rag_query_output`` v1.1.0 contract.
+    ``citations`` array, and an EMPTY ``retrieved_chunks`` array. For the INPUT
+    guard the guard short-circuits BEFORE retrieval, so ``retrieved_chunks``
+    stays ``[]``; the OUTPUT secrets block happens AFTER retrieval but still
+    suppresses the whole answer to the canned refusal, and by contract a refusal
+    carries no citations and no retrieved chunks (the answer that referenced them
+    is gone). ``system_version`` still echoes the config provenance honestly —
+    the pinned config that decided to block is on record — so this stays within
+    the same ``rag_query_output`` v1.1.0 contract.
     """
     return _build_result(
         request,
@@ -444,7 +529,47 @@ def post_query(request: QueryRequest, http_request: Request) -> QueryResponse:
             )
             set_generation_attributes(gen_span, generation)
 
-        answer_text = guardrails.check_output(generation.text)
+        # Config-gated deterministic output guard (PURE regex, NO model call).
+        # An empty output_categories (1.0.0/1.1.0/1.2.0/1.3.0) makes check_output
+        # a typed identity: NO span, NO guardrail_output timing → byte-for-byte.
+        # A secrets hit raises GuardrailTripwire and reuses the SAME 200 refusal
+        # path as the input block; redactable PII is masked and email/phone
+        # flagged, and citations are built over the possibly-REDACTED text.
+        guard_pins = resolved.config.guardrails
+        if _output_guard_active(guard_pins):
+            guard_out_span = start_guardrail_output_span(tracer)
+            out_guard_start = time.perf_counter()
+            # try/finally guarantees the span is ended on EVERY path (normal,
+            # the tripwire's early return, or an unexpected attribute-set error).
+            try:
+                out = guardrails.check_output(generation.text, pins=guard_pins)
+                timings_ms["guardrail_output"] = (time.perf_counter() - out_guard_start) * 1000.0
+                _record_output_guard_decisions(guard_out_span, out.decisions)
+                answer_text = out.answer_text
+                guardrail_decisions = list(out.decisions)
+            except guardrails.GuardrailTripwire as tripwire:
+                timings_ms["guardrail_output"] = (time.perf_counter() - out_guard_start) * 1000.0
+                set_guardrail_output_attributes(
+                    guard_out_span,
+                    decision=tripwire.decision.decision,
+                    category=tripwire.decision.category,
+                    rule_id=tripwire.decision.rule_id,
+                )
+                trace_block = trace_echo(root_span)
+                timings_ms["total"] = (time.perf_counter() - total_start) * 1000.0
+                result = _blocked_result(
+                    request, resolved, settings, timings_ms=timings_ms, trace_block=trace_block
+                )
+                return QueryResponse(
+                    result=result,
+                    guardrail_decisions=[tripwire.decision],
+                    generation_mode="live",
+                )
+            finally:
+                guard_out_span.end()
+        else:
+            answer_text = generation.text
+            guardrail_decisions = []
 
         with (
             _timed(timings_ms, "citation_build"),
@@ -472,7 +597,9 @@ def post_query(request: QueryRequest, http_request: Request) -> QueryResponse:
         timings_ms=timings_ms,
         trace_block=trace_block,
     )
-    return QueryResponse(result=result, guardrail_decisions=[], generation_mode="live")
+    return QueryResponse(
+        result=result, guardrail_decisions=guardrail_decisions, generation_mode="live"
+    )
 
 
 _SSE_EVENT_CONTRACT_DOC = (
@@ -665,9 +792,18 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
         raise
 
     generator_pin = resolved.config.generator
+    guard_pins = resolved.config.guardrails
+    # BUFFERED delivery when the output guard is active: no token events reach
+    # the client until check_output has cleared/redacted the COMPLETE answer.
+    buffered = _output_guard_active(guard_pins)
 
     def event_stream() -> Iterator[str]:
-        """token* then EXACTLY ONE terminal event (final | error)."""
+        """
+        token* then EXACTLY ONE terminal event (final | error).
+
+        In BUFFERED mode zero token events are emitted; a secrets block or an
+        allow/redact both terminate in exactly one ``final``.
+        """
         open_spans: list[Span] = []
         try:
             gen_span = start_generation_span(
@@ -685,13 +821,67 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
                     max_tokens=generator_pin.max_tokens,
                 )
                 for delta in stream:
-                    yield _sse_event("token", {"text": delta})
+                    # Buffered mode SUPPRESSES token events (the answer may carry
+                    # a secret prefix); live mode forwards each delta raw.
+                    if not buffered:
+                        yield _sse_event("token", {"text": delta})
                 generation = stream.result()
                 set_generation_attributes(gen_span, generation)
             gen_span.end()
             open_spans.remove(gen_span)
 
-            answer_text = guardrails.check_output(generation.text)
+            # Config-gated deterministic output guard. In buffered mode a secrets
+            # block terminates the stream in one final refusal (zero tokens);
+            # redactable PII is masked and email/phone flagged, with citations
+            # built over the possibly-REDACTED text. Live mode (empty
+            # output_categories) runs check_output as a typed identity — NO span,
+            # NO guardrail_output timing → byte-for-byte unchanged.
+            if buffered:
+                guard_out_span = start_guardrail_output_span(tracer, context=root_context)
+                open_spans.append(guard_out_span)
+                out_guard_start = time.perf_counter()
+                try:
+                    out = guardrails.check_output(generation.text, pins=guard_pins)
+                except guardrails.GuardrailTripwire as tripwire:
+                    # A successful, honest refusal — NOT an error. Caught HERE
+                    # (before the outer except) so it is never emitted as an
+                    # error event: exactly one final refusal, zero tokens.
+                    timings_ms["guardrail_output"] = (
+                        time.perf_counter() - out_guard_start
+                    ) * 1000.0
+                    set_guardrail_output_attributes(
+                        guard_out_span,
+                        decision=tripwire.decision.decision,
+                        category=tripwire.decision.category,
+                        rule_id=tripwire.decision.rule_id,
+                    )
+                    guard_out_span.end()
+                    open_spans.remove(guard_out_span)
+                    trace_block = trace_echo(root_span)
+                    timings_ms["total"] = (time.perf_counter() - total_start) * 1000.0
+                    result = _blocked_result(
+                        request,
+                        resolved,
+                        settings,
+                        timings_ms=timings_ms,
+                        trace_block=trace_block,
+                    )
+                    envelope = QueryResponse(
+                        result=result,
+                        guardrail_decisions=[tripwire.decision],
+                        generation_mode="live",
+                    )
+                    yield _sse_event("final", envelope.model_dump(mode="json"))
+                    return
+                timings_ms["guardrail_output"] = (time.perf_counter() - out_guard_start) * 1000.0
+                _record_output_guard_decisions(guard_out_span, out.decisions)
+                guard_out_span.end()
+                open_spans.remove(guard_out_span)
+                answer_text = out.answer_text
+                guardrail_decisions = list(out.decisions)
+            else:
+                answer_text = generation.text
+                guardrail_decisions = []
 
             citation_span = start_citation_build_span(tracer, context=root_context)
             open_spans.append(citation_span)
@@ -720,7 +910,11 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
                 timings_ms=timings_ms,
                 trace_block=trace_block,
             )
-            envelope = QueryResponse(result=result, guardrail_decisions=[], generation_mode="live")
+            envelope = QueryResponse(
+                result=result,
+                guardrail_decisions=guardrail_decisions,
+                generation_mode="live",
+            )
             yield _sse_event("final", envelope.model_dump(mode="json"))
         except Exception as error:
             # Post-commit failure: NEVER retried (a retry would replay

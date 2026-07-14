@@ -375,3 +375,55 @@ def set_guardrail_input_attributes(
         span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_PROMPT, input_tokens)
     if output_tokens is not None:
         span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_COMPLETION, output_tokens)
+
+
+def start_guardrail_output_span(tracer: Tracer, *, context: Context | None = None) -> Span:
+    """
+    Start the output-guard span for the deterministic PII/secrets scan.
+
+    Created by the router when the output guard actually runs (a config whose
+    ``output_categories`` is non-empty). Unlike the input guard, the output scan
+    is PURE regex with NO model call, so this is a CHAIN span carrying NO model
+    id and NO token counts. ``start_span`` (not ``start_as_current_span``) is
+    used so a secrets BLOCK — which raises :class:`GuardrailTripwire` through the
+    caller — does NOT auto-mark the span as an ERROR: a block is an intentional
+    refusal, and the caller ends the span cleanly. Parents to the current span
+    (blocking route) or the explicit root ``context`` (streaming route). A no-op
+    under the NoOpTracer like every other span helper. (Output side of roadmap
+    item 11.)
+    """
+    return tracer.start_span(
+        "guardrail_output",
+        context=context,
+        attributes=_kinded_attributes(
+            OpenInferenceSpanKindValues.CHAIN,
+            {"guardrail.stage": "output"},
+        ),
+    )
+
+
+def set_guardrail_output_attributes(
+    span: Span,
+    *,
+    decision: str,
+    category: str | None = None,
+    rule_id: str | None = None,
+    count: int | None = None,
+) -> None:
+    """
+    Attach the output-guard outcome to the ``guardrail_output`` span.
+
+    ``decision`` is ``"allow"`` (clean answer), ``"block"`` (secrets), or the
+    non-block outcome ``"transform"`` (PII redaction) / ``"flag"`` (advisory
+    email/phone); ``category`` / ``rule_id`` come from the
+    :class:`GuardrailDecision`. ``count`` is the redaction/flag count (how many
+    spans were masked or flagged) — the output guard is regex-only, so there are
+    NO model or token attributes. A no-op under the NoOpTracer.
+    """
+    span.set_attribute("guardrail.decision", decision)
+    if category is not None:
+        span.set_attribute("guardrail.category", category)
+    if rule_id is not None:
+        span.set_attribute("guardrail.rule_id", rule_id)
+    if count is not None:
+        span.set_attribute("guardrail.count", count)

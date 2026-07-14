@@ -69,6 +69,12 @@ DEFAULT_PROMPT_TEMPLATE_TEXT: Final[str] = (
 # Guard input categories (Phase 3): backward-RESOLUTION default so pre-guard
 # configs stay resolvable; only 'prompt_leak' is active in this slice.
 DEFAULT_GUARDRAIL_INPUT_CATEGORIES: Final[tuple[str, ...]] = ("prompt_leak",)
+# Guard OUTPUT categories (Phase 3, second slice): backward-RESOLUTION default
+# so the released pre-output-guard configs (1.0.0/1.1.0/1.2.0/1.3.0) stay
+# resolvable with the output guard OFF and are NEVER edited. Empty tuple means
+# check_output is a typed identity (no scan). Independent of
+# classifier_model_id: the output guard is PURE regex with NO model dependency.
+DEFAULT_GUARDRAIL_OUTPUT_CATEGORIES: Final[tuple[str, ...]] = ()
 
 
 class GeneratorPin(BaseModel):
@@ -233,7 +239,11 @@ class GuardrailsPin(BaseModel):
     Phase 3 evolution (system-prompt-leakage input guard): the ``enabled``/
     ``classifier_model_id``/``input_categories`` fields carry backward-
     RESOLUTION defaults so the released pre-guard configs (1.0.0/1.1.0/1.2.0)
-    stay resolvable with the guard OFF and are NEVER edited — the defaults
+    stay resolvable with the guard OFF and are NEVER edited -- and the
+    second-slice ``output_categories`` field follows the same rule (empty
+    default means the output guard is a typed identity; it is INDEPENDENT of
+    ``classifier_model_id`` since the output guard is pure regex with no model
+    dependency, so it adds NO validator) — the defaults
     exist for backward RESOLUTION only, exactly like the Phase 2 template/
     context and Phase B history pins. A ``policy_version`` string alone must
     NOT switch behavior: ``enabled`` (plus a pinned classifier id) is the
@@ -268,6 +278,17 @@ class GuardrailsPin(BaseModel):
             "Active input-guard detector classes. Only 'prompt_leak' in this "
             "slice; the tuple is EXTENSIBLE. Default exists only for backward "
             "resolution of released configs."
+        ),
+    )
+    output_categories: tuple[str, ...] = Field(
+        default=DEFAULT_GUARDRAIL_OUTPUT_CATEGORIES,
+        description=(
+            "Active OUTPUT-guard detector classes (e.g. 'pii', 'secrets'). "
+            "Mirrors input_categories and is EXTENSIBLE. Empty default means "
+            "check_output is a typed identity (no scan) so released pre-output-"
+            "guard configs stay resolvable and behave as today. INDEPENDENT of "
+            "classifier_model_id: the output guard is PURE regex with NO model "
+            "dependency, so NO validator ties it to a classifier id."
         ),
     )
 

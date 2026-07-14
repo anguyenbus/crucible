@@ -3,12 +3,16 @@ Envelope → render-model mapping (pure; everything the UI shows comes here).
 
 Honesty rules (binding, from the spec): citations/sources/timings/provenance
 are mapped ONLY from the ``final`` SSE event's envelope — never synthesized
-client-side; zero citations is an explicit honest state; ``guardrail_decisions``
-is a Phase-3 stub (always ``[]``) and is NEVER rendered as active; the
-Phoenix trace link exists only when the envelope carries a real ``trace``
-block (omitted under the no-op tracer) AND the UI knows ``PHOENIX_ENDPOINT``;
-an ``error`` event renders typed (detail + dependency + retry guidance) and
-the partial streamed text is marked INCOMPLETE by the caller.
+client-side; zero citations is an explicit honest state; the full
+``guardrails_active`` decision BADGE stays a Phase-3 stub (always ``False``) and
+is NEVER rendered as active; a REDACT/FLAG output decision surfaces ONLY a
+concise, honest "N item(s) redacted / flagged" note derived from the envelope's
+``guardrail_decisions`` (never fabricated — a normal answer with no output
+decision renders exactly as before); the Phoenix trace link exists only when the
+envelope carries a real ``trace`` block (omitted under the no-op tracer) AND the
+UI knows ``PHOENIX_ENDPOINT``; an ``error`` event renders typed (detail +
+dependency + retry guidance) and the partial streamed text is marked INCOMPLETE
+by the caller.
 
 The reference for what "honest rendering" means is
 ``services/orchestrator/scripts/demo_live_query.py`` steps 6-10.
@@ -96,8 +100,14 @@ class FinalRender:
     config_sha256_short: str
     index: str
     trace: TraceLink | None
-    # Phase-3 stubs: guardrail_decisions is required-but-empty and must NEVER
-    # be rendered as active — this stays False regardless of the envelope.
+    # Output-guard outcomes carried verbatim from the envelope so the render can
+    # surface an honest redaction/flag NOTE (see _redaction_flag_note). Empty on
+    # every allowed answer with no output decision, so the normal render is
+    # byte-for-byte unchanged.
+    guardrail_decisions: list[dict[str, Any]] = field(default_factory=list)
+    # Phase-3 stub: the full decision BADGE is parked. guardrails_active must
+    # NEVER be rendered as active — this stays False regardless of the envelope
+    # (the redaction/flag note above is a separate, honest, data-driven line).
     guardrails_active: bool = field(default=False, init=False)
 
     @property
@@ -160,7 +170,9 @@ def map_final_envelope(
     answer text; sources carry rank/chunk_id/score/text from
     ``retrieved_chunks``; timings come from the real ``timings_ms``;
     provenance from ``system_version`` (``config_sha256`` short form,
-    ``pipeline_version``, resolved index).
+    ``pipeline_version``, resolved index). ``guardrail_decisions`` (envelope
+    top level, sibling of ``result``) is carried through verbatim so the render
+    can surface an honest redaction/flag note; absent/empty → no note.
     """
     result = envelope["result"]
     answer_text: str = result["answer"]["text"]
@@ -197,6 +209,7 @@ def map_final_envelope(
         config_sha256_short=system_version["config_sha256"][:_SHA_SHORT_LEN],
         index=system_version["opensearch_index"],
         trace=build_trace_link(result.get("trace"), phoenix_endpoint, project_gid),
+        guardrail_decisions=list(envelope.get("guardrail_decisions") or []),
     )
 
 
@@ -273,12 +286,67 @@ def map_error_event(payload: dict[str, Any]) -> ErrorRender:
     )
 
 
+def _count_from_rationale(rationale: str | None) -> int:
+    """
+    Sum the per-rule counts in a ``label=count, …`` rationale (e.g.
+    ``"ssn=2, credit_card=1"`` → 3). A rationale that carries no parseable
+    ``=count`` pair still represents at least one item, so the fallback is 1 —
+    the note is honest but never claims fewer items than the decision covers.
+    """
+    if not rationale:
+        return 1
+    total = 0
+    for part in rationale.split(","):
+        _, sep, num = part.rpartition("=")
+        if not sep:
+            continue
+        try:
+            total += int(num.strip())
+        except ValueError:
+            continue
+    return total or 1
+
+
+def _redaction_flag_note(decisions: list[dict[str, Any]]) -> str | None:
+    """
+    Honest "N item(s) redacted / flagged" summary from OUTPUT guard decisions.
+
+    Counts sum each output ``transform`` (redaction) / ``flag`` (advisory)
+    decision's per-rule ``rationale``. A ``block`` decision is a hard refusal,
+    NOT a redaction/flag, and is ignored here; empty/absent decisions (every
+    allowed answer with no output guard hit) yield None so the note is omitted
+    entirely and the normal render is byte-for-byte unchanged.
+    """
+    redacted = 0
+    flagged = 0
+    for decision in decisions:
+        if decision.get("stage") != "output":
+            continue
+        count = _count_from_rationale(decision.get("rationale"))
+        if decision.get("decision") == "transform":
+            redacted += count
+        elif decision.get("decision") == "flag":
+            flagged += count
+
+    parts: list[str] = []
+    if redacted:
+        parts.append(f"{redacted} item(s) redacted")
+    if flagged:
+        parts.append(f"{flagged} item(s) flagged")
+    if not parts:
+        return None
+    return "**Output guardrail**: " + ", ".join(parts) + " in this answer."
+
+
 def format_final_details(render: FinalRender, numbered: NumberedAnswer | None = None) -> str:
     """
     Markdown block shown AFTER the streamed answer (final-envelope data only).
 
-    Zero citations is stated honestly; guardrails are never mentioned as
-    active (``guardrails_active`` is False by construction).
+    Zero citations is stated honestly; the full ``guardrails_active`` BADGE is
+    never mentioned as active (it is False by construction). When the output
+    guard redacted or flagged spans, a single honest "N item(s) redacted /
+    flagged" note is added (derived from ``guardrail_decisions``); an answer
+    with no output decision renders exactly as before.
 
     When ``numbered`` is supplied (the same ``NumberedAnswer`` used to rewrite
     the answer's markers), a "Cited sources" list cross-references the SAME
@@ -337,6 +405,13 @@ def format_final_details(render: FinalRender, numbered: NumberedAnswer | None = 
             )
     else:
         lines.append("**Citations**: 0 — the model answered without citing (reported honestly).")
+
+    note = _redaction_flag_note(render.guardrail_decisions)
+    if note is not None:
+        # Only rendered when the output guard actually redacted/flagged — a small,
+        # honest, data-driven line (NOT the parked guardrails_active badge).
+        lines.append("")
+        lines.append(note)
 
     lines.append("")
     lines.append("**Timings (ms)**")
