@@ -15,7 +15,26 @@ This document answers two questions that are usually conflated:
 
 The second question is the reason this document exists. **Evaluation is not something a team can simply "do harder" if the platform lacks the capability.** Each phase below names its platform dependencies explicitly. If a dependency is not funded, the phase does not degrade gracefully — it produces numbers that look valid and are not.
 
-**Scope.** Model *selection and evaluation*. Not model training, not fine-tuning, not the application's own architecture.
+**Scope.** Model *selection and evaluation*. Not model training, not fine-tuning.
+
+**What actually gets selected — and it is not a model.** The unit of selection is a **versioned application configuration**:
+
+```text
+candidate configuration =
+    model provider + model version + deployment and region
+  + inference parameters
+  + system and developer prompts, templates, examples
+  + retrieval, index, chunking, and reranking configuration
+  + tool catalogue and permissions
+  + orchestration policy
+  + input and output guardrails
+  + response schema and post-processing
+  + quota, concurrency, timeout, retry, and fallback policy
+```
+
+Two deployments of the *same model* behave differently when any of those differ. A score therefore belongs to a configuration and never to a model name, and every gate and decision record must name the exact configuration that produced it.
+
+This has a consequence that runs through the whole document, and it is the reason the phases are layered the way they are: **when a result disappoints, the model is the least likely cause and the most likely thing to get blamed.**
 
 **Platform neutrality.** The process is written to be platform-neutral, because the process outlives any platform decision. Section 8 maps it onto the two platforms currently available to us — Azure AI Foundry and AWS Bedrock — and marks which parts neither provides.
 
@@ -61,7 +80,32 @@ The rest are conventional and mostly satisfiable by configuration rather than co
 
 **The one-paragraph version.** Choosing a model is a measurement problem before it is a modelling problem. The measurements are noisy in ways ordinary software testing is not, so the platform has to supply the things that make a noisy measurement trustworthy: a place to store ground truth, a way to ask humans what the right answer is, a way to stop asking the model the same question twice, and a way to see what it cost. Without those, we can still produce a slide with numbers on it. We cannot produce a decision anyone should rely on.
 
-### 2.3 Where to start — the first 30 days
+### 2.3 Scale the process to the risk
+
+Running all nine steps for an internal tool that drafts meeting notes is not rigour, it is theatre — and it teaches the organisation that the process is a thing to route around. Tier the use case in step 0 and take the reduced path **deliberately**, rather than by attrition at the deadline.
+
+| | **Tier 1 — Limited impact** | **Tier 2 — Customer-facing** | **Tier 3 — High impact** |
+|---|---|---|---|
+| *Typical* | Internal, reversible output, no sensitive action | External users, material experience, moderate privacy or reputational risk | Regulated guidance, financial or eligibility impact, consequential actions |
+| **0. Contract** | Full | Full | Full + independent risk sign-off |
+| **1. Screen** | Full | Full | Full + compliance sign-off on routing |
+| **2. Datasets** | Golden only, ~50–100. Adversarial deferred | Golden + adversarial + private holdout | All splits + safety holdout, independently owned |
+| **3. Calibrate judge** | **Skip the judge entirely** — deterministic checks + human spot review | Full: 50–100 labels | Full, larger set, agreement reported per segment |
+| **4. Cache** | Full | Full | Full |
+| **5. Bake-off** | Single run, report variance, no perturbation tests | Full | Full + human blind review on close calls |
+| **6. Safety** | Guardrail smoke test | Full red team | Full red team + independent validation |
+| **7. Gate** | Programmatic checks only | Full | Full + release board approval |
+| **8. Production loop** | Feedback capture + flywheel | Full | Full + drift alerting |
+
+**Three rules that keep tiering honest rather than a loophole:**
+
+1. **The tier is assigned in step 0 by the risk owner** — never chosen by the delivery team once the schedule slips. A tier assigned after the deadline moved is not a tier, it is an excuse.
+2. **Tier 1 skips the judge; it does not use an uncalibrated one.** An uncalibrated judge is worse than no judge, because it emits a number and numbers get quoted. If you will not fund calibration, use deterministic checks and human spot review, and report no quality score.
+3. **Step 4 is never reduced.** The cache is the one capability cheaper to build than to skip, at every tier.
+
+**Tier 1's reduction is genuinely large** — no calibration, no red team, no perturbation tests. That is a couple of weeks rather than a quarter. And nothing is wasted if the use case is later promoted: the deferred steps become blocking, and the golden set built at Tier 1 is exactly what step 3 calibrates against.
+
+### 2.4 Where to start — the first 30 days
 
 Concrete, and none of it waits on procurement:
 
@@ -196,8 +240,11 @@ Each phase states its **goal**, **steps**, **exit criteria**, and **platform req
 
 **Steps.**
 
-1. **Golden set — 100–300 examples minimum.** Drawn from real or realistic user queries, each with ground truth: the expected answer, and for RAG the expected source passages. Version it in git or an equivalent versioned store, exactly like code. Below ~50 examples, differences between candidates are mostly noise; treat any "Model A beat Model B by 3%" claim on a small set as a coin flip until a significance check says otherwise.
-2. **Adversarial set — built to the taxonomy, not to the imagination.** Deliberately include:
+1. **Stratify before you collect.** Define the traffic and risk strata first — segment, language, task type, severity-if-wrong — then fill them. Collecting first and stratifying afterwards just reproduces whatever bias was in the sample you happened to have.
+2. **Source real tasks where permitted.** Sample production or pilot traffic. Where data is sensitive, redact or synthesise the *details* without removing the *difficulty* — a golden set of easy paraphrases tests the demo. Where there is no traffic yet, have domain experts author tasks against the strata and mark them as authored rather than observed, so the provenance stays visible when the results are argued about.
+3. **Author ground truth, and review it.** This is where the effort actually goes, and it needs domain experts rather than engineers. Per case, record: the reference answer; the facts that must appear; claims that are prohibited; whether the case is answerable at all; and the source documents that support it. **Double-review every ambiguous or high-severity case.** Ground truth that one person wrote and nobody checked is an opinion with a schema.
+4. **Golden set — 100–300 examples per major task.** Below ~50, differences between candidates are mostly noise; treat any "Model A beat Model B by 3%" claim on a small set as a coin flip until a significance check says otherwise.
+5. **Adversarial set — built to the taxonomy, not to the imagination.** Deliberately include:
    - Ambiguous questions with more than one defensible answer
    - Questions whose answer is **not** in the knowledge base, to test refusal
    - Near-duplicate documents that stress retrieval
@@ -205,10 +252,38 @@ Each phase states its **goal**, **steps**, **exit criteria**, and **platform req
    - Prompt injection embedded in **retrieved documents** — the RAG-specific attack most teams never test
    - PII-bait queries, out-of-scope requests, typo-ridden and multilingual inputs
    - Cases where the fluent answer is the wrong one
-3. **Held-out set — never tuned against.** Contamination is a live risk: if the corpus is public, frontier models may have memorised it, and scores flatter models that will disappoint in production. Prefer questions written against **private or post-cutoff documents**. A suspiciously high score on a public corpus is evidence of recall, not quality.
-4. Version, assign stable IDs, and access-control all three. Ground truth containing PII needs the same handling as production data.
+6. **Size the rare-failure suites against the claim you intend to make.** This is arithmetic, not taste. If you observe **zero failures in `n` independent trials**, the upper 95% confidence bound on the true rate is approximately **`3/n`**:
 
-**Exit criteria.** All three sets versioned and addressable by ID. Contamination assessment recorded. Each adversarial case tagged to a taxonomy category.
+   | Trials, zero failures observed | What you may honestly claim |
+   |---:|---|
+   | 30 | the rate is probably under 10% |
+   | 100 | the rate is probably under 3% |
+   | 300 | the rate is probably under 1% |
+   | 3,000 | the rate is probably under 0.1% |
+
+   **Read this table back against the Phase 0 contract.** A clause like *"harmful-content rate below 0.1%"* silently commits you to roughly 3,000 clean adversarial trials to evidence it. Either fund that, or rewrite the contract to a claim the suite can actually support. **Zero observed failures is not evidence of zero risk**, and no amount of clean running makes 100 cases support a one-in-a-thousand claim.
+
+7. **Split the data, and control access to the splits.** One dataset is not one thing:
+
+   | Split | Who may see it | Purpose |
+   |---|---|---|
+   | Development | Engineers | Prompt, retrieval, and config iteration |
+   | Regression | Everyone; always-on | Stops known failures recurring; grows from incidents |
+   | Validation | Engineers, but not tuned item-by-item | Comparative development |
+   | **Private acceptance holdout** | **An independent owner — not the team tuning candidates** | The final, unbiased decision |
+   | Safety holdout | Security only, restricted | Stops overfitting to a known red-team corpus |
+
+   The private holdout needs organisational discipline rather than tooling: if the people optimising the candidates can see it, it is a validation set wearing a holdout's name. Log who accessed it.
+
+8. **Test for contamination — actually test it, do not assert it.** If the corpus is public, frontier models may have memorised it, and scores will flatter candidates that disappoint in production. The test is cheap and almost nobody runs it:
+
+   > **Ask the candidate the golden-set questions with retrieval disabled.** If it answers correctly *without* the context, it did not retrieve the answer — it recalled it. Any case it can answer context-free is measuring memorisation rather than your pipeline, and belongs in a separate bucket or in the bin.
+
+   Prefer questions written against **private or post-cutoff documents**. A suspiciously high score on a public corpus is a finding, not a celebration.
+
+9. **Version, tag, and document.** Stable IDs, immutable versions, every adversarial case tagged to a taxonomy category, and a short data card recording scope, known gaps, and limitations. Ground truth containing PII gets the same handling as production data.
+
+**Exit criteria.** All splits versioned and addressable by ID. Contamination test **run and recorded** — not asserted. Rare-failure suites sized against the Phase 0 claims. Every adversarial case tagged. Ground truth double-reviewed where ambiguous or high-severity.
 
 **Platform requirements.** Versioned dataset store with immutable versions and stable IDs; access control and PII handling; lineage from a result back to the exact dataset version that produced it.
 
@@ -240,6 +315,16 @@ flowchart TD
 4. Run the judge over the same examples. Measure judge–human agreement with a chance-corrected statistic (Cohen's kappa, or Krippendorff's alpha for >2 raters); raw percentage agreement flatters on skewed label distributions.
 5. If agreement is below target, fix in this order: rubric wording, then few-shot anchors, then the judge model. Do not proceed on a judge that disagrees with humans — you would be automating an opinion.
 6. **Pin the judge model ID and rubric version.** Publish the agreement figure as the instrument's error bar and quote it alongside every score thereafter.
+
+**What target?** There is no universal threshold, and the honest rule is to tie it to **the consequence of a judge error** — a judge that blocks a release needs more validation than one that prioritises cases for human review. But "tie it to consequence" is unusable without an anchor, so start here and argue up or down:
+
+| What the judge is used for | Starting floor (Cohen's kappa) |
+|---|---:|
+| Prioritising cases for human review | ≈ 0.4 — moderate; errors are cheap and recoverable |
+| Comparing candidates in a bake-off | ≈ 0.6 — substantial; errors change a decision |
+| Blocking a release gate | ≈ 0.8 — near-perfect; errors ship or block wrongly |
+
+**If agreement cannot reach the floor for the job, the judge does not do that job.** Demote it to a cheaper role — or replace it with deterministic checks plus human review — rather than lowering the floor to fit the judge you have.
 
 **Two hard rules.**
 
@@ -280,11 +365,27 @@ sequenceDiagram
 
 **Steps.**
 
-1. Build a **verdict cache** keyed on the full identity of the question being asked: sample ID, model output, judge model ID, rubric version, metric name. Anything that could change the verdict belongs in the key; anything in the key that cannot change the verdict wastes a cache slot.
-2. Add a **reference cache** *only if* references are model-generated. Static, hand-written ground truth needs no cache on this axis. Where references are generated, they regenerate as different strings run-to-run and become a large noise source in their own right.
-3. Pin everything that enters a result: prompt version, retrieval config, model IDs, parameters, dataset version, judge version, rubric version. A score whose configuration cannot be reproduced is not evidence.
-4. Key at the **experiment level, not the infrastructure level**, so partial progress survives: a run that dies at example 8,000 resumes from the cache, and a newly added candidate or metric scores against existing cached outputs for free.
-5. **Verify with a replay test:** run the same configuration twice. Results must be identical and the second run must make approximately zero paid calls. If it does not, the key is wrong.
+1. **Separate generation from grading.** Generate candidate outputs once, store them immutably with their complete trace, then run every evaluator against those fixed artifacts. Regeneration then becomes an *explicit* experiment — the stability runs in Phase 5 — rather than accidental noise on every grading pass.
+2. **Build a verdict cache**, keyed on the full identity of the question being asked:
+
+   ```text
+   verdict key = hash of
+       case ID + dataset version
+     + candidate output
+     + retrieved-context and tool-trace hash    <-- the one people omit
+     + evaluator name + version
+     + judge model ID + parameters
+     + rubric / judge-prompt version
+   ```
+
+   **Do not omit the context hash.** Faithfulness and groundedness are judged *against the retrieved context*, not against the answer alone. Two candidates with different chunking routinely produce byte-identical answers — that is the normal case, not the edge case, when candidates share a base model. Without the context hash, both arms collapse to the same key and the cache returns the first arm's verdict when scoring the second. It presents as a cache hit, which is to say **it presents as success**. This fails hardest on exactly the retrieval ablations the process exists to run.
+
+   The general rule: anything that could change the verdict belongs in the key; anything in the key that cannot change the verdict only wastes a cache slot.
+3. Add a **reference cache** *only if* references are model-generated. Static, hand-written ground truth needs no cache on this axis. Where references are generated, they regenerate as different strings run-to-run and become a large noise source in their own right.
+4. Pin everything that enters a result: prompt version, retrieval config, model IDs, parameters, dataset version, judge version, rubric version. A score whose configuration cannot be reproduced is not evidence.
+5. Key at the **experiment level, not the infrastructure level**, so partial progress survives: a run that dies at example 8,000 resumes from the cache, and a newly added candidate or metric scores against existing cached outputs for free.
+6. **Record outcome states separately from scores.** Store `passed`, `failed`, `not_applicable`, `skipped`, and `execution_error` as distinct states, and never let a skipped or errored case silently become a quality zero. Collapsing them makes a *retrieval miss* (a pipeline defect) indistinguishable from a *quality zero* (a generation defect): the mean drags, the execution failure that caused it hides, and the harness ends up manufacturing noise and then measuring it as if it came from the model. Aggregate only over cases that actually produced a verdict, and report the other states alongside.
+7. **Verify with a replay test:** run the same configuration twice. Results must be identical and the second run must make approximately zero paid calls. If it does not, the key is wrong.
 
 **Note.** Temperature 0 is *not* determinism. It reduces variance within a call. It does not make two runs return the same verdicts, and it does not stop you paying for both.
 
@@ -304,15 +405,23 @@ sequenceDiagram
 
 1. Run every shortlisted candidate against the **same** suite, with the **same** judge and rubric. Any difference between arms other than the thing under test is a confound.
 2. **Run each configuration 3–5 times.** Report mean and variance. A single run is an anecdote. If A beats B by less than the run-to-run variance, they are tied — say so, and say it in the summary rather than the footnotes.
-3. Score **per taxonomy category**, not only in aggregate. A candidate two points better on average that hallucinates citations twice as often is the worse choice for most risk profiles, and the aggregate hides that.
-4. **Run the perturbation tests.** This is the acceptance condition, and it is stronger than a threshold:
+3. **Compute the noise band and publish it.** Phase 7 uses "regressed beyond the noise band" as an automated trip condition, so it has to be a number rather than a feeling. Derive it from the K repeats: the noise band is the run-to-run spread of the *same* configuration on the *same* data. Anything smaller than it is not a signal, and no sample size fixes that — more data narrows *sampling* noise, not judge drift.
+
+   Then compare candidates properly. Every candidate sees the same cases, so **the comparisons are paired** and paired methods apply:
+   - **Paired bootstrap confidence intervals** for differences in score or win rate
+   - **McNemar's test**, or an equivalent paired method, for binary pass/fail outcomes
+   - A **minimum practically important difference**, agreed in Phase 0 — statistical significance on a gap nobody would pay for is not a result
+   - **Multiple-comparison correction** when many candidates, metrics, or segments are in play; test enough segments and one becomes "significant" by construction
+
+4. Score **per taxonomy category**, not only in aggregate. A candidate two points better on average that hallucinates citations twice as often is the worse choice for most risk profiles, and the aggregate hides that.
+5. **Run the perturbation tests.** This is the acceptance condition, and it is stronger than a threshold:
    - **Judge rotation** — swap in a second, independently-chosen judge. A result that flips under judge swap is not a result.
    - **Metric versioning** — confirm the conclusion holds under the rubric's prior version.
    - **Re-stratification** — resample the set; confirm the conclusion is not an artifact of one stratum.
    A difference that passes a significance test but flips under judge rotation is not worth shipping on. Significance testing complements perturbation testing; it does not replace it.
-5. Compute **cost per correct answer**, not cost per token: `(price per query) / (accuracy)`. A candidate at half the price and 70% accuracy against one at 92% is not "half the cost" once the failures a human must catch — and the ones nobody catches — are on the books.
-6. Measure **latency at realistic concurrency**, not a single warm request.
-7. Apply the pre-committed decision rule. Record the winner, the evidence, the losers, **the margins**, and what result would reverse the decision.
+6. Compute **cost per correct answer**, not cost per token: `(price per query) / (accuracy)`. A candidate at half the price and 70% accuracy against one at 92% is not "half the cost" once the failures a human must catch — and the ones nobody catches — are on the books. Count the whole bill: model tokens, retrieval and embedding calls, reranking, tool charges, guardrail calls, retries and fallbacks, and the human review that failures generate.
+7. Measure **latency at realistic concurrency**, not a single warm request.
+8. Apply the pre-committed decision rule. Record the winner, the evidence, the losers, **the margins**, and what result would reverse the decision. If **no** candidate passes, change the architecture, narrow the task, add human review, or defer — do not lower a threshold after seeing results without an explicit, recorded risk acceptance.
 
 **The multi-model outcome is common and legitimate.** The honest result of a bake-off is often *routing* rather than a single winner: a small fast model for classification and lookup, a stronger model for complex reasoning. If routing is chosen, **the router is a component and gets its own evaluation** — a bad router combines the cost of the large model with the quality of the small one.
 
