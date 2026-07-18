@@ -28,6 +28,13 @@ gains ``enabled``/``classifier_model_id``/``input_categories`` — again with
 backward-RESOLUTION defaults so the pre-guard configs stay resolvable and are
 never edited; ``legal-rag-default-1.3.0`` pins them explicitly to enable the
 guard.
+
+NeMo evolution (out-of-process NeMo Guardrails output/facts lane): the
+``GuardrailsPin`` gains an OPTIONAL ``nemo`` selector (:class:`NemoGuardPin`)
+that gates the pod-backed OUTPUT + FACTS rails. It defaults to ``None`` so the
+in-house ``1.0.0``–``1.4.0`` configs resolve with the NeMo lane OFF and are
+NEVER edited. PHASE 4 extends :class:`NemoGuardPin` with the two determinism
+hashes + image-digest pin and ships the nemo-all ``legal-rag-default-1.8.0.yaml``.
 """
 
 from typing import Any, Final
@@ -232,6 +239,128 @@ class HistoryPins(BaseModel):
     )
 
 
+class NemoGuardPin(BaseModel):
+    """
+    Out-of-process NeMo Guardrails **output/facts** selector (NeMo lane wiring).
+
+    Behavior gate ONLY for the NeMo-backed OUTPUT lane (``self check output`` +
+    the independently-gated ``self check facts`` grounding rail) served by the
+    dedicated ``services/guardrail/`` pod. The pod's base URL is a LOCATION fact
+    and lives in env-driven ``Settings`` (``nemo_guard_url``), never here — the
+    two never blur, exactly like the OpenSearch endpoint.
+
+    This is the MINIMAL surface the client-wiring slice needs to wire + test the
+    output lane. It is optional and defaults to ``None`` on ``GuardrailsPin`` so
+    the released ``1.0.0``–``1.4.0`` configs resolve with the NeMo lane OFF and
+    are NEVER edited (byte-for-byte).
+
+    Q6b (locked): the INPUT lane keeps the in-house Haiku confirm-step this
+    slice — NeMo is layered on OUTPUT + FACTS ONLY — so this pin carries NO
+    input toggle. Migrating the input self-check to the pod's
+    ``self_check_input`` rail later is a config flip, not new code.
+
+    PHASE 4 EXTENDED THIS MODEL with the provenance/determinism surface that the
+    nemo-all ``legal-rag-default-1.8.0.yaml`` pins: ``config_version`` (the
+    pod's NeMo config label), ``image_digest`` (the container image the pod runs,
+    CI-populated), and the TWO determinism hashes (I4) — ``config_dir_digest`` (a
+    digest of the guardrail ``config/`` directory) and ``uv_lock_sha256`` (sha256
+    of the guardrail service's resolved ``uv.lock``). Both hashes are computed in
+    ``services/guardrail/`` (see ``services/guardrail/app/config_digest.py``) and
+    recorded here as LITERAL pinned strings, so — being bytes of the ``1.8.0``
+    YAML — they enter the orchestrator's ``config_sha256`` automatically: changing
+    the NeMo config OR the dependency lock forces a DIFFERENT ``1.8.0`` pin hash.
+    The pod re-computes both live at startup and REFUSES to serve on mismatch, so
+    a drifted image cannot answer under a ``1.8.0`` pin. All four fields default to
+    ``None`` so the client-wiring-era selectors (and the unit fixtures that build
+    ``NemoGuardPin(enabled=True)``) still construct; the shipped ``1.8.0`` config
+    pins them explicitly.
+    """
+
+    model_config = _PIN_MODEL_CONFIG
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Master gate for the NeMo OUTPUT/facts lane. False ⇒ the "
+            "orchestrator never calls the guardrail pod (the 1.0.0–1.4.0 path). "
+            "New NeMo-enabling configs pin this explicitly."
+        ),
+    )
+    output_self_check: bool = Field(
+        default=True,
+        description=(
+            "Run the pod's `self check output` rail over the generated answer. "
+            "The primary NeMo output rail; on by default when the lane is "
+            "enabled."
+        ),
+    )
+    input_self_check: bool = Field(
+        default=False,
+        description=(
+            "Route the INPUT verdict through the pod's `self_check_input` rail "
+            "(the nemo-all `1.8.0` config). The orchestrator's regex pre-filter "
+            "stays the FREE cost gate (a benign miss makes zero paid pod calls); "
+            "on a pre-filter HIT the RAW question is forwarded to the pod, whose "
+            "LLM verdict REPLACES the in-house Haiku confirm-step. Default OFF so "
+            "the in-house `1.0.0`-`1.4.0` configs keep the input lane on the "
+            "in-house classifier (Q6b) and resolve byte-for-byte."
+        ),
+    )
+    check_facts: bool = Field(
+        default=False,
+        description=(
+            "Independently-gated `self check facts` grounding rail. When True "
+            "the orchestrator passes check_facts=True to the pod so it runs the "
+            "facts rail over answer vs retrieved chunks IN ADDITION to output "
+            "self-check; when False the facts rail makes ZERO LLM calls. Default "
+            "OFF — facts is the highest-value / highest-FP-risk rail, "
+            "A/B-activatable separately from output self-check."
+        ),
+    )
+    config_version: str | None = Field(
+        default=None,
+        description=(
+            "The guardrail pod's NeMo config version label the orchestrator "
+            "expects to be answering (human-readable provenance; the byte-exact "
+            "identity is config_dir_digest). Default None only so the "
+            "client-wiring-era selectors resolve; the nemo-all 1.8.0 config pins it explicitly."
+        ),
+    )
+    image_digest: str | None = Field(
+        default=None,
+        description=(
+            "The guardrail container image digest the pod runs (e.g. "
+            "'sha256:...'). CI-POPULATED at build time — a placeholder is "
+            "acceptable until an image is built. Default None only for backward "
+            "resolution of the client-wiring selectors."
+        ),
+    )
+    config_dir_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        description=(
+            "Determinism hash (i) (I4): sha256 digest of the guardrail pod's "
+            "NeMo config/ directory (config.yml + prompts.yml + any rails/*.co), "
+            "computed in services/guardrail/ by app.config_digest. A LITERAL "
+            "pinned string so it enters the orchestrator config_sha256; the pod "
+            "refuses to serve on live-digest mismatch. Default None only for "
+            "backward resolution of the client-wiring selectors."
+        ),
+    )
+    uv_lock_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        description=(
+            "Determinism hash (ii) (I4): sha256 of the guardrail service's "
+            "resolved services/guardrail/uv.lock (its transitive NeMo + LangChain "
+            "+ langchain-aws resolution). A LITERAL pinned string so a drifted "
+            "dependency lock forces a different config_sha256 even under a "
+            "byte-identical NeMo config. Default None only for backward "
+            "resolution of the client-wiring selectors."
+        ),
+    )
+
+
 class GuardrailsPin(BaseModel):
     """
     Guardrail policy pin (consumed from Phase 3).
@@ -248,6 +377,13 @@ class GuardrailsPin(BaseModel):
     context and Phase B history pins. A ``policy_version`` string alone must
     NOT switch behavior: ``enabled`` (plus a pinned classifier id) is the
     actual gate.
+
+    NeMo evolution: the OPTIONAL ``nemo`` selector (:class:`NemoGuardPin`) gates
+    the out-of-process NeMo Guardrails OUTPUT + FACTS lane. It defaults to
+    ``None`` so the released ``1.0.0``–``1.4.0`` configs resolve with the NeMo
+    lane OFF and are NEVER edited (byte-for-byte). Per Q6b the NeMo lane is
+    OUTPUT/facts only this slice; the in-house Haiku input confirm-step above is
+    untouched.
     """
 
     model_config = _PIN_MODEL_CONFIG
@@ -289,6 +425,18 @@ class GuardrailsPin(BaseModel):
             "guard configs stay resolvable and behave as today. INDEPENDENT of "
             "classifier_model_id: the output guard is PURE regex with NO model "
             "dependency, so NO validator ties it to a classifier id."
+        ),
+    )
+    nemo: NemoGuardPin | None = Field(
+        default=None,
+        description=(
+            "Optional out-of-process NeMo Guardrails OUTPUT/facts selector. "
+            "None (the default) ⇒ the NeMo lane is OFF, so released "
+            "1.0.0–1.4.0 configs resolve unchanged and never call the guardrail "
+            "pod. Set (with the pod URL supplied via env-driven Settings) to "
+            "enable the pod-backed self-check-output + independently-gated "
+            "self-check-facts rails. The INPUT lane keeps the in-house Haiku "
+            "confirm-step regardless (Q6b)."
         ),
     )
 

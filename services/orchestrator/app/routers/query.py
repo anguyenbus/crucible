@@ -201,6 +201,104 @@ def _record_output_guard_decisions(span: Span, decisions: tuple[GuardrailDecisio
     )
 
 
+def _nemo_output_active(pins: GuardrailsPin) -> bool:
+    """
+    Whether the out-of-process NeMo output/facts guard runs for this config.
+
+    True iff the config carries an enabled ``nemo`` selector with output
+    self-check on (``guardrails.nemo_output_active``). The released
+    ``1.0.0``-``1.4.0`` configs carry no ``nemo`` selector, so this is False and
+    the pod is never called — those lanes stay byte-for-byte. Like
+    ``_output_guard_active`` this drives buffered streaming + span emission.
+    """
+    return guardrails.nemo_output_active(pins)
+
+
+def _chunk_texts(chunks: list[dict[str, Any]]) -> list[str]:
+    """Grounding evidence for the NeMo facts rail: the retrieved chunk texts."""
+    return [str(chunk.get("text", "")) for chunk in chunks]
+
+
+def _record_nemo_output_decisions(span: Span, result: Any) -> None:
+    """
+    Attach the NeMo output/facts outcome (allow | advisory flag) to its span.
+
+    A clean pass records ``decision="allow"``; an advisory records the flag
+    decision. BOTH carry the pod-stamped ``model_id`` + token counts so the NeMo
+    guard call's model and cost render in Phoenix (unlike the regex output guard,
+    which has no model). A NeMo BLOCK never reaches here — it raises
+    ``GuardrailTripwire`` and is recorded on the tripwire path instead.
+    """
+    if not result.decisions:
+        set_guardrail_output_attributes(
+            span,
+            decision="allow",
+            model_id=result.model_id,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+        )
+        return
+    primary = result.decisions[0]
+    set_guardrail_output_attributes(
+        span,
+        decision=primary.decision,
+        category=primary.category,
+        rule_id=primary.rule_id,
+        model_id=result.model_id,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+    )
+
+
+def _run_nemo_output_guard(
+    tracer: Any,
+    guard_pins: GuardrailsPin,
+    clients: AppClients,
+    *,
+    answer_text: str,
+    chunks: list[dict[str, Any]],
+    timings_ms: dict[str, float],
+    context: Any | None = None,
+) -> tuple[str, list[GuardrailDecision]]:
+    """
+    Run the NeMo output/facts guard over the (possibly-redacted) answer.
+
+    Opens a ``guardrail_output`` span for the pod call (model id + token counts),
+    calls the PURE ``check_output_nemo`` with the injected client, and returns the
+    unchanged answer plus any advisory ``flag`` decisions. A NeMo BLOCK raises
+    ``GuardrailTripwire`` (span recorded + ended before it propagates) for the
+    route to turn into a 200 canned refusal — NeMo's string never becomes the
+    answer (I3). A no-op returning ``(answer_text, [])`` when the lane is off.
+    The output/facts fail-OPEN policy lives in the pure stage, so a flaky/
+    unreachable pod returns an advisory flag here, never a block.
+    """
+    if not _nemo_output_active(guard_pins):
+        return answer_text, []
+    span = start_guardrail_output_span(tracer, context=context)
+    start = time.perf_counter()
+    try:
+        result = guardrails.check_output_nemo(
+            answer_text, _chunk_texts(chunks), pins=guard_pins, nemo_client=clients.nemo
+        )
+    except guardrails.GuardrailTripwire as tripwire:
+        timings_ms["guardrail_nemo_output"] = (time.perf_counter() - start) * 1000.0
+        set_guardrail_output_attributes(
+            span,
+            decision=tripwire.decision.decision,
+            category=tripwire.decision.category,
+            rule_id=tripwire.decision.rule_id,
+            model_id=tripwire.model_id,
+            input_tokens=tripwire.input_tokens,
+            output_tokens=tripwire.output_tokens,
+        )
+        span.end()
+        raise
+    timings_ms["guardrail_nemo_output"] = (time.perf_counter() - start) * 1000.0
+    _record_nemo_output_decisions(span, result)
+    span.end()
+    return result.answer_text, list(result.decisions)
+
+
 @dataclass(frozen=True)
 class PreGenerationResult:
     """Outputs of the shared pre-generation chain both delivery paths reuse."""
@@ -282,6 +380,43 @@ def _run_pre_generation(
         question = guardrails.check_input(
             request.question, pins=guard_pins, classifier=clients.classifier
         ).question
+
+    # Out-of-process NeMo INPUT self-check lane (the nemo-all 1.8.0 config). The
+    # orchestrator regex pre-filter is the FREE cost gate: a benign pre-filter
+    # MISS makes ZERO paid pod calls and adds no span; a HIT forwards the RAW
+    # question (unchanged, NOT normalized) to the pod's self_check_input, whose
+    # LLM verdict REPLACES the in-house Haiku confirm-step on this config. A block
+    # raises GuardrailTripwire, which PROPAGATES here unchanged (no try/except in
+    # the pure chain) for the routes to turn into a 200 refusal — never a 5xx
+    # (I3). Off (in-house 1.0.0-1.4.0, no input_self_check) ⇒ skipped entirely.
+    if guardrails.nemo_prefilter_hit(request.question, guard_pins):
+        nemo_in_span = start_guardrail_input_span(tracer)
+        try:
+            nemo_in = guardrails.check_input_nemo(
+                request.question, pins=guard_pins, nemo_client=clients.nemo
+            )
+        except guardrails.GuardrailTripwire as tripwire:
+            set_guardrail_input_attributes(
+                nemo_in_span,
+                decision=tripwire.decision.decision,
+                category=tripwire.decision.category,
+                rule_id=tripwire.decision.rule_id,
+                model_id=tripwire.model_id,
+                input_tokens=tripwire.input_tokens,
+                output_tokens=tripwire.output_tokens,
+            )
+            nemo_in_span.end()
+            raise
+        set_guardrail_input_attributes(
+            nemo_in_span,
+            decision="allow",
+            model_id=nemo_in.model_id,
+            input_tokens=nemo_in.input_tokens,
+            output_tokens=nemo_in.output_tokens,
+        )
+        nemo_in_span.end()
+        question = nemo_in.question
+
     question = policy_router.route(question)
     # Deterministic history-aware rewrite: builds the RETRIEVAL query only.
     # With history absent it is the identity, so single-turn behavior (and
@@ -571,6 +706,35 @@ def post_query(request: QueryRequest, http_request: Request) -> QueryResponse:
             answer_text = generation.text
             guardrail_decisions = []
 
+        # Out-of-process NeMo output/facts guard (Q6b: OUTPUT + FACTS only). Runs
+        # over the possibly-REDACTED answer and the retrieved chunks (facts
+        # grounding). A genuine NeMo block raises GuardrailTripwire and reuses the
+        # SAME 200 canned-refusal path as the regex secrets block (I3) — NeMo's
+        # own string NEVER becomes the answer; an advisory flag (or a fail-OPEN
+        # unreachable pod, Q2) appends a non-block decision and delivers the
+        # answer. Off (1.0.0-1.4.0, no nemo selector) ⇒ a no-op.
+        try:
+            answer_text, nemo_decisions = _run_nemo_output_guard(
+                tracer,
+                guard_pins,
+                clients,
+                answer_text=answer_text,
+                chunks=pre.chunks,
+                timings_ms=timings_ms,
+            )
+            guardrail_decisions.extend(nemo_decisions)
+        except guardrails.GuardrailTripwire as tripwire:
+            trace_block = trace_echo(root_span)
+            timings_ms["total"] = (time.perf_counter() - total_start) * 1000.0
+            result = _blocked_result(
+                request, resolved, settings, timings_ms=timings_ms, trace_block=trace_block
+            )
+            return QueryResponse(
+                result=result,
+                guardrail_decisions=[tripwire.decision],
+                generation_mode="live",
+            )
+
         with (
             _timed(timings_ms, "citation_build"),
             citation_build_span(tracer) as citation_span,
@@ -793,9 +957,12 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
 
     generator_pin = resolved.config.generator
     guard_pins = resolved.config.guardrails
-    # BUFFERED delivery when the output guard is active: no token events reach
-    # the client until check_output has cleared/redacted the COMPLETE answer.
-    buffered = _output_guard_active(guard_pins)
+    regex_output_active = _output_guard_active(guard_pins)
+    nemo_output_active = _nemo_output_active(guard_pins)
+    # BUFFERED delivery when ANY output guard is active: no token events reach
+    # the client until the COMPLETE answer has cleared the output guard(s) — the
+    # regex PII/secrets scan and/or the out-of-process NeMo output/facts rails.
+    buffered = regex_output_active or nemo_output_active
 
     def event_stream() -> Iterator[str]:
         """
@@ -836,7 +1003,7 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
             # built over the possibly-REDACTED text. Live mode (empty
             # output_categories) runs check_output as a typed identity — NO span,
             # NO guardrail_output timing → byte-for-byte unchanged.
-            if buffered:
+            if regex_output_active:
                 guard_out_span = start_guardrail_output_span(tracer, context=root_context)
                 open_spans.append(guard_out_span)
                 out_guard_start = time.perf_counter()
@@ -882,6 +1049,64 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
             else:
                 answer_text = generation.text
                 guardrail_decisions = []
+
+            # Out-of-process NeMo output/facts guard (buffered: no tokens have
+            # shipped). A block terminates the stream in ONE final canned refusal
+            # (I3 — NeMo's string never becomes the answer); an advisory flag (or
+            # a fail-OPEN unreachable pod, Q2) appends a non-block decision and
+            # delivers the answer. Off (1.0.0-1.4.0) ⇒ skipped.
+            if nemo_output_active:
+                nemo_span = start_guardrail_output_span(tracer, context=root_context)
+                open_spans.append(nemo_span)
+                nemo_start = time.perf_counter()
+                try:
+                    nemo_out = guardrails.check_output_nemo(
+                        answer_text,
+                        _chunk_texts(pre.chunks),
+                        pins=guard_pins,
+                        nemo_client=clients.nemo,
+                    )
+                except guardrails.GuardrailTripwire as tripwire:
+                    # A successful, honest refusal — caught HERE (before the outer
+                    # except) so it is never an error event: one final, zero tokens.
+                    timings_ms["guardrail_nemo_output"] = (
+                        time.perf_counter() - nemo_start
+                    ) * 1000.0
+                    set_guardrail_output_attributes(
+                        nemo_span,
+                        decision=tripwire.decision.decision,
+                        category=tripwire.decision.category,
+                        rule_id=tripwire.decision.rule_id,
+                        model_id=tripwire.model_id,
+                        input_tokens=tripwire.input_tokens,
+                        output_tokens=tripwire.output_tokens,
+                    )
+                    nemo_span.end()
+                    open_spans.remove(nemo_span)
+                    trace_block = trace_echo(root_span)
+                    timings_ms["total"] = (time.perf_counter() - total_start) * 1000.0
+                    result = _blocked_result(
+                        request,
+                        resolved,
+                        settings,
+                        timings_ms=timings_ms,
+                        trace_block=trace_block,
+                    )
+                    envelope = QueryResponse(
+                        result=result,
+                        guardrail_decisions=[tripwire.decision],
+                        generation_mode="live",
+                    )
+                    yield _sse_event("final", envelope.model_dump(mode="json"))
+                    return
+                timings_ms["guardrail_nemo_output"] = (
+                    time.perf_counter() - nemo_start
+                ) * 1000.0
+                _record_nemo_output_decisions(nemo_span, nemo_out)
+                nemo_span.end()
+                open_spans.remove(nemo_span)
+                answer_text = nemo_out.answer_text
+                guardrail_decisions.extend(nemo_out.decisions)
 
             citation_span = start_citation_build_span(tracer, context=root_context)
             open_spans.append(citation_span)

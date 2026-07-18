@@ -316,11 +316,19 @@ def _redaction_flag_note(decisions: list[dict[str, Any]]) -> str | None:
     NOT a redaction/flag, and is ignored here; empty/absent decisions (every
     allowed answer with no output guard hit) yield None so the note is omitted
     entirely and the normal render is byte-for-byte unchanged.
+
+    The out-of-process NeMo output/facts lane (``category == "nemo"``) is NOT the
+    deterministic PII/secrets guard: its advisory flag and its block carry their
+    OWN distinct attribution (:func:`_nemo_note`) so a reviewer can tell NeMo
+    acted, and are deliberately skipped here rather than folded into this generic
+    redaction/flag count.
     """
     redacted = 0
     flagged = 0
     for decision in decisions:
         if decision.get("stage") != "output":
+            continue
+        if decision.get("category") == _NEMO_CATEGORY:
             continue
         count = _count_from_rationale(decision.get("rationale"))
         if decision.get("decision") == "transform":
@@ -336,6 +344,64 @@ def _redaction_flag_note(decisions: list[dict[str, Any]]) -> str | None:
     if not parts:
         return None
     return "**Output guardrail**: " + ", ".join(parts) + " in this answer."
+
+
+# The category the orchestrator stamps on every out-of-process NeMo output/facts
+# decision (``app.orchestrator.guardrails._NEMO_CATEGORY``). Kept as a local
+# literal — the UI is HTTP-only and never imports the orchestrator package.
+_NEMO_CATEGORY = "nemo"
+
+
+def _nemo_rail_label(rationale: str | None) -> str:
+    """
+    Name the NeMo rail that fired, honestly, from its terse ``rationale`` token.
+
+    The pod stamps a rail-exception rationale onto a block: ``FactCheckRailException``
+    for the grounding rail, ``OutputRailException`` for the policy self-check. We
+    name the rail from that exception token so the reviewer sees WHICH rail acted.
+    An advisory fail-open rationale spans "output/facts" generically and an
+    unrecognized/empty one carries no rail signal — both fall back to the neutral
+    ``"policy/facts rail"`` label rather than claiming a specific rail we cannot
+    substantiate.
+    """
+    text = (rationale or "").lower()
+    if "factcheck" in text or "grounding" in text:
+        return "facts (grounding) rail"
+    if "outputrail" in text:
+        return "policy rail"
+    return "policy/facts rail"
+
+
+def _nemo_note(decisions: list[dict[str, Any]]) -> str | None:
+    """
+    Distinct NeMo attribution line — separate from the PII/secrets note.
+
+    A NeMo ``block`` (``category == "nemo"``, ``decision == "block"``) renders a
+    "blocked by the NeMo <rail>" line so the reviewer can tell the out-of-process
+    NeMo lane acted — NOT the shared secrets/PII refusal string (that is the
+    answer text). A NeMo ``flag`` renders a distinct advisory line naming the rail
+    (the fail-open deliver-with-flag path), never folded into the generic
+    :func:`_redaction_flag_note` count. Non-NeMo decisions are ignored here;
+    empty/absent → None so the render is byte-for-byte unchanged.
+    """
+    lines: list[str] = []
+    for decision in decisions:
+        if decision.get("stage") != "output" or decision.get("category") != _NEMO_CATEGORY:
+            continue
+        rail = _nemo_rail_label(decision.get("rationale"))
+        if decision.get("decision") == "block":
+            lines.append(
+                f"**NeMo guardrail**: blocked by the NeMo {rail} "
+                "(out-of-process LLM self-check) — answer suppressed."
+            )
+        elif decision.get("decision") == "flag":
+            lines.append(
+                f"**NeMo guardrail**: advisory flag from the NeMo {rail} "
+                "— answer delivered (fail-open, not a block)."
+            )
+    if not lines:
+        return None
+    return "\n".join(lines)
 
 
 def format_final_details(render: FinalRender, numbered: NumberedAnswer | None = None) -> str:
@@ -412,6 +478,13 @@ def format_final_details(render: FinalRender, numbered: NumberedAnswer | None = 
         # honest, data-driven line (NOT the parked guardrails_active badge).
         lines.append("")
         lines.append(note)
+
+    nemo_note = _nemo_note(render.guardrail_decisions)
+    if nemo_note is not None:
+        # Distinct NeMo attribution (block or advisory flag) so a reviewer can tell
+        # the out-of-process NeMo lane acted — never the shared PII/secrets note.
+        lines.append("")
+        lines.append(nemo_note)
 
     lines.append("")
     lines.append("**Timings (ms)**")

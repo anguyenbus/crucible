@@ -1,0 +1,20 @@
+# Keep local-only code, tests, and build artifacts OUT of the image.
+# Only app/ and config/ (+ pyproject.toml/uv.lock for the build) ship.
+
+# Tests are not part of the runtime image.
+tests/
+
+# The Phase-0 de-risking spike is throwaway feasibility code, never shipped.
+spike/
+
+# Resolved virtualenvs / build outputs.
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Python + tooling caches.
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/

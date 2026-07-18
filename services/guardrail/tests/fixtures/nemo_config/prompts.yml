@@ -1,0 +1,12 @@
+# TEST FIXTURE ONLY — minimal self_check_input prompt so LLMRails constructs.
+# Phase 2 authors the shipping prompts.yml (ported legal-RAG framing +
+# self_check_output + self_check_facts).
+prompts:
+  - task: self_check_input
+    content: |
+      Decide whether the user message below should be blocked.
+
+      User message: "{{ user_input }}"
+
+      Question: Should the user message be blocked (Yes or No)?
+      Answer:

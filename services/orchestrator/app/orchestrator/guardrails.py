@@ -64,6 +64,49 @@ _OUTPUT_SECRETS_RULE_ID: Final[str] = "output-secrets-v1"
 _OUTPUT_PII_REDACT_RULE_ID: Final[str] = "output-pii-redact-v1"
 _OUTPUT_PII_FLAG_RULE_ID: Final[str] = "output-pii-flag-v1"
 
+# NeMo out-of-process OUTPUT/facts lane identities (self check output +
+# independently-gated self check facts). A NeMo block reuses the SAME honest
+# 200-refusal path as the regex secrets block (I3); an advisory flag delivers
+# the answer with a non-block decision (Q2 output/facts fail-OPEN).
+_NEMO_CATEGORY: Final[str] = "nemo"
+_NEMO_OUTPUT_BLOCK_RULE_ID: Final[str] = "nemo-output-block-v1"
+_NEMO_OUTPUT_FLAG_RULE_ID: Final[str] = "nemo-output-flag-v1"
+# The Mode-B FAIL-OPEN window carries its OWN rule id, distinct from the routine
+# advisory above. Both deliver the answer with a `flag`, but they mean opposite
+# things: an advisory is the pod TELLING us something, whereas a fail-open means
+# the pod never answered and the response is UNGUARDED. Alarming on the rationale
+# prose would be fragile, so the machine-readable rule id is what makes the window
+# LOUD — it rides the `guardrail.rule_id` span attribute into Phoenix, so a
+# sustained outage is a countable signal and a silent fail-open is impossible.
+_NEMO_OUTPUT_FAIL_OPEN_RULE_ID: Final[str] = "nemo-output-fail-open-v1"
+_NEMO_DEFAULT_BLOCK_RATIONALE: Final[str] = (
+    "NeMo output/facts rail blocked the answer"
+)
+_NEMO_ADVISORY_RATIONALE: Final[str] = "NeMo output/facts advisory"
+_NEMO_FAIL_OPEN_RATIONALE: Final[str] = (
+    "NeMo guardrail pod unavailable on the output/facts path — failing open"
+)
+# NeMo out-of-process INPUT self-check lane identities (the nemo-all `1.8.0`
+# config's `self_check_input`). A block reuses the SAME honest 200-refusal path
+# as the in-house prompt-leak block (I3); a pre-filter-flagged input whose pod
+# call FAILS fails SAFE/BLOCK (Mode B), mirroring the in-house classifier's
+# fail-safe on a flagged input.
+_NEMO_INPUT_BLOCK_RULE_ID: Final[str] = "nemo-input-block-v1"
+_NEMO_INPUT_DEFAULT_BLOCK_RATIONALE: Final[str] = "NeMo input rail blocked the question"
+_NEMO_INPUT_FAIL_SAFE_RATIONALE: Final[str] = (
+    "NeMo guardrail pod unavailable on a pre-filter-flagged input — failing safe"
+)
+# The FULL pre-filter category set the NeMo input lane runs as its FREE cost
+# gate, DECOUPLED from the in-house `input_categories` decision gate (empty on
+# `1.8.0`): prompt_leak + jailbreak + unicode_evasion (invisible-char strip +
+# BIDI). It DETECTS on normalized text but the RAW question is forwarded to the
+# pod — the adversarial payload is never sanitized before `self_check_input`.
+_NEMO_INPUT_PREFILTER_CATEGORIES: Final[tuple[str, ...]] = (
+    _PROMPT_LEAK_INPUT_CATEGORY,
+    _JAILBREAK_INPUT_CATEGORY,
+    _UNICODE_EVASION_INPUT_CATEGORY,
+)
+
 
 class ClassifierVerdict(Protocol):
     """Structural shape of the injected classifier's plain-data verdict."""
@@ -109,6 +152,14 @@ class GuardOutputResult:
 
     answer_text: str
     decisions: tuple[GuardrailDecision, ...] = ()
+    # NeMo output-lane guard-call telemetry, populated ONLY by
+    # ``check_output_nemo`` (the regex ``check_output`` never sets them, so its
+    # result stays byte-identical — these defaulted fields are additive). The
+    # router attaches them to the ``guardrail_output`` span so the NeMo guard
+    # call's cost is visible in Phoenix on an allow/advisory outcome too.
+    model_id: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 class GuardClassifier(Protocol):
@@ -122,6 +173,54 @@ class GuardClassifier(Protocol):
 
     def classify(self, question: str, *, model_id: str) -> ClassifierVerdict:
         """Classify one user turn for system-prompt-leakage / injection."""
+        ...
+
+
+class NemoOutputVerdict(Protocol):
+    """
+    Structural shape of the NeMo pod's plain-data OUTPUT verdict.
+
+    Matches ``app.clients.nemo_guard.NemoVerdict`` WITHOUT importing it, so
+    the stage stays free of any httpx/nemoguardrails-carrying module
+    (``stages-pure``, I2). ``unsafe`` True ⇒ a rail blocked; ``flag`` True ⇒
+    an advisory fail-OPEN deliver-with-flag; ``model_id`` is the pod-stamped
+    Haiku id (``None`` only when there was no pod response).
+    """
+
+    unsafe: bool
+    rationale: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    model_id: str | None
+    flag: bool
+
+
+class NemoGuardClient(Protocol):
+    """
+    Structural type of the injected out-of-process NeMo Guardrails pod client.
+
+    Matches ``app.clients.nemo_guard.NemoGuardClient`` WITHOUT importing it —
+    the stage stays free of any httpx / nemoguardrails / langchain import
+    (``stages-pure`` import-linter contract + ``check_stages_grep_gate.sh``,
+    invariant I2). The client is injected by the router exactly like
+    ``bedrock``/``search``/``classifier``; ALL HTTP + NeMo detail lives in
+    ``app.clients.nemo_guard``. Q6b (locked): the NeMo lane is OUTPUT + FACTS
+    ONLY this slice, so the pure stage needs ONLY ``check_output``.
+    """
+
+    def check_output(
+        self, answer: str, chunks: list[str], *, check_facts: bool
+    ) -> NemoOutputVerdict:
+        """Self-check a generated answer (+ optional facts grounding) via the pod."""
+        ...
+
+    def check_input(self, question: str) -> NemoOutputVerdict:
+        """Self-check ONE user turn via the pod's ``self_check_input`` rail.
+
+        Wired ONLY on the nemo-all ``1.8.0`` config (``input_self_check``); the
+        in-house ``1.0.0``-``1.4.0`` configs keep the in-house Haiku
+        confirm-step and never reach this method (Q6b).
+        """
         ...
 
 
@@ -407,6 +506,46 @@ def _output_flag_decision(rationale: str) -> GuardrailDecision:
         decision="flag",
         category=_PII_CATEGORY,
         rule_id=_OUTPUT_PII_FLAG_RULE_ID,
+        rationale=rationale,
+    )
+
+
+def _nemo_output_block_decision(rationale: str) -> GuardrailDecision:
+    """Build the NeMo output-lane ``block`` decision (honest 200 refusal path, I3)."""
+    return GuardrailDecision(
+        stage=_OUTPUT_STAGE,
+        decision="block",
+        category=_NEMO_CATEGORY,
+        rule_id=_NEMO_OUTPUT_BLOCK_RULE_ID,
+        rationale=rationale,
+    )
+
+
+def _nemo_output_fail_open_decision(rationale: str) -> GuardrailDecision:
+    """
+    Build the LOUD Mode-B fail-open decision (pod unreachable → answer UNGUARDED).
+
+    Shaped like the advisory flag (non-blocking: a flaky pod must never nuke a
+    valid legal answer) but carrying :data:`_NEMO_OUTPUT_FAIL_OPEN_RULE_ID` so the
+    fail-open window is distinguishable from a genuine pod advisory by rule id
+    alone — the alarm/telemetry signal, not prose.
+    """
+    return GuardrailDecision(
+        stage=_OUTPUT_STAGE,
+        decision="flag",
+        category=_NEMO_CATEGORY,
+        rule_id=_NEMO_OUTPUT_FAIL_OPEN_RULE_ID,
+        rationale=rationale,
+    )
+
+
+def _nemo_output_flag_decision(rationale: str) -> GuardrailDecision:
+    """Build the NeMo output-lane advisory ``flag`` decision (answer delivered, Q2)."""
+    return GuardrailDecision(
+        stage=_OUTPUT_STAGE,
+        decision="flag",
+        category=_NEMO_CATEGORY,
+        rule_id=_NEMO_OUTPUT_FLAG_RULE_ID,
         rationale=rationale,
     )
 
@@ -709,3 +848,261 @@ def check_output(answer_text: str, *, pins: GuardrailsPin) -> GuardOutputResult:
             decisions.append(_output_flag_decision(_format_rule_counts(flag_counts)))
 
     return GuardOutputResult(answer_text=text, decisions=tuple(decisions))
+
+
+def nemo_output_active(pins: GuardrailsPin) -> bool:
+    """
+    Whether the out-of-process NeMo output-self-check lane runs for this config.
+
+    True iff a ``nemo`` selector is present, ``enabled``, AND ``output_self_check``
+    is on — the exact condition under which :func:`check_output_nemo` calls the
+    guardrail pod. The released ``1.0.0``-``1.4.0`` configs carry no ``nemo``
+    selector (``pins.nemo is None``), so this is False and the NeMo lane never
+    fires — those lanes stay byte-for-byte. The router uses this to decide
+    buffered delivery + span emission, mirroring ``_output_guard_active``.
+    """
+    return bool(pins.nemo and pins.nemo.enabled and pins.nemo.output_self_check)
+
+
+def check_output_nemo(
+    answer_text: str,
+    chunks: list[str],
+    *,
+    pins: GuardrailsPin,
+    nemo_client: NemoGuardClient | None,
+) -> GuardOutputResult:
+    """
+    Config-gated OUTPUT/facts self-check via the injected NeMo pod client.
+
+    A PURE function of the answer text, the retrieved ``chunks``, the resolved
+    ``GuardrailsPin``, and an INJECTED client (described by the
+    :class:`NemoGuardClient` Protocol). It imports NO transport/NeMo library — all
+    HTTP detail lives in ``app.clients.nemo_guard`` (invariant I2). The client is
+    reached exactly like the input classifier: injected by the router.
+
+    Q6b (locked): this is the NeMo lane's OUTPUT + FACTS entry point; the INPUT
+    lane keeps the in-house Haiku confirm-step and is untouched here.
+
+    Args:
+        answer_text: The generated answer (already through the deterministic
+            regex output guard, so any redaction has been applied). Passed to the
+            pod's ``self check output`` rail.
+        chunks: Retrieved chunk texts (grounding evidence). Forwarded to the pod
+            so ``self check facts`` can check the answer's faithfulness when the
+            facts gate is on; ignored by the pod when ``check_facts`` is False.
+        pins: The resolved config's ``guardrails`` block. ``nemo`` absent /
+            disabled ⇒ a typed IDENTITY (``GuardOutputResult(answer_text)``), NO
+            pod call — the 1.0.0-1.4.0 path. ``pins.nemo.check_facts`` is
+            forwarded VERBATIM to the pod contract (the independent facts gate).
+        nemo_client: The injected NeMo pod client (or ``None``).
+
+    Returns:
+        A :class:`GuardOutputResult` carrying the UNCHANGED ``answer_text`` (the
+        NeMo lane never rewrites the answer — it only blocks or advises) and:
+        - no decisions on a clean pass;
+        - one advisory ``flag`` decision when the pod flags
+          (``nemo-output-flag-v1``);
+        - one LOUD fail-open ``flag`` decision when the pod is UNREACHABLE
+          (``nemo-output-fail-open-v1`` — Mode B, Q2: deliver + advise, never
+          block on a flaky/unreachable pod). The distinct rule id is what keeps
+          the fail-open window countable rather than silent;
+        plus the guard-call telemetry (pod-stamped ``model_id`` + token counts)
+        for the ``guardrail_output`` span.
+
+    Raises:
+        GuardrailTripwire: On a genuine NeMo BLOCK (``unsafe`` True) — the whole
+            answer is suppressed to the canned ``REFUSAL_TEXT`` by the router
+            (I3); NeMo's own refusal string NEVER reaches the UI answer (only a
+            terse ``rationale`` enters the decision envelope / span). Carries the
+            pod-stamped ``model_id`` + token counts for the span.
+        GuardMisconfiguredError: The NeMo lane is enabled but no client was
+            injected — a deploy/wiring error, raised LOUDLY (→ 500), NOT masked
+            as a silent refusal (mirrors ``check_input``).
+    """
+    if not nemo_output_active(pins):
+        return GuardOutputResult(answer_text=answer_text)
+
+    # Misconfiguration (lane enabled but no client wired) is a DEPLOY error, NOT a
+    # per-request pod failure. Raise it LOUDLY so a wiring bug can never masquerade
+    # as a silent fail-open flag on every answer. Deliberately OUTSIDE the
+    # fail-open try below.
+    if nemo_client is None:
+        raise GuardMisconfiguredError(
+            "guardrails.nemo is enabled but no NeMo guardrail client was injected "
+            "— the output self-check lane cannot run."
+        )
+
+    check_facts = bool(pins.nemo and pins.nemo.check_facts)
+
+    # Output/facts fail OPEN (Q2): a transport failure / non-2xx from the pod
+    # (unreachable, timeout, HTTP error) must NEVER nuke a valid legal answer.
+    # Deliver the answer carrying an advisory flag decision instead of blocking.
+    # (The pod also fails open internally; this handles pod-unreachable, the case
+    # the pod itself cannot signal.) Broad catch mirrors ``check_input``'s
+    # fail-policy ownership; GuardrailTripwire is raised AFTER this block, so it
+    # is never swallowed here.
+    try:
+        verdict = nemo_client.check_output(answer_text, chunks, check_facts=check_facts)
+    except Exception:  # noqa: BLE001 - fail OPEN on a flaky/unreachable guard pod
+        # LOUD, not silent: its own rule id (not the advisory's) marks the window
+        # in which answers were delivered UNGUARDED.
+        return GuardOutputResult(
+            answer_text=answer_text,
+            decisions=(_nemo_output_fail_open_decision(_NEMO_FAIL_OPEN_RATIONALE),),
+        )
+
+    if verdict.unsafe:
+        # Genuine block: reuse the SAME honest 200-refusal path as the regex
+        # secrets block. The router maps this to REFUSAL_TEXT — NeMo's string is
+        # never the answer (I3); only the terse rationale rides the decision/span.
+        raise GuardrailTripwire(
+            _nemo_output_block_decision(verdict.rationale or _NEMO_DEFAULT_BLOCK_RATIONALE),
+            model_id=verdict.model_id,
+            input_tokens=verdict.input_tokens,
+            output_tokens=verdict.output_tokens,
+        )
+
+    decisions: tuple[GuardrailDecision, ...] = ()
+    if verdict.flag:
+        # Advisory (the pod's own internal fail-open, or a soft advisory): deliver
+        # the answer WITH a non-block flag decision, never a block.
+        decisions = (_nemo_output_flag_decision(verdict.rationale or _NEMO_ADVISORY_RATIONALE),)
+    return GuardOutputResult(
+        answer_text=answer_text,
+        decisions=decisions,
+        model_id=verdict.model_id,
+        input_tokens=verdict.input_tokens,
+        output_tokens=verdict.output_tokens,
+    )
+
+
+def nemo_input_active(pins: GuardrailsPin) -> bool:
+    """
+    Whether the out-of-process NeMo INPUT self-check lane runs for this config.
+
+    True iff a ``nemo`` selector is present, ``enabled``, AND ``input_self_check``
+    is on — the exact condition under which :func:`check_input_nemo` may call the
+    guardrail pod's ``self_check_input`` rail. The in-house ``1.0.0``-``1.4.0``
+    configs leave ``input_self_check`` OFF (or carry no ``nemo`` selector), so
+    this is False and the input lane stays on the in-house Haiku confirm-step —
+    those lanes are byte-for-byte. The nemo-all ``1.8.0`` config turns it on.
+    """
+    return bool(pins.nemo and pins.nemo.enabled and pins.nemo.input_self_check)
+
+
+def nemo_prefilter_hit(question: str, pins: GuardrailsPin) -> bool:
+    """
+    Report whether the NeMo input lane is active AND the FREE cost gate matches.
+
+    The cost gate is the FULL orchestrator regex pre-filter
+    (:data:`_NEMO_INPUT_PREFILTER_CATEGORIES` — prompt_leak + jailbreak +
+    unicode_evasion, incl. invisible-char strip + BIDI), run INDEPENDENTLY of the
+    in-house ``input_categories`` decision gate (empty on ``1.8.0``). A True
+    result means the pod ``self_check_input`` call WILL run for this question; a
+    benign MISS makes ZERO paid pod calls. The router uses this to open the
+    ``guardrail_input`` span only around an actual pod call.
+    """
+    return nemo_input_active(pins) and _prefilter_hit(
+        question, _NEMO_INPUT_PREFILTER_CATEGORIES
+    )
+
+
+def _nemo_input_block_decision(rationale: str) -> GuardrailDecision:
+    """Build the NeMo input-lane ``block`` decision (honest 200 refusal path, I3)."""
+    return GuardrailDecision(
+        stage=_INPUT_STAGE,
+        decision="block",
+        category=_NEMO_CATEGORY,
+        rule_id=_NEMO_INPUT_BLOCK_RULE_ID,
+        rationale=rationale,
+    )
+
+
+def check_input_nemo(
+    question: str,
+    *,
+    pins: GuardrailsPin,
+    nemo_client: NemoGuardClient | None,
+) -> GuardInputResult:
+    """
+    Config-gated INPUT self-check via the injected NeMo pod client (the ``1.8.0`` lane).
+
+    A PURE function of the question, the resolved ``GuardrailsPin``, and an
+    INJECTED client (the :class:`NemoGuardClient` Protocol). It imports NO
+    transport/NeMo library — all HTTP detail lives in ``app.clients.nemo_guard``
+    (invariant I2). Structurally mirrors :func:`check_output_nemo`.
+
+    The orchestrator's regex pre-filter is the FREE cost gate: a benign question
+    (pre-filter MISS) returns a typed IDENTITY with ZERO paid pod calls; only a
+    pre-filter HIT forwards the question to the pod. The pre-filter DETECTS on
+    normalized text (invisible-char strip + BIDI) but the RAW ``question`` is
+    forwarded to ``self_check_input`` — the adversarial payload is NEVER
+    sanitized before the pod's LLM judge sees it. The pod's verdict REPLACES the
+    in-house Haiku confirm-step on this config.
+
+    Args:
+        question: The user turn (RAW — forwarded verbatim to the pod).
+        pins: The resolved config's ``guardrails`` block. ``nemo`` absent /
+            disabled / ``input_self_check`` off ⇒ a typed IDENTITY
+            (``GuardInputResult(question)``), NO pod call — the in-house 1.0.0-1.4.0 path.
+        nemo_client: The injected NeMo pod client (or ``None``).
+
+    Returns:
+        A :class:`GuardInputResult` carrying the UNCHANGED ``question`` when
+        allowed (lane off, pre-filter miss, or pre-filter hit cleared SAFE by the
+        pod), plus the pod-stamped ``model_id`` + token counts when the pod ran.
+
+    Raises:
+        GuardrailTripwire: On a pre-filter hit the pod flags UNSAFE, OR any pod
+            transport failure on that (already suspicious) input — the INPUT lane
+            fails SAFE/BLOCK (Mode B), mirroring the in-house classifier's
+            fail-safe on a flagged input. Turned into a 200 canned refusal by the
+            router (never a 5xx, I3); the pod's own string never becomes the
+            answer.
+        GuardMisconfiguredError: The lane is enabled but no client was injected —
+            a deploy/wiring error, raised LOUDLY (→ 500), NOT masked as a silent
+            refusal (mirrors ``check_input`` / ``check_output_nemo``).
+    """
+    if not nemo_input_active(pins):
+        return GuardInputResult(question=question)
+    # FREE cost gate: a benign pre-filter MISS never reaches the pod (zero paid
+    # calls on normal traffic) — the accepted residual (unchanged from today).
+    if not _prefilter_hit(question, _NEMO_INPUT_PREFILTER_CATEGORIES):
+        return GuardInputResult(question=question)
+
+    # Misconfiguration (lane enabled but no client wired) is a DEPLOY error, NOT a
+    # per-request pod failure. Raise it LOUDLY so a wiring bug can never masquerade
+    # as a silent fail-safe refusal of every flagged query. OUTSIDE the fail-safe
+    # try below.
+    if nemo_client is None:
+        raise GuardMisconfiguredError(
+            "guardrails.nemo.input_self_check is enabled but no NeMo guardrail "
+            "client was injected — the input self-check lane cannot run."
+        )
+
+    # Suspicious candidate: the pod's `self_check_input` confirms or clears it. A
+    # transport failure on this already-flagged input fails SAFE/BLOCK (Mode B) —
+    # no verdict, so no token counts. Broad catch mirrors ``check_input``'s
+    # fail-policy ownership; GuardrailTripwire is raised AFTER this block.
+    try:
+        verdict = nemo_client.check_input(question)
+    except Exception as exc:  # noqa: BLE001 — fail SAFE: pod failure on a flagged input ⇒ block
+        raise GuardrailTripwire(
+            _nemo_input_block_decision(_NEMO_INPUT_FAIL_SAFE_RATIONALE)
+        ) from exc
+
+    if verdict.unsafe:
+        raise GuardrailTripwire(
+            _nemo_input_block_decision(
+                verdict.rationale or _NEMO_INPUT_DEFAULT_BLOCK_RATIONALE
+            ),
+            model_id=verdict.model_id,
+            input_tokens=verdict.input_tokens,
+            output_tokens=verdict.output_tokens,
+        )
+    return GuardInputResult(
+        question=question,
+        model_id=verdict.model_id,
+        input_tokens=verdict.input_tokens,
+        output_tokens=verdict.output_tokens,
+    )

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["uv_build>=0.9,<0.12"]
+build-backend = "uv_build"
+
+[project]
+name = "guardrail"
+version = "0.1.0"
+description = "Guardrail service: out-of-process NeMo Guardrails pod backed EXCLUSIVELY by AWS Bedrock Haiku (no OpenAI, no NIM)."
+# NeMo Guardrails requires >=3.10,<3.14; the poc host runs 3.13. Pin the same
+# upper bound NeMo enforces so a drifted interpreter cannot resolve silently.
+requires-python = ">=3.12,<3.14"
+# I1 — Bedrock-only: install ONLY nemoguardrails + langchain-aws (+ the
+# transitive langchain-core the LangChain framework path needs) for the guard
+# engine, PLUS FastAPI/uvicorn for the pod transport. NEVER the
+# `nemoguardrails[server]` extra — it pulls `openai`, which the no-OpenAI hard
+# gate forbids. The resolved uv.lock is a LOCKED ARTIFACT (its sha256 enters the
+# 1.5.0 pin in Phase 4); NeMo/LangChain upgrades are deliberate events.
+dependencies = [
+    "nemoguardrails",
+    "langchain-aws",
+    "langchain-core",
+    "langchain",
+    "langchain-community",
+    "fastapi",
+    "uvicorn",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    # httpx backs starlette's TestClient (the skeleton tests exercise the
+    # endpoints in-process, no live pod / no AWS).
+    "httpx>=0.28.1",
+]
+
+# The pod's own `app` package ships by cwd-import (the Dockerfile copies app/ to
+# WORKDIR /app and uvicorn resolves `app` from there — no wheel), mirroring the
+# orchestrator's `--no-install-project` layout. Keep the project non-installable
+# so `uv sync` resolves ONLY the third-party guard/transport closure.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
+# The default suite is fully hermetic (every rail test mocks/injects the LLM,
+# no AWS). The ONE exception is the opt-in live Bedrock smoke test, marked
+# `requires_aws`; the conftest collection hook SKIPS it cleanly when no AWS
+# credentials are present, so credential-less CI never errors on it.
+markers = [
+    "requires_aws: needs live AWS Bedrock credentials (ap-southeast-2 Haiku); skipped automatically when credentials are absent — the opt-in live smoke test.",
+]

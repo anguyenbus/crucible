@@ -189,3 +189,108 @@ def test_empty_guardrail_decisions_render_no_note():
     assert _REDACTED_NOTE not in details
     assert _FLAGGED_NOTE not in details
     assert "Output guardrail" not in details
+
+
+# --------------------------------------------------------------------------- #
+# NeMo out-of-process lane — DISTINCT attribution (category == "nemo").
+#
+# A NeMo advisory flag must NOT be folded into the generic "N item(s) flagged"
+# count (that is the deterministic PII lane), and a NeMo block must render its
+# OWN "blocked by the NeMo <rail>" line rather than looking like the shared
+# secrets refusal — otherwise a reviewer cannot tell the NeMo lane acted.
+# (NeMo Task Group 5.)
+# --------------------------------------------------------------------------- #
+
+_NEMO_NOTE = "NeMo guardrail"
+
+
+def _nemo_flag_envelope():
+    """A NeMo advisory-flag envelope: answer delivered + one nemo ``flag``."""
+    answer = "Theft in Victoria requires dishonest appropriation [c:1]."
+    return {
+        "result": _result_scaffold(
+            answer_text=answer,
+            citations=[{"chunk_ids": ["c:1"], "claim_span": [0, len(answer)]}],
+            chunks=[
+                {"rank": 1, "chunk_id": "c:1", "score": 0.9, "doc_id": "c", "text": "the record"}
+            ],
+        ),
+        "guardrail_decisions": [
+            {
+                "stage": "output",
+                "decision": "flag",
+                "category": "nemo",
+                "rule_id": "nemo-output-flag-v1",
+                "rationale": "NeMo pod unavailable on the output/facts path — failing open",
+            }
+        ],
+        "generation_mode": "live",
+    }
+
+
+def _nemo_block_envelope(rationale="OutputRailException"):
+    """A NeMo block envelope: answer suppressed to refusal text + a block (category nemo)."""
+    return {
+        "result": _result_scaffold(answer_text=REFUSAL_TEXT, citations=[], chunks=[]),
+        "guardrail_decisions": [
+            {
+                "stage": "output",
+                "decision": "block",
+                "category": "nemo",
+                "rule_id": "nemo-output-block-v1",
+                "rationale": rationale,
+            }
+        ],
+        "generation_mode": "live",
+    }
+
+
+def test_nemo_flag_renders_distinct_advisory_line_not_generic_flag_count():
+    """A NeMo advisory flag surfaces a distinct NeMo line, never the PII flag count."""
+    render = map_final_envelope(_nemo_flag_envelope(), phoenix_endpoint=None)
+    numbered = number_citations(render)
+    details = format_final_details(render, numbered)
+
+    # Distinct, honest NeMo attribution naming the rail — NOT the generic count.
+    assert _NEMO_NOTE in details
+    assert "advisory flag" in details
+    assert "policy/facts rail" in details
+    # It is NOT lumped into the deterministic PII/secrets "N item(s) flagged" line.
+    assert _FLAGGED_NOTE not in details
+    assert _REDACTED_NOTE not in details
+
+
+def test_nemo_block_renders_distinct_block_line_not_shared_refusal_note():
+    """A NeMo policy block renders 'blocked by the NeMo policy rail', not the shared note."""
+    render = map_final_envelope(_nemo_block_envelope(), phoenix_endpoint=None)
+    # The answer itself is the shared refusal text (the router suppresses it)...
+    assert render.answer_text == REFUSAL_TEXT
+
+    numbered = number_citations(render)
+    details = format_final_details(render, numbered)
+    # ...but the details carry a DISTINCT NeMo block attribution so the reviewer
+    # can tell the out-of-process NeMo lane acted (not the secrets/PII lane).
+    assert _NEMO_NOTE in details
+    assert "blocked by the NeMo policy rail" in details
+    assert _FLAGGED_NOTE not in details
+    assert _REDACTED_NOTE not in details
+
+
+def test_nemo_facts_block_names_the_grounding_rail():
+    """A grounding block's rationale (FactCheckRailException) names the facts rail."""
+    render = map_final_envelope(
+        _nemo_block_envelope(rationale="FactCheckRailException"), phoenix_endpoint=None
+    )
+    details = format_final_details(render, number_citations(render))
+    assert "blocked by the NeMo facts (grounding) rail" in details
+
+
+def test_pipeline_config_env_override_selects_1_8_0_nemo_all(monkeypatch):
+    """DEMO_UI_PIPELINE_CONFIG selects the nemo-all 1.8.0 config for the grounding demo.
+
+    The demo UI sends the config ref straight through (no allow-list), so the
+    orchestrator-resolvable ``legal-rag-default-1.8.0`` is Chainlit-selectable via
+    the env var — the launch path for the §6 grounding-block click-through.
+    """
+    monkeypatch.setenv("DEMO_UI_PIPELINE_CONFIG", "legal-rag-default-1.8.0")
+    assert config.pipeline_config_ref() == "legal-rag-default-1.8.0"

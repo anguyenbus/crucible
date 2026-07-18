@@ -1,0 +1,66 @@
+# Shipping NeMo Guardrails config for the guardrail pod — Bedrock Haiku ONLY.
+#
+# This directory is a HASHED ARTIFACT: its digest (config.yml + prompts.yml +
+# detectors.yml + rails/*.co) is one of the two determinism hashes folded into
+# the orchestrator's active NeMo pin. Every value here is a deliberate, reviewed
+# pin — treat edits as version-bumping events.
+#
+# Phase-0 SETTLED FACTS (services/guardrail/spike/FINDINGS.md), not re-derived:
+#   - engine token = `bedrock_converse` (-> ChatBedrockConverse, Converse API).
+#   - rail-exceptions key = `enable_rails_exceptions` at config root.
+#   - the pod forces NeMo's `langchain` framework BEFORE construction
+#     (app/bedrock_engine.force_langchain_framework) — Bedrock's only path — so
+#     this config does NOT (and cannot) set a framework field.
+#   - `au.*` inference profile in ap-southeast-2, temperature 0, small max_tokens
+#     for deterministic self-checks.
+
+models:
+  - type: main
+    engine: bedrock_converse
+    model: au.anthropic.claude-haiku-4-5-20251001-v1:0
+    parameters:
+      region_name: ap-southeast-2
+      temperature: 0
+
+# The self-check actions call the LLM at `config.lowest_temperature` (NeMo default
+# 0.001) regardless of the model temperature above; pin it to 0 so the guard
+# decision is as deterministic as Bedrock allows.
+lowest_temperature: 0.0
+
+rails:
+  # `self check input` SHIPS so migrating the input lane to NeMo is a config flip,
+  # not new code (Q6b fast-follow). For THIS slice the orchestrator keeps its
+  # in-house Haiku confirm-step on the input lane, so the pod runs this rail ONLY
+  # when the orchestrator calls /check/input on a pre-filter HIT.
+  input:
+    flows:
+      - self check input
+
+  # `self check deterministic output` is ORDERED FIRST: a pure-regex, NO-LLM
+  # secrets / high-severity-PII scan (config/actions.py + rails/deterministic_output.co,
+  # tables in detectors.yml). A hit BLOCKS and short-circuits the paid LLM rails
+  # below. The pod's authoritative output path (app/nemo_runtime.check_output)
+  # runs the same detector FIRST in-process so the short-circuit skips `generate`
+  # entirely and records the deterministic `detections`; declaring it here keeps
+  # the deterministic guard expressed AS a NeMo rail, captured by the digest.
+  #
+  # BOTH LLM output flows are declared, but WHICH of them runs is chosen
+  # PER-REQUEST via GenerationOptions.rails.output (a list of flow names) in
+  # app/nemo_runtime.check_output — NOT statically. That is what makes
+  # `self check facts` independently A/B-activatable from `self check output`
+  # (locked decision Q6): the orchestrator's per-answer request says which
+  # categories to run, the pod maps them to this list, and an unlisted flow makes
+  # ZERO LLM calls. `self check facts` is additionally gated by NeMo's built-in
+  # `$check_facts` context variable (set only when facts is requested), so facts
+  # is OFF by default two independent ways.
+  output:
+    flows:
+      - self check deterministic output
+      - self check output
+      - self check facts
+
+# I3 signal: with rail exceptions ON, a BLOCK emits a `role: "exception"` turn
+# (InputRailException / OutputRailException / FactCheckRailException) instead of a
+# canned refusal string. app/nemo_runtime maps that turn to `unsafe: true`; NeMo's
+# own message text is NEVER forwarded to the UI.
+enable_rails_exceptions: true

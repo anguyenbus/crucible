@@ -324,7 +324,7 @@ def trace_echo(span: Span) -> dict[str, str] | None:
 
 
 def start_guardrail_input_span(
-    tracer: Tracer, *, model_id: str, context: Context | None = None
+    tracer: Tracer, *, model_id: str | None = None, context: Context | None = None
 ) -> Span:
     """
     Start the input-guard LLM span for the Haiku classifier call (explicit start).
@@ -339,13 +339,17 @@ def start_guardrail_input_span(
     refusal, and the caller ends the span cleanly. Parents to the current span
     (blocking route) or the explicit root ``context`` (streaming route).
     """
+    attributes: dict[str, object] = {"guardrail.stage": "input"}
+    # The in-house classifier lane knows its model id up front; the out-of-process
+    # NeMo `self_check_input` lane learns the pod-STAMPED id only from the verdict,
+    # so it starts the span WITHOUT a model id and sets it via
+    # ``set_guardrail_input_attributes`` after the pod responds.
+    if model_id is not None:
+        attributes[SpanAttributes.LLM_MODEL_NAME] = model_id
     return tracer.start_span(
         "guardrail_input",
         context=context,
-        attributes=_kinded_attributes(
-            OpenInferenceSpanKindValues.LLM,
-            {SpanAttributes.LLM_MODEL_NAME: model_id, "guardrail.stage": "input"},
-        ),
+        attributes=_kinded_attributes(OpenInferenceSpanKindValues.LLM, attributes),
     )
 
 
@@ -355,6 +359,7 @@ def set_guardrail_input_attributes(
     decision: str,
     category: str | None = None,
     rule_id: str | None = None,
+    model_id: str | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
 ) -> None:
@@ -371,6 +376,10 @@ def set_guardrail_input_attributes(
         span.set_attribute("guardrail.category", category)
     if rule_id is not None:
         span.set_attribute("guardrail.rule_id", rule_id)
+    # Pod-STAMPED model id for the NeMo `self_check_input` lane (the in-house
+    # classifier lane already set it at span start); regex lanes pass none.
+    if model_id is not None:
+        span.set_attribute(SpanAttributes.LLM_MODEL_NAME, model_id)
     if input_tokens is not None:
         span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_PROMPT, input_tokens)
     if output_tokens is not None:
@@ -409,16 +418,25 @@ def set_guardrail_output_attributes(
     category: str | None = None,
     rule_id: str | None = None,
     count: int | None = None,
+    model_id: str | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
 ) -> None:
     """
     Attach the output-guard outcome to the ``guardrail_output`` span.
 
-    ``decision`` is ``"allow"`` (clean answer), ``"block"`` (secrets), or the
-    non-block outcome ``"transform"`` (PII redaction) / ``"flag"`` (advisory
-    email/phone); ``category`` / ``rule_id`` come from the
-    :class:`GuardrailDecision`. ``count`` is the redaction/flag count (how many
-    spans were masked or flagged) — the output guard is regex-only, so there are
-    NO model or token attributes. A no-op under the NoOpTracer.
+    ``decision`` is ``"allow"`` (clean answer), ``"block"`` (secrets / a NeMo
+    block), or the non-block outcome ``"transform"`` (PII redaction) / ``"flag"``
+    (advisory email/phone OR a NeMo output/facts advisory); ``category`` /
+    ``rule_id`` come from the :class:`GuardrailDecision`. ``count`` is the
+    regex-guard redaction/flag count.
+
+    For the out-of-process NeMo output/facts lane the guard call is an LLM
+    round-trip, so ``model_id`` (the pod-STAMPED Haiku id) + ``input_tokens`` /
+    ``output_tokens`` are populated from the pod verdict when present — Phoenix
+    then shows the NeMo guard call's model + cost. The deterministic regex output
+    guard passes none of them (it is regex-only, no model), so its span stays
+    exactly as before. A no-op under the NoOpTracer.
     """
     span.set_attribute("guardrail.decision", decision)
     if category is not None:
@@ -427,3 +445,9 @@ def set_guardrail_output_attributes(
         span.set_attribute("guardrail.rule_id", rule_id)
     if count is not None:
         span.set_attribute("guardrail.count", count)
+    if model_id is not None:
+        span.set_attribute(SpanAttributes.LLM_MODEL_NAME, model_id)
+    if input_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_PROMPT, input_tokens)
+    if output_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_COMPLETION, output_tokens)

@@ -1,0 +1,19 @@
+# TEST FIXTURE ONLY — not the shipping config/ (Phase 2 authors that).
+# A minimal Bedrock-only NeMo config so the I1 no-OpenAI gate can construct a
+# REAL LLMRails end-to-end (offline: construction builds the ChatBedrockConverse
+# client but makes NO Bedrock call) and prove no OpenAI client is ever built.
+models:
+  - type: main
+    engine: bedrock_converse
+    model: au.anthropic.claude-haiku-4-5-20251001-v1:0
+    parameters:
+      region_name: ap-southeast-2
+      temperature: 0
+      max_tokens: 64
+
+rails:
+  input:
+    flows:
+      - self check input
+
+enable_rails_exceptions: true

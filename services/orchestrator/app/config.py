@@ -293,6 +293,11 @@ class Settings:
     opensearch_vector_field: str = _DEFAULT_OPENSEARCH_VECTOR_FIELD
     # Phoenix observability endpoint for span export (shared infra name).
     phoenix_endpoint: str | None = None
+    # Out-of-process NeMo Guardrails pod base URL (a LOCATION fact, exactly
+    # like opensearch_endpoint). None ⇒ the NeMo output/facts lane cannot be
+    # reached; the lane is also config-gated (guardrails.nemo), so the
+    # released 1.0.0-1.4.0 configs never call the pod regardless.
+    nemo_guard_url: str | None = None
 
 
 def get_settings(from_dotenv: bool = False) -> Settings:
@@ -329,4 +334,5 @@ def get_settings(from_dotenv: bool = False) -> Settings:
             "ORCHESTRATOR_OPENSEARCH_VECTOR_FIELD", _DEFAULT_OPENSEARCH_VECTOR_FIELD
         ),
         phoenix_endpoint=os.environ.get("PHOENIX_ENDPOINT"),
+        nemo_guard_url=os.environ.get("ORCHESTRATOR_NEMO_GUARD_URL"),
     )

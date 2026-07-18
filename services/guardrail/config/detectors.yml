@@ -1,0 +1,77 @@
+# Deterministic secrets / PII detector tables for the pod's FIRST output rail.
+#
+# These pattern tables are PORTED VERBATIM (behavior-identical — do NOT "improve"
+# detection) from the orchestrator's in-house guard:
+#   services/orchestrator/app/orchestrator/guardrails.py
+#     `_SECRET_PATTERNS`  -> the `secrets:` block below
+#     `_PII_PATTERNS`     -> the `pii:` block below (the six categories)
+# The Luhn checksum that gates `credit_card` is NOT expressible in regex, so the
+# entry carries `validator: luhn`, naming a pod-side validator (ported from
+# `_luhn_ok`) that the detector resolves BY NAME.
+#
+# This file is a HASHED ARTIFACT: it is folded into the pod's single
+# `config_dir_digest` (see app/config_digest.py `_digest_member_paths`), so a
+# regex change becomes a pod `config_version` bump + a fresh orchestrator
+# `config_sha256` — one determinism mechanism, no new pin hash. NeMo is told to
+# ignore this file via `config/.railsignore` (it is the pod's own data file, not
+# a rails/prompts artifact).
+#
+# Verdict policy (deterministic, no LLM):
+#   secrets            -> BLOCK  (short-circuits the paid self_check_* LLM rails)
+#   pii severity:high  -> BLOCK  (credit_card / ssn / passport / mrn; redaction is
+#                                 dropped — a high-sev PII answer now refuses)
+#   pii severity:low   -> FLAG   (email / phone; answer still runs the LLM rails)
+#
+# Patterns are stored as YAML strings. Case-sensitivity is carried in the pattern
+# itself: the secrets table is compiled WITHOUT a global IGNORECASE flag (so
+# vendor prefixes like `AKIA` / `sk-ant-` stay exact); the one case-insensitive
+# secret rule (the DB URL) and the passport / mrn PII rules carry their own inline
+# `(?i)` — exactly as in the source module.
+
+secrets:
+  - pattern: 'sk-ant-[a-zA-Z0-9\-_]{40,}'
+    label: anthropic_api_key
+  - pattern: 'AKIA[0-9A-Z]{16}'
+    label: aws_access_key
+  - pattern: 'sk-(?:proj-)?[a-zA-Z0-9\-_]{40,}'
+    label: openai_api_key
+  - pattern: 'AIza[0-9A-Za-z\-_]{35}'
+    label: google_api_key
+  - pattern: 'gh[posur]_[0-9a-zA-Z]{36}'
+    label: github_token
+  - pattern: 'xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24}'
+    label: slack_token
+  - pattern: 'hf_[a-zA-Z0-9]{34}'
+    label: huggingface_token
+  - pattern: '-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'
+    label: private_key
+  - pattern: 'eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*'
+    label: jwt_token
+  - pattern: '(?i)(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis)://[^\s]+:[^\s]+@[^\s]+'
+    label: database_url
+
+pii:
+  # High-severity PII -> BLOCK. credit_card is gated by the named Luhn validator
+  # so a 16-digit non-card (a reference / exhibit number common in legal text)
+  # does not trip it. The SSN rule REQUIRES an explicit `-`/space separator (as in
+  # the source), so a bare run of 9 digits does not trip.
+  - pattern: '\b(?:\d{4}[- ]?){3}\d{4}\b'
+    label: credit_card
+    severity: high
+    validator: luhn
+  - pattern: '\b\d{3}[- ]\d{2}[- ]\d{4}\b'
+    label: ssn
+    severity: high
+  - pattern: '(?i)\b(?:passport)\s*[#:]?\s*[A-Z0-9]{6,9}\b'
+    label: passport
+    severity: high
+  - pattern: '(?i)\b(?:mrn|medical\s*record)\s*[#:]?\s*\d{6,10}\b'
+    label: mrn
+    severity: high
+  # Low-severity PII -> FLAG (advisory; answer still runs the LLM rails).
+  - pattern: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
+    label: email
+    severity: low
+  - pattern: '(?:\+?1[-. ]?)?(?:\([0-9]{3}\)[-. ]?|[0-9]{3}[-. ])[0-9]{3}[-. ][0-9]{4}\b'
+    label: phone
+    severity: low
