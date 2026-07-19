@@ -78,3 +78,81 @@ def is_complete_duplicate(
     except NotFoundError:
         return False  # index does not exist yet — nothing indexed
     return response.get("count", 0) == expected_chunk_count
+
+
+# The raw-bytes gate aggregates the matching chunks by doc_id to confirm at least
+# one COMPLETE indexed copy exists. A single raw_sha256 realistically maps to one
+# (occasionally a few) doc_ids — the same file re-uploaded via different source
+# URIs — so a generous bucket cap covers every real case without paging.
+_RAW_DEDUP_MAX_DOCS = 1000
+
+
+def raw_content_sha256(raw_bytes: bytes) -> str:
+    """Full SHA-256 hex digest of the RAW fetched document bytes (pre-parse).
+
+    A DISTINCT concern from `content_sha256`, which hashes the normalized text
+    AFTER the expensive parse. This digest is the key of the pre-parse gate: it
+    is computed on the bytes straight out of `fetch_bytes`, so an identical
+    re-upload is recognised before the parser is ever called.
+    """
+    return hashlib.sha256(raw_bytes).hexdigest()
+
+
+def find_complete_raw_duplicate(
+    raw_sha256: str, index: str | None = None, client=None
+) -> str | None:
+    """The pre-parse gate: return an already-indexed COMPLETE copy's content sha.
+
+    Looks up `raw_sha256` in `index` INDEPENDENT of doc_id (the same bytes via a
+    different source URI still hits) and returns the normalized-text `sha256` of a
+    complete indexed copy, or `None` when none exists. On a hit the caller skips
+    the whole parse + embed + index cost.
+
+    CORRECTNESS (partial-prior-run safety): the gate fires ONLY when some doc_id
+    under this `raw_sha256` holds a COMPLETE chunk set — its indexed chunk count
+    equals the `chunk_count` stamped identically on every one of its chunks at
+    index time. A prior run that crashed mid-bulk leaves fewer chunks than
+    `chunk_count`, so that bucket is NOT complete, the gate does NOT fire, and the
+    document re-ingests (self-healing via deterministic `_id`s). This mirrors
+    `is_complete_duplicate`'s count-equals-expected guarantee, but sources the
+    expected count from the chunks themselves rather than a local re-parse — so a
+    half-indexed document can never be permanently masked by the fast-path gate.
+    `index` defaults to `settings.index_name` when absent (unchanged single-index
+    behavior); a missing index means nothing is indexed yet.
+    """
+    if client is None:
+        client = get_opensearch_client()
+    if index is None:
+        index = get_settings().index_name
+    body = {
+        "size": 0,
+        "query": {"term": {"raw_sha256": raw_sha256}},
+        "aggs": {
+            "by_doc": {
+                "terms": {"field": "doc_id", "size": _RAW_DEDUP_MAX_DOCS},
+                "aggs": {
+                    # `chunk_count` and `sha256` are identical across a doc's chunks,
+                    # so `max`/top-`terms` read them off the bucket for free.
+                    "expected": {"max": {"field": "chunk_count"}},
+                    "content_sha": {"terms": {"field": "sha256", "size": 1}},
+                },
+            }
+        },
+    }
+    try:
+        response = client.search(index=index, body=body)
+    except NotFoundError:
+        return None  # index does not exist yet — nothing indexed
+    buckets = (
+        response.get("aggregations", {}).get("by_doc", {}).get("buckets", [])
+    )
+    for bucket in buckets:
+        expected = bucket.get("expected", {}).get("value")
+        if expected is None:
+            continue  # pre-gate chunks without chunk_count — cannot confirm complete
+        if bucket.get("doc_count", 0) != int(expected):
+            continue  # partial prior run for this doc_id — not a complete copy
+        sha_buckets = bucket.get("content_sha", {}).get("buckets", [])
+        if sha_buckets:
+            return sha_buckets[0]["key"]
+    return None

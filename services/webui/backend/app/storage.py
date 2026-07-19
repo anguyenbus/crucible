@@ -26,10 +26,24 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from app.config import get_settings
 
+# Content types for serving the stored original back to the left pane. Browsers
+# render pdf/markdown/image/html inline; Office types (.docx/.xlsx) have no native
+# inline viewer, so they fall through to octet-stream and download — the parser
+# still extracts their text for the right pane regardless.
 _CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".markdown": "text/markdown",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
 }
 _DEFAULT_CONTENT_TYPE = "application/octet-stream"
 

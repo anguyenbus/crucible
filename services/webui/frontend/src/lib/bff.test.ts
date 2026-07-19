@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     bffBaseUrl,
+    compareDocuments,
     createProject,
     deleteProject,
     documentFileUrl,
@@ -167,6 +168,68 @@ describe("document detail client", () => {
         await expect(getDocumentText("p1", "d1", fetchImpl)).rejects.toMatchObject({
             detail: "ingestion unreachable",
             status: 502,
+        });
+    });
+});
+
+describe("compare documents client", () => {
+    it("POSTs the two document ids as JSON and parses the contradiction report", async () => {
+        let captured: { url: string; init: RequestInit } | null = null;
+        const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+            captured = { url, init };
+            return okJson({
+                document_a: "a.md",
+                document_b: "b.md",
+                contradictions: [
+                    {
+                        type: "temporal",
+                        description: "Different dates.",
+                        quote_a: "Jan 15",
+                        quote_b: "end of Q1",
+                    },
+                ],
+                model_id: "au.anthropic.claude-sonnet-4-6",
+                truncated: false,
+            });
+        }) as unknown as typeof fetch;
+
+        const result = await compareDocuments("p1", "d1", "d2", fetchImpl);
+
+        expect(captured!.url).toBe("http://bff.test:8002/projects/p1/compare");
+        expect(captured!.init.method).toBe("POST");
+        expect(JSON.parse(captured!.init.body as string)).toEqual({
+            document_id_a: "d1",
+            document_id_b: "d2",
+        });
+        expect(result.document_a).toBe("a.md");
+        expect(result.contradictions).toHaveLength(1);
+        expect(result.contradictions[0].type).toBe("temporal");
+        expect(result.contradictions[0].quote_b).toBe("end of Q1");
+    });
+
+    it("parses an honest empty (no contradictions) report", async () => {
+        const fetchImpl = vi.fn(async () =>
+            okJson({
+                document_a: "a.md",
+                document_b: "b.md",
+                contradictions: [],
+                model_id: "m",
+                truncated: false,
+            }),
+        ) as unknown as typeof fetch;
+
+        const result = await compareDocuments("p1", "d1", "d2", fetchImpl);
+        expect(result.contradictions).toEqual([]);
+    });
+
+    it("surfaces a typed BffError (400) when comparing a document with itself", async () => {
+        const fetchImpl = vi.fn(async () =>
+            okJson({ detail: "pick two different documents to compare" }, 400),
+        ) as unknown as typeof fetch;
+
+        await expect(compareDocuments("p1", "d1", "d1", fetchImpl)).rejects.toMatchObject({
+            detail: "pick two different documents to compare",
+            status: 400,
         });
     });
 });

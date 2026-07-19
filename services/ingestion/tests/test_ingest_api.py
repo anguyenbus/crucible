@@ -40,7 +40,7 @@ def pipeline_calls(monkeypatch):
         for _ in chunks:
             yield [0.1] * 1024
 
-    def fake_index(chunks, vectors, *, doc_id, source_uri, sha256, index=None):
+    def fake_index(chunks, vectors, *, doc_id, source_uri, sha256, index=None, **kwargs):
         calls.append(("index", doc_id, sha256, index))
         return len(chunks)
 
@@ -49,6 +49,7 @@ def pipeline_calls(monkeypatch):
         return 0
 
     monkeypatch.setattr(run_module, "fetch_bytes", fake_fetch)
+    monkeypatch.setattr(run_module, "find_complete_raw_duplicate", lambda *a, **k: None)
     monkeypatch.setattr(run_module, "is_complete_duplicate", fake_dedup)
     monkeypatch.setattr(run_module, "embed_texts_iter", fake_embed_iter)
     monkeypatch.setattr(run_module, "index_chunks", fake_index)
@@ -106,6 +107,9 @@ def test_dedup_skip_requires_both_sha_match_and_complete_chunk_count():
 def test_unchanged_complete_doc_is_skipped_without_embedding(
     client, pipeline_calls, monkeypatch
 ):
+    monkeypatch.setattr(
+        run_module, "find_complete_raw_duplicate", lambda *a, **k: None
+    )
     monkeypatch.setattr(
         run_module, "is_complete_duplicate", lambda *args, **kwargs: True
     )

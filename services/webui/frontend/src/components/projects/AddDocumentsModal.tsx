@@ -2,10 +2,11 @@
 
 /*
  * Adapted from references/donna/frontend/src/app/components/shared/AddDocumentsModal.tsx
- * (MIT (c) 2026 Donna Contributors, same owner). A markdown + PDF file picker
- * that uploads to the BFF's POST /projects/{id}/documents. Accepted formats
- * mirror the BFF exactly (.md/.markdown/.pdf); PDF is parsed natively by
- * ingestion (pypdf) — DOCX/image/OCR remain out of scope. Donna's
+ * (MIT (c) 2026 Donna Contributors, same owner). A multi-format file picker that
+ * uploads to the BFF's POST /projects/{id}/documents. Accepted formats mirror the
+ * BFF exactly: markdown, PDF, images, DOCX, XLSX/XLSM, HTML. Ingestion decodes
+ * `.md` locally and routes every other format to the parser service (docling +
+ * Textract). Donna's
  * standalone-document browser, addDocumentToProject, owner-only delete
  * warnings, and file directory are all out of scope and dropped. Ingestion is
  * ASYNCHRONOUS: selected files are uploaded CONCURRENTLY, each returns a queued
@@ -19,7 +20,9 @@ import { Upload, Loader2, X } from "lucide-react";
 import { uploadDocument, type BffDocument, type BffError } from "@/lib/bff";
 
 // Mirrors the BFF's _SUPPORTED_EXTENSIONS (services/webui/backend/app/api/documents.py).
-const UPLOAD_ACCEPT = ".md,.markdown,.pdf";
+const UPLOAD_ACCEPT =
+    ".md,.markdown,.pdf,.png,.jpg,.jpeg,.tif,.tiff,.docx,.xlsx,.xlsm,.html,.htm";
+const SUPPORTED_EXTENSIONS = UPLOAD_ACCEPT.split(",");
 
 interface Props {
     open: boolean;
@@ -37,11 +40,7 @@ export function AddDocumentsModal({ open, projectId, onClose, onUploaded }: Prop
 
     function isSupported(file: File): boolean {
         const name = file.name.toLowerCase();
-        return (
-            name.endsWith(".md") ||
-            name.endsWith(".markdown") ||
-            name.endsWith(".pdf")
-        );
+        return SUPPORTED_EXTENSIONS.some((ext) => name.endsWith(ext));
     }
 
     async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
@@ -51,7 +50,9 @@ export function AddDocumentsModal({ open, projectId, onClose, onUploaded }: Prop
 
         const supported = files.filter(isSupported);
         if (supported.length !== files.length) {
-            setError("Only markdown (.md/.markdown) and PDF (.pdf) files are accepted.");
+            setError(
+                "Accepted: markdown, PDF, images (.png/.jpg/.tiff), .docx, .xlsx, .html.",
+            );
             if (supported.length === 0) return;
         }
 
@@ -125,7 +126,7 @@ export function AddDocumentsModal({ open, projectId, onClose, onUploaded }: Prop
                         ) : (
                             <Upload className="size-4" />
                         )}
-                        {uploading ? "Uploading…" : "Choose .md or .pdf files"}
+                        {uploading ? "Uploading…" : "Choose files"}
                     </button>
 
                     {error && <p className="mt-3 text-sm text-destructive">{error}</p>}

@@ -43,13 +43,14 @@ def fake_pipeline(monkeypatch):
         for _ in chunks:
             yield [0.1] * 1024
 
-    def fake_index(chunks, vectors, *, doc_id, source_uri, sha256, index=None):
+    def fake_index(chunks, vectors, *, doc_id, source_uri, sha256, index=None, **kwargs):
         return len(chunks)
 
     def fake_prune(doc_id, *, keep_sha256, index=None):
         return 0
 
     monkeypatch.setattr(run_module, "fetch_bytes", fake_fetch)
+    monkeypatch.setattr(run_module, "find_complete_raw_duplicate", lambda *a, **k: None)
     monkeypatch.setattr(run_module, "is_complete_duplicate", fake_dedup)
     monkeypatch.setattr(run_module, "embed_texts_iter", fake_embed_iter)
     monkeypatch.setattr(run_module, "index_chunks", fake_index)
@@ -110,6 +111,7 @@ def test_stream_emits_phase_frames_then_done(client, fake_pipeline):
 
 
 def test_stream_skip_short_circuits_after_chunking(client, monkeypatch, fake_pipeline):
+    monkeypatch.setattr(run_module, "find_complete_raw_duplicate", lambda *a, **k: None)
     monkeypatch.setattr(run_module, "is_complete_duplicate", lambda *a, **k: True)
 
     events = _events(client.post("/ingest/stream", json={"source": SOURCE}))

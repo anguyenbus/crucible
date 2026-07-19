@@ -11,12 +11,14 @@
 #   make bff-check      # BFF offline gates: pytest + ruff (tmpfs venv)
 #   make ingestion      # ingestion on :8001 — REQUIRED for projects (BFF provisions/deletes
 #                       #   the per-project proj-{id} index through ingestion)
+#   make parser         # parser on :8003 — Docling+Textract; ingestion routes every non-`.md`
+#                       #   upload here. First run needs `make parser-sync` (heavy docling install)
 #
 # Project-scoped chat: pick a project → chat hits its proj-{id} index; the general
 # toggle (default OFF) comma-joins GENERAL_INDEX ($(GENERAL_INDEX)). Full stack needs
 # all four up: orchestrator (chat) + ingestion (indexing) + BFF (projects) + UI.
 #
-# Ports (no collisions): orchestrator 8000 · ingestion 8001 · BFF 8002 · UI 3000.
+# Ports (no collisions): orchestrator 8000 · ingestion 8001 · BFF 8002 · parser 8003 · UI 3000.
 # The UI reaches the orchestrator ONLY via its server-side proxy (ORCHESTRATOR_URL);
 # it reaches the BFF browser-direct via NEXT_PUBLIC_BFF_URL (the BFF has CORS).
 # Override any variable on the command line, e.g. make dev ORCHESTRATOR_URL=http://127.0.0.1:8000
@@ -24,6 +26,7 @@
 ORCHESTRATOR_URL ?= http://localhost:8000
 INGESTION_URL    ?= http://localhost:8001
 BFF_URL          ?= http://localhost:8002
+PARSER_URL       ?= http://localhost:8003
 CONFIG_REF       ?= legal-rag-default-1.8.0
 STREAM_CONFIG    ?= legal-rag-default-1.2.0
 UNGUARDED_CONFIG ?= legal-rag-default-1.2.0
@@ -35,6 +38,7 @@ NEMO_GUARD_URL   ?= http://localhost:8080
 ORCH_DIR         := ../../orchestrator
 BFF_DIR          := ../backend
 INGEST_DIR       := ../../ingestion
+PARSER_DIR       := ../../parser
 DEMO_UI_DIR      := ../../orchestrator/demo_ui
 
 # Resolve the POC OpenSearch domain endpoint from the opensearch-poc CloudFormation
@@ -44,14 +48,14 @@ OS_ENDPOINT_CMD = ORCHESTRATOR_OPENSEARCH_ENDPOINT=$${ORCHESTRATOR_OPENSEARCH_EN
 	  --query "Stacks[0].Outputs[?OutputKey=='DomainEndpoint'].OutputValue" --output text)}
 
 .PHONY: help install check test typecheck lint build dev dev-stream \
-        orchestrator ingestion bff bff-check guardrail-pod readyz invariants
+        orchestrator ingestion parser parser-sync bff bff-check guardrail-pod readyz invariants
 
 help:
 	@echo "Phase 1 (chat):     check | test | typecheck | lint | build | dev | dev-stream | orchestrator"
-	@echo "Phase 2 (projects): bff | bff-check | ingestion"
+	@echo "Phase 2 (projects): bff | bff-check | ingestion | parser | parser-sync"
 	@echo "For the 1.8.0 default:  guardrail-pod (NeMo pod on :8080)"
 	@echo "Shared:             install | readyz | invariants"
-	@echo "Ports: orchestrator=8000  ingestion=8001  bff=8002  ui=$(PORT)"
+	@echo "Ports: orchestrator=8000  ingestion=8001  bff=8002  parser=8003  ui=$(PORT)"
 	@echo "Vars:  ORCHESTRATOR_URL=$(ORCHESTRATOR_URL)  BFF_URL=$(BFF_URL)  CONFIG_REF=$(CONFIG_REF)"
 
 install: ## Install deps from the committed lockfile (node_modules is on tmpfs — rerun after a reboot)
@@ -110,7 +114,21 @@ ingestion: ## Convenience: ingestion service on :8001 — upload target (needs A
 	@# Invoke the service's OWN venv interpreter directly, not `uv run`: a stale sibling
 	@# checkout at /home/admin/projects/ingestion can make `uv run` pick the wrong venv
 	@# (one without pypdf → 500 on PDF ingest). This service .venv definitively has pypdf.
-	cd $(INGEST_DIR) && ./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload --reload-dir app
+	@# INGESTION_PARSER_URL routes every non-`.md` upload to the parser (make parser); if the
+	@# parser isn't running, PDF/DOCX/etc. ingest fails at the parse stage (markdown still works).
+	cd $(INGEST_DIR) && INGESTION_PARSER_URL=$(PARSER_URL) \
+	./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload --reload-dir app
+
+parser: ## Convenience: parser service on :8003 — Docling+Textract (needs AWS for scanned/escalated pages)
+	@# Own-venv interpreter, matching the ingestion note above (no `uv run`). First run needs
+	@# `make parser-sync` — the venv must have docling/uvicorn installed (multi-GB, heavy).
+	@# Digital PDFs / DOCX / XLSX / HTML parse offline; only scanned/garbled pages call Textract.
+	cd $(PARSER_DIR) && AWS_REGION=$(REGION) \
+	./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8003 --reload --reload-dir app
+
+parser-sync: ## One-time: install the parser's heavy deps (docling + torch + rapidocr) into its .venv
+	@# Required before the first `make parser` — pulls a multi-GB stack from the committed lockfile.
+	cd $(PARSER_DIR) && uv sync
 
 index-chunks: ## Inspect the chunks in an index: make index-chunks IDX=proj-<id> [FULL=1]
 	cd $(INGEST_DIR) && ./.venv/bin/python -m scripts.inspect_index $(IDX) $(if $(FULL),--full,)

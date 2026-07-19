@@ -95,3 +95,50 @@ class DocumentFacts(BaseModel):
     facts: list[str]
     model_id: str
     truncated: bool
+
+
+# The six contradiction categories (mirrors the orchestrator's ContradictionType
+# and the frontend labels — keep the three in sync).
+ContradictionType = Literal[
+    "temporal",
+    "numerical",
+    "authority",
+    "process",
+    "policy_reversal",
+    "specificity",
+]
+
+
+class Contradiction(BaseModel):
+    """One classified contradiction between two documents.
+
+    `quote_a`/`quote_b` are the exact conflicting spans from each document
+    (verbatim source text) so the UI can show the conflict as each states it.
+    """
+
+    type: ContradictionType
+    description: str
+    quote_a: str
+    quote_b: str
+
+
+class CompareRequest(BaseModel):
+    """Which two documents (by id) to cross-examine for contradictions."""
+
+    document_id_a: str
+    document_id_b: str
+
+
+class DocumentComparison(BaseModel):
+    """The contradiction report between two documents, plus provenance.
+
+    Produced on demand by the orchestrator's non-RAG `/compare` (decompose-then-
+    verify) over both documents' indexed text. `document_a`/`document_b` echo the
+    compared filenames; `truncated` flags that either document exceeded the cap.
+    """
+
+    document_a: str
+    document_b: str
+    contradictions: list[Contradiction]
+    model_id: str
+    truncated: bool

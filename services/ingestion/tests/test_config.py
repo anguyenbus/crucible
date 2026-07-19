@@ -30,3 +30,23 @@ def test_settings_read_ingestion_prefixed_env_and_bare_aws_region(monkeypatch):
     assert settings.chunk_tokens == 512
     assert settings.opensearch_host == "example.es.amazonaws.com"
     assert settings.aws_region == "us-east-1"
+
+
+def test_parser_url_default_targets_internal_parser_service(monkeypatch):
+    """Task Group 5: the compose default resolves to the east-west-only parser."""
+    monkeypatch.delenv("INGESTION_PARSER_URL", raising=False)
+
+    settings = Settings()
+
+    # Default must match the internal compose service name/port (never a host
+    # URL) — ingestion reaches the parser over the internal compose network.
+    assert settings.parser_url == "http://parser:8000"
+
+
+def test_parser_url_env_override(monkeypatch):
+    """`INGESTION_PARSER_URL` overrides the compose default (per-deploy wiring)."""
+    monkeypatch.setenv("INGESTION_PARSER_URL", "http://parser.internal:9000")
+
+    settings = Settings()
+
+    assert settings.parser_url == "http://parser.internal:9000"

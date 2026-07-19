@@ -26,6 +26,12 @@ dependencies = [
     "opentelemetry-sdk>=1.29",
     "opentelemetry-exporter-otlp-proto-http>=1.29",
     "openinference-semantic-conventions>=0.1.0",
+    # LangChain Bedrock, used ONLY by the boundary route app/routers/compare.py
+    # (decompose-then-verify document comparison). Confined to app.routers, NEVER
+    # imported by app.orchestrator.** (the stages-pure contract forbids the boto3
+    # that langchain-aws pulls transitively). Mirrors the guardrail pod's stack.
+    "langchain-aws",
+    "langchain-core",
 ]
 
 # NOTE: intentionally NO [project.scripts] — no console scripts are baked into

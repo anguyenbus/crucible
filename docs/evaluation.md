@@ -1,13 +1,6 @@
 # LLM Selection & Continuous Evaluation Framework
 
-*An engineering process for keeping a GenAI application high-performing, cost-effective, and safe — written with the skeptic's hat on — followed by an honest audit of how much of it Crucible actually does.*
-
-**Audited** 2026-07-16 · **Branch** `dev_opensearch_orchestrator_guardrails` · **Stage** POC, no production · **Basis** code, not intent
-
-Part I is vendor-neutral process and applies to any GenAI application. Part II is the audit of this repo, cited to code. Where a doc and the code disagree, the code wins.
-
 ---
-
 ## Status at a glance
 
 | Phase | Status | The one-line truth |
@@ -273,9 +266,9 @@ Two guard lanes ship and genuinely run. Input is a regex pre-filter (prompt-leak
 What section 5 asks for and does not exist:
 
 - **No red team has been run.** PyRIT and deepteam are vendored clones under gitignored `references/` with **zero first-party imports**; `.pyrit-venv` has `pyrit 0.14.0` installed and is referenced by nothing in the repo.
-- **Block rate and FP rate have never been measured.** The harness that measures exactly those four things is written and tested (`services/eval/app/phoenix/guardrail_ab.py:220-266`), but its driver **unconditionally refuses to run** (`services/eval/scripts/guardrail_shadow_ab.py:56-62`, `raise SystemExit`), the arms it needs (`build_in_house_arm`, `build_nemo_arm`, `load_legal_corpus`) exist only inside a docstring, and no result artifact exists on disk. This is deliberate — it's user-owned and gated on a live pod — but the framework's point stands: **the NeMo lane's go/no-go depends on a measurement that has not occurred.**
+- **Block rate and FP rate have never been measured.** The harness that measures exactly those four things is written and tested (`services/eval/app/phoenix/guardrail_ab.py:220-266`), and its driver (`services/eval/scripts/guardrail_parity_gate.py`) plus the live arms it needs (`build_in_house_arm`, `build_nemo_arm`, `load_legal_corpus` in `services/eval/dev/guardrail_ab_arms.py`) exist, but the run is user-owned and gated on a live pod + Bedrock + Phoenix, and no result artifact exists on disk. This is deliberate — it's gated on a live pod — but the framework's point stands: **the NeMo lane's go/no-go depends on a measurement that has not occurred.**
 - **No indirect injection test.** Nothing tests instructions hidden inside *retrieved chunks* — precisely the attack section 5 flags as "the RAG-specific attack most teams forget." Unit tests cover one exemplar per rule (33 tests, with genuine FP cases), which is rule verification, not attack-surface measurement.
-- The NeMo pod itself has **never run live**: `image_digest: "pending-ci-build"` (`legal-rag-default-1.5.0.yaml:113`), no compose or infra entry, `ORCHESTRATOR_NEMO_GUARD_URL` unset so the client resolves to `None`.
+- The NeMo pod itself has **never run live**: `image_digest: "pending-ci-build"` (`legal-rag-default-1.8.0.yaml:137`), no compose or infra entry, `ORCHESTRATOR_NEMO_GUARD_URL` unset so the client resolves to `None`.
 
 ### Phase 6 — CI/CD gate: ABSENT
 
@@ -380,7 +373,7 @@ An earlier draft of this document mapped the framework to **Bedrock-native** too
 
 Sections 3.5 (noise taxonomy), 3.6 (deterministic harness), and the seams half of 3.7 are adapted from Baharak Saberidokht, *"From weeks to a day: how we made LLM evaluation fast enough to iterate on"* (Airbnb engineering, 2026). The measured figures quoted in 3.5 — ~1% judge drift against a 1–3% real signal, ~75% of LLM-generated references differing across labeling runs — are Airbnb's, on Airbnb's workload. They are cited here as an existence proof that the noise floor can exceed the signal, not as constants to design against. Measure your own.
 
-That article frames the work as four layers. Three are folded into this document. **Layer 3 — micro-LoRA adapters for same-day model patching — is deliberately omitted**, because Crucible trains nothing: it calls hosted Bedrock models, so there is no adapter, no rank, and no GPU hour to spend. The discipline underneath that layer does translate, and is worth stating in Crucible's own terms: *bounded, scoped mutation, validated behind two gates, canary-deployed with automatic rollback.* **Crucible's config semver is its adapter.** A 1.4.0 → 1.5.0 change is scoped, hash-pinned, and `services/orchestrator/docs/guardrails.md` already claims one-line rollback via config-ref swap. What is missing is the two gates and the canary — which is precisely the NeMo A/B that has never run.
+That article frames the work as four layers. Three are folded into this document. **Layer 3 — micro-LoRA adapters for same-day model patching — is deliberately omitted**, because Crucible trains nothing: it calls hosted Bedrock models, so there is no adapter, no rank, and no GPU hour to spend. The discipline underneath that layer does translate, and is worth stating in Crucible's own terms: *bounded, scoped mutation, validated behind two gates, canary-deployed with automatic rollback.* **Crucible's config semver is its adapter.** A 1.4.0 → 1.8.0 change is scoped, hash-pinned, and `services/orchestrator/docs/guardrails.md` already claims one-line rollback via config-ref swap. What is missing is the two gates and the canary — which is precisely the NeMo A/B that has never run.
 
 The underlying research is worth reading directly rather than through either summary:
 

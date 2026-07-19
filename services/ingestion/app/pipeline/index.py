@@ -37,10 +37,19 @@ def build_bulk_actions(
     doc_id: str,
     source_uri: str,
     sha256: str,
+    raw_sha256: str | None = None,
+    provenance: dict | None = None,
     index_name: str | None = None,
     created_at: str | None = None,
 ) -> list[dict]:
-    """Action/document pairs for the `_bulk` API, with deterministic `_id`s."""
+    """Action/document pairs for the `_bulk` API, with deterministic `_id`s.
+
+    Each chunk carries `raw_sha256` (the pre-parse raw-bytes gate's lookup key)
+    and `chunk_count` (the doc's total chunk count, identical on every chunk) so
+    the next upload can confirm a COMPLETE indexed copy exists without re-parsing.
+    `provenance` is the advisory parser summary (or `None` for the `.md`-local
+    path, which has none) — stored, never indexed, never gating.
+    """
     if len(chunks) != len(vectors):
         raise ValueError(
             f"chunks ({len(chunks)}) and vectors ({len(vectors)}) must align"
@@ -50,6 +59,7 @@ def build_bulk_actions(
     if created_at is None:
         created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    chunk_count = len(chunks)
     actions: list[dict] = []
     for i, (content, vector) in enumerate(zip(chunks, vectors)):
         actions.append({"index": {"_index": index_name, "_id": chunk_id(doc_id, i)}})
@@ -60,7 +70,10 @@ def build_bulk_actions(
                 "doc_id": doc_id,
                 "source_uri": source_uri,
                 "sha256": sha256,
+                "raw_sha256": raw_sha256,
                 "chunk_index": i,
+                "chunk_count": chunk_count,
+                "provenance": provenance,
                 "created_at": created_at,
             }
         )
@@ -74,6 +87,8 @@ def index_chunks(
     doc_id: str,
     source_uri: str,
     sha256: str,
+    raw_sha256: str | None = None,
+    provenance: dict | None = None,
     index: str | None = None,
     client=None,
 ) -> int:
@@ -96,6 +111,8 @@ def index_chunks(
         doc_id=doc_id,
         source_uri=source_uri,
         sha256=sha256,
+        raw_sha256=raw_sha256,
+        provenance=provenance,
         index_name=index,
     )
     response = client.bulk(body=actions, refresh="wait_for")

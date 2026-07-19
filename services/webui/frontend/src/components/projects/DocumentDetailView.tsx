@@ -20,21 +20,45 @@ interface Props {
     onBack: () => void;
 }
 
-type Kind = "pdf" | "markdown" | "other";
+// Render strategy for the left "View document" pane. `image`/`html` are the
+// browser-native previews the parser's new formats unlock; TIFF and the Office
+// types (.docx/.xlsx) have no native inline viewer, so they stay `other` (a
+// download) — their extracted text still shows in the right pane / Chunks tab.
+type Kind = "pdf" | "markdown" | "image" | "html" | "other";
+
+// PNG/JPEG render in an <img>; TIFF is deliberately excluded (no browser support).
+const INLINE_IMAGE_EXTS = [".png", ".jpg", ".jpeg"];
 
 function kindOf(filename: string): Kind {
     const lower = filename.toLowerCase();
     if (lower.endsWith(".pdf")) return "pdf";
     if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
+    if (INLINE_IMAGE_EXTS.some((ext) => lower.endsWith(ext))) return "image";
+    if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
     return "other";
+}
+
+/** Human-readable type for the Info tab, derived from the extension (finer than Kind). */
+function typeLabelOf(filename: string): string {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith(".pdf")) return "PDF";
+    if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "Markdown";
+    if (lower.endsWith(".html") || lower.endsWith(".htm")) return "HTML";
+    if (lower.endsWith(".docx")) return "Word document";
+    if (lower.endsWith(".xlsx") || lower.endsWith(".xlsm")) return "Excel spreadsheet";
+    if ([".png", ".jpg", ".jpeg", ".tif", ".tiff"].some((ext) => lower.endsWith(ext)))
+        return "Image";
+    return "File";
 }
 
 /**
  * Two-pane document detail: LEFT renders the original file (a native `<object>`
- * for PDFs — no pdfjs/heavy dep — or the fetched markdown; a download fallback
- * otherwise), RIGHT shows the ACTUAL indexed chunk text from the BFF. Both panes
- * are honest: the right pane shows an empty state when nothing was indexed, and
- * the left pane always offers a direct link when it cannot inline the file.
+ * for PDFs, an `<img>` for images, a sandboxed `<iframe>` for HTML, or the
+ * fetched markdown — all browser-native, no heavy viewer dep; a download
+ * fallback for Office/TIFF), RIGHT shows the ACTUAL indexed chunk text from the
+ * BFF. Both panes are honest: the right pane shows an empty state when nothing
+ * was indexed, and the left pane always offers a direct link when it cannot
+ * inline the file.
  */
 type Tab = "info" | "view" | "chunks" | "facts";
 
@@ -135,7 +159,7 @@ export function DocumentDetailView({ projectId, document, onBack }: Props) {
 
             {tab === "info" ? (
                 <div className="flex-1 overflow-auto px-8 py-6">
-                    <DocumentInfoTab kind={kind} document={document} />
+                    <DocumentInfoTab document={document} />
                 </div>
             ) : tab === "chunks" ? (
                 <div className="flex-1 overflow-auto px-8 py-6">
@@ -168,8 +192,8 @@ export function DocumentDetailView({ projectId, document, onBack }: Props) {
     );
 }
 
-function DocumentInfoTab({ kind, document }: { kind: Kind; document: BffDocument }) {
-    const typeLabel = kind === "pdf" ? "PDF" : kind === "markdown" ? "Markdown" : "File";
+function DocumentInfoTab({ document }: { document: BffDocument }) {
+    const typeLabel = typeLabelOf(document.filename);
     const sizeKb = (document.size_bytes / 1024).toFixed(1);
     const chunks = document.chunks_indexed ?? 0;
     const created = new Date(document.created_at).toLocaleString();
@@ -534,11 +558,38 @@ function SourcePane({
     if (kind === "markdown") {
         return <MarkdownSource fileUrl={fileUrl} />;
     }
+    if (kind === "image") {
+        return (
+            <div className="flex h-full items-center justify-center bg-neutral-50 p-4 dark:bg-neutral-900">
+                {/* User-uploaded image from the BFF origin; next/image adds no value for an
+                    arbitrary same-purpose blob and needs remote-host config. */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                    src={fileUrl}
+                    alt={filename}
+                    className="max-h-full max-w-full object-contain"
+                />
+            </div>
+        );
+    }
+    if (kind === "html") {
+        // Sandboxed with NO allow-scripts / allow-same-origin: uploaded HTML renders
+        // as static markup and cannot run JS or reach cookies/other-origin data.
+        return (
+            <iframe
+                src={fileUrl}
+                title={filename}
+                sandbox=""
+                className="h-full min-h-[24rem] w-full bg-white"
+            />
+        );
+    }
     return (
         <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
             <FileText className="size-8 text-muted-foreground/50" />
             <p className="text-sm text-muted-foreground">
-                No preview is available for this file type.
+                This file type can&apos;t be previewed inline. Its extracted text is in the
+                Chunks tab and the pane on the right.
             </p>
             <a
                 href={fileUrl}

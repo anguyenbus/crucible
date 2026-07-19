@@ -1,0 +1,62 @@
+[project]
+name = "parser"
+version = "0.1.0"
+description = "Document parser service: Docling (CPU) + per-page escalation to AWS Textract (default) / Bedrock VLM, isolated behind HTTP. Wraps the vendored parser_service package."
+# Target the reference's proven wheel resolution (Python >=3.11), NOT
+# monorepo-3.12. The parser shares code with references/doc-parser and nothing
+# with the monorepo; chasing 3.12 risks a torch/rapidocr wheel rabbit hole.
+requires-python = ">=3.11"
+dependencies = [
+    # HTTP boundary (mirrors services/ingestion)
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.12",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.6",
+    # Vendored parser_service stack. docling pulls docling-slim[standard], which
+    # provides rapidocr (OCR via rapidocr, per spec) + torch/torchvision.
+    # PINNED EXACT after the first successful `uv` resolve (see uv.lock); the
+    # reference itself instructs "pin after first successful run".
+    "docling==2.96.0",
+    "pypdfium2>=4.30",
+    "Pillow>=10.0",
+    "boto3>=1.34",
+    "pypdf>=6.14.2",
+    # torch/torchvision are docling-transitive, but uv's [tool.uv.sources] only
+    # binds to DIRECT deps — so we declare them here to route them to the CPU
+    # index below (version is left to docling's constraint). This is the only
+    # reason they appear in a service that never calls torch directly.
+    "torch",
+    "torchvision",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.27",
+]
+
+# CPU-only torch. Docling pulls torch/torchvision transitively; the default PyPI
+# Linux wheels bundle the full NVIDIA CUDA stack (nvidia-cublas/cudnn/… ≈ 4–5 GB)
+# that this CPU-by-design service never uses. Redirecting just these two packages
+# to PyTorch's CPU index installs the `+cpu` build, which has NO nvidia-* deps —
+# a fraction of the size and the correct artifact for a CPU parser. Everything
+# else still resolves from PyPI (index is `explicit`).
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Import both the app boundary (`app.*`) and the vendored package
+# (`parser_service.*`) from the service root.
+pythonpath = ["."]
+markers = [
+    "requires_aws: needs live AWS credentials; escalation (Textract/VLM) is mocked in the heavy suite, so most tests do not need this",
+    "offline_smoke: the network-blocked offline-startup smoke test; requires Docker and is run out-of-band, not in the unit run",
+]

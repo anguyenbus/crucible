@@ -75,7 +75,19 @@ def build_index_body(engine: str = "faiss") -> dict:
                 "doc_id": {"type": "keyword"},
                 "source_uri": {"type": "keyword"},
                 "sha256": {"type": "keyword"},
+                # The pre-parse raw-bytes dedup gate keys on `raw_sha256` (SHA-256
+                # of the fetched raw document bytes, doc_id-independent) and reads
+                # `chunk_count` (the doc's total chunk count, stamped identically on
+                # every chunk) to confirm a COMPLETE indexed copy before it fires —
+                # both must be exact-match aggregatable, so keyword/integer.
+                "raw_sha256": {"type": "keyword"},
                 "chunk_index": {"type": "integer"},
+                "chunk_count": {"type": "integer"},
+                # Advisory parser provenance (document confidence / route summary /
+                # escalation call counts / low-confidence page indices). It NEVER
+                # gates ingest and is NEVER searched, so it is stored in `_source`
+                # but not indexed.
+                "provenance": {"type": "object", "enabled": False},
                 "created_at": {"type": "date"},
             }
         },

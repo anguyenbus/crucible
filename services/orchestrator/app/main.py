@@ -45,6 +45,7 @@ from app.config import (
 )
 from app.observability import configure_tracer
 from app.routers.analyze import analyze_router
+from app.routers.compare import compare_router
 from app.routers.health import health_router
 from app.routers.query import query_router
 
@@ -202,4 +203,5 @@ app.add_exception_handler(OpenSearchNotReadyError, _handle_opensearch_not_ready)
 
 app.include_router(query_router)
 app.include_router(analyze_router)
+app.include_router(compare_router)
 app.include_router(health_router)

@@ -22,3 +22,101 @@ services:
 
     # Default command shows help
     command: ["--help"]
+
+  # Ingestion service — owns fetch + the pre-parse raw-bytes dedup gate, and
+  # routes every non-`.md` document through the parser's `POST /parse` over
+  # INGESTION_PARSER_URL (HTTP-only; ingestion NEVER imports the parser package,
+  # the same dependency firewall the BFF has to ingestion).
+  #
+  # AWS credentials — primary path is the host's ~/.aws mounted read-only plus
+  # AWS_PROFILE (mirrors the orchestrator service above). The instance role /
+  # profile needs es:ESHttp* on the domain, Bedrock InvokeModel for Titan, and
+  # s3:GetObject on source buckets. Host port published for dev convenience
+  # (ingestion is the east-west entry the BFF calls) — contrast with `parser`
+  # below, which publishes NO host port on purpose.
+  ingestion:
+    build:
+      context: ./services/ingestion
+    image: ingestion:latest
+    container_name: ingestion
+    ports:
+      - "8002:8000"
+    environment:
+      # Route non-`.md` parsing to the internal, east-west-only parser service.
+      - INGESTION_PARSER_URL=${INGESTION_PARSER_URL:-http://parser:8000}
+      # Optional OpenSearch endpoint override (default lives in app/config.py).
+      - INGESTION_OPENSEARCH_HOST=${INGESTION_OPENSEARCH_HOST:-}
+      # Pass-through: set AWS_PROFILE on the host when using the mounted ~/.aws;
+      # left unset, boto3 walks its standard chain. An empty value would be
+      # treated as a profile name.
+      - AWS_PROFILE
+      - AWS_REGION=${AWS_REGION:-ap-southeast-2}
+    volumes:
+      - ${HOME}/.aws:/root/.aws:ro
+    depends_on:
+      - parser
+    healthcheck:
+      test:
+        ["CMD", "python", "-c",
+         "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # Parser service (docling on CPU + per-page escalation to AWS Textract by
+  # default). Thin FastAPI over the vendored `parser_service` package.
+  #
+  # SECURITY INVARIANT — INTERNAL-ONLY / EAST-WEST, NEVER INGRESS-EXPOSED.
+  # This service deliberately publishes NO host port (`expose:` only, reachable
+  # solely on the internal compose network by other services). It has NO
+  # app-level auth, which is acceptable ONLY because it is east-west: a parser
+  # that accepts arbitrary bytes and bills Textract per page is a cost-bomb /
+  # DoS if reachable from ingress. Do NOT add a `ports:` mapping here — network
+  # isolation (compose network here / VPC+SG in prod) is the entire control.
+  parser:
+    build:
+      context: ./services/parser
+    image: parser:latest
+    container_name: parser
+    # Internal-only: exposed to the compose network, NOT published to the host.
+    expose:
+      - "8000"
+    environment:
+      # Escalation engine — Textract is the deterministic default (better dedup
+      # predictability than the non-deterministic VLM); `vlm` selectable via env.
+      - PARSER_ESCALATION_ENGINE=${PARSER_ESCALATION_ENGINE:-textract}
+      # Operational guardrails: page cap × concurrency IS the POC spend bound.
+      - PARSER_MAX_PAGES=${PARSER_MAX_PAGES:-100}
+      - PARSER_MAX_INPUT_MB=${PARSER_MAX_INPUT_MB:-50}
+      # Idle timeout (seconds between per-page frames), NOT a wall-clock total.
+      - PARSER_IDLE_TIMEOUT_SECONDS=${PARSER_IDLE_TIMEOUT_SECONDS:-120}
+      # Opt-in toggles default OFF ("OFF knowing why" — see README rollout note).
+      # PARSER_SCAN_FASTPATH is the first perf/cost knob to flip once the corpus
+      # is confirmed scan-heavy.
+      - PARSER_SCAN_FASTPATH=${PARSER_SCAN_FASTPATH:-off}
+      - PARSER_ESCALATION_ARBITRATION=${PARSER_ESCALATION_ARBITRATION:-off}
+      # PARSER_BUDGET_USD is DISABLED by default (advisory-only, never gates).
+      # Deliberately NOT set here so it stays unset (None); export it on the host
+      # only if you want the advisory cost-summary meter.
+      #   - PARSER_BUDGET_USD=...
+      # VLM model (used only when PARSER_ESCALATION_ENGINE=vlm).
+      - PARSER_VLM_MODEL=${PARSER_VLM_MODEL:-au.anthropic.claude-sonnet-4-6}
+      # AWS creds for Textract (+ optional VLM Bedrock) — same mechanism as
+      # ingestion/orchestrator: mounted ~/.aws + AWS_PROFILE. The parser is
+      # S3-IAM-free (it receives raw bytes over the wire) but still needs
+      # textract:AnalyzeDocument (and bedrock:InvokeModel when engine=vlm).
+      - AWS_PROFILE
+      - AWS_REGION=${AWS_REGION:-ap-southeast-2}
+    volumes:
+      - ${HOME}/.aws:/root/.aws:ro
+    healthcheck:
+      test:
+        ["CMD", "python", "-c",
+         "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped

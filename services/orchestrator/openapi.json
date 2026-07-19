@@ -78,6 +78,118 @@
         "title": "AnalyzeResponse",
         "type": "object"
       },
+      "CompareRequest": {
+        "description": "The two documents' text to cross-examine for contradictions.",
+        "properties": {
+          "document_a": {
+            "description": "Full text of the first document (e.g. joined chunk text).",
+            "minLength": 1,
+            "title": "Document A",
+            "type": "string"
+          },
+          "document_b": {
+            "description": "Full text of the second document (e.g. joined chunk text).",
+            "minLength": 1,
+            "title": "Document B",
+            "type": "string"
+          },
+          "label_a": {
+            "default": "Document A",
+            "description": "Human label for document A (e.g. its filename) used in prompts + output.",
+            "title": "Label A",
+            "type": "string"
+          },
+          "label_b": {
+            "default": "Document B",
+            "description": "Human label for document B (e.g. its filename) used in prompts + output.",
+            "title": "Label B",
+            "type": "string"
+          },
+          "pipeline_config": {
+            "default": "legal-rag-default-1.1.0",
+            "description": "Fully-qualified config ref pinning the generator model, e.g. 'legal-rag-default-1.8.0'. Only the generator model id + region are used.",
+            "title": "Pipeline Config",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_a",
+          "document_b"
+        ],
+        "title": "CompareRequest",
+        "type": "object"
+      },
+      "CompareResponse": {
+        "description": "The classified contradictions plus provenance for the caller.",
+        "properties": {
+          "contradictions": {
+            "description": "Genuine contradictions between the two documents (empty when they agree).",
+            "items": {
+              "$ref": "#/components/schemas/Contradiction"
+            },
+            "title": "Contradictions",
+            "type": "array"
+          },
+          "model_id": {
+            "description": "The Bedrock generator model id that produced this.",
+            "title": "Model Id",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "True when either document exceeded the cap and was truncated before analysis.",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "contradictions",
+          "model_id",
+          "truncated"
+        ],
+        "title": "CompareResponse",
+        "type": "object"
+      },
+      "Contradiction": {
+        "description": "One genuine contradiction between the two documents.\n\n``quote_a``/``quote_b`` are the EXACT conflicting spans from document A and\ndocument B respectively \u2014 verbatim source text, never a paraphrase, so the\nreader can see the conflict as each document states it.",
+        "properties": {
+          "description": {
+            "description": "One-sentence, plain-English statement of what actually conflicts.",
+            "title": "Description",
+            "type": "string"
+          },
+          "quote_a": {
+            "description": "The exact conflicting text as stated in document A.",
+            "title": "Quote A",
+            "type": "string"
+          },
+          "quote_b": {
+            "description": "The exact conflicting text as stated in document B.",
+            "title": "Quote B",
+            "type": "string"
+          },
+          "type": {
+            "description": "Which of the six contradiction categories this conflict is.",
+            "enum": [
+              "temporal",
+              "numerical",
+              "authority",
+              "process",
+              "policy_reversal",
+              "specificity"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "description",
+          "quote_a",
+          "quote_b"
+        ],
+        "title": "Contradiction",
+        "type": "object"
+      },
       "DependencyErrorResponse": {
         "description": "502/503 body: an upstream dependency failed (never a caller error).",
         "properties": {
@@ -523,6 +635,48 @@
         "summary": "Post Analyze",
         "tags": [
           "analyze"
+        ]
+      }
+    },
+    "/compare": {
+      "post": {
+        "description": "Detect contradictions between two documents (non-RAG, decompose-then-verify).\n\nPins the SAME generator model + region as ``/query`` via ``pipeline_config``,\ndecomposes each document into atomic quoted claims, then cross-examines the\ntwo claim sets into a typed, quote-backed contradiction list.",
+        "operationId": "post_compare_compare_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompareResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Compare",
+        "tags": [
+          "compare"
         ]
       }
     },

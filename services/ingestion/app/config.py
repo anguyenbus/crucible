@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     knn_weight: float = 0.5
     keyword_weight: float = 0.5
 
+    # Parser service (docling + Textract, isolated behind HTTP). Ingestion routes
+    # every non-`.md` document through the parser's `POST /parse` over this URL and
+    # NEVER imports the parser package (the same firewall the BFF has to ingestion).
+    # The compose default targets the internal, east-west-only `parser` service.
+    parser_url: str = "http://parser:8000"
+
     # Standard AWS variables stay unprefixed
     aws_region: str = Field(default="ap-southeast-2", validation_alias="AWS_REGION")
 

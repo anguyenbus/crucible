@@ -279,3 +279,60 @@ export function analyzeDocument(
         fetchImpl,
     );
 }
+
+/** The six contradiction categories (mirrors the BFF/orchestrator taxonomy). */
+export type ContradictionType =
+    | "temporal"
+    | "numerical"
+    | "authority"
+    | "process"
+    | "policy_reversal"
+    | "specificity";
+
+/**
+ * One classified contradiction between two documents. `quote_a`/`quote_b` are
+ * the EXACT conflicting spans from each document (verbatim, never paraphrased).
+ */
+export interface BffContradiction {
+    type: ContradictionType;
+    description: string;
+    quote_a: string;
+    quote_b: string;
+}
+
+/**
+ * The contradiction report between two documents, produced on demand by the
+ * orchestrator's non-RAG `/compare` (decompose-then-verify) over both documents'
+ * indexed text. An empty `contradictions` list is an honest "the documents
+ * agree" result. `truncated` flags that either document was shortened to the cap.
+ */
+export interface BffDocumentComparison {
+    document_a: string;
+    document_b: string;
+    contradictions: BffContradiction[];
+    model_id: string;
+    truncated: boolean;
+}
+
+/**
+ * Cross-examine two of a project's documents for contradictions (on demand).
+ * This BLOCKS on a multi-call LLM pipeline, so it can take a while; comparing a
+ * document with itself is a typed `BffError` (400), and a document that never
+ * indexed is a 422 — never a fabricated empty result.
+ */
+export function compareDocuments(
+    projectId: string,
+    docIdA: string,
+    docIdB: string,
+    fetchImpl: typeof fetch = fetch,
+): Promise<BffDocumentComparison> {
+    return request<BffDocumentComparison>(
+        `/projects/${encodeURIComponent(projectId)}/compare`,
+        {
+            method: "POST",
+            headers: jsonHeaders,
+            body: JSON.stringify({ document_id_a: docIdA, document_id_b: docIdB }),
+        },
+        fetchImpl,
+    );
+}

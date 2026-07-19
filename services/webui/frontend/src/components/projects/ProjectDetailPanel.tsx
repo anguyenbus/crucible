@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, GitCompare, Plus, Trash2 } from "lucide-react";
 import {
     deleteDocument,
     getProject,
@@ -12,6 +12,7 @@ import {
 import { describeStatus, isInProgress } from "@/lib/documentStatus";
 import { DocumentStatusBadge } from "./DocumentStatusBadge";
 import { AddDocumentsModal } from "./AddDocumentsModal";
+import { CompareDocumentsView } from "./CompareDocumentsView";
 import { DocumentDetailView } from "./DocumentDetailView";
 import { ProjectChat } from "./ProjectChat";
 
@@ -39,6 +40,7 @@ export function ProjectDetailPanel({
     const [error, setError] = useState<string | null>(null);
     const [addOpen, setAddOpen] = useState(false);
     const [selectedDocument, setSelectedDocument] = useState<BffDocument | null>(null);
+    const [comparing, setComparing] = useState(false);
     const [tab, setTab] = useState<Tab>("info");
     const [actionError, setActionError] = useState<string | null>(null);
 
@@ -130,6 +132,16 @@ export function ProjectDetailPanel({
         );
     }
 
+    if (comparing) {
+        return (
+            <CompareDocumentsView
+                projectId={projectId}
+                documents={documents}
+                onBack={() => setComparing(false)}
+            />
+        );
+    }
+
     return (
         <div className="flex flex-1 flex-col overflow-hidden">
             <div className="flex items-center gap-3 px-8 py-4">
@@ -191,6 +203,7 @@ export function ProjectDetailPanel({
                         documents={documents}
                         actionError={actionError}
                         onUploadClick={() => setAddOpen(true)}
+                        onCompareClick={() => setComparing(true)}
                         onSelect={setSelectedDocument}
                         onDelete={handleDelete}
                     />
@@ -263,15 +276,19 @@ function DocumentsTab({
     documents,
     actionError,
     onUploadClick,
+    onCompareClick,
     onSelect,
     onDelete,
 }: {
     documents: BffDocument[];
     actionError: string | null;
     onUploadClick: () => void;
+    onCompareClick: () => void;
     onSelect: (document: BffDocument) => void;
     onDelete: (documentId: string) => void;
 }) {
+    // Contradiction comparison needs two documents with extracted text.
+    const indexedCount = documents.filter((d) => d.status === "indexed").length;
     return (
         <div>
             {actionError && (
@@ -279,7 +296,21 @@ function DocumentsTab({
                     {actionError}
                 </p>
             )}
-            <div className="mb-4 flex justify-end">
+            <div className="mb-4 flex justify-end gap-2">
+                <button
+                    type="button"
+                    onClick={onCompareClick}
+                    disabled={indexedCount < 2}
+                    title={
+                        indexedCount < 2
+                            ? "Index at least two documents to compare them"
+                            : undefined
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                    <GitCompare className="size-4" />
+                    Compare Documents for Contradiction
+                </button>
                 <button
                     type="button"
                     onClick={onUploadClick}
