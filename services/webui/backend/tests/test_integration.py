@@ -15,17 +15,20 @@ from app import ingest_client
 def test_failed_upload_status_is_persisted_across_requests(client, monkeypatch):
     project_id = client.post("/projects", json={"name": "P"}).json()["id"]
 
-    def _fail(source, ingestion_url, index=None):
+    def _fail(source, ingestion_url, index=None, *, on_phase):
         raise ingest_client.IngestionError(502, "ingestion unreachable at http://x/ingest")
 
-    monkeypatch.setattr(documents_api.ingest_client, "ingest", _fail)
+    monkeypatch.setattr(documents_api.ingest_client, "ingest_stream", _fail)
 
     upload = client.post(
         f"/projects/{project_id}/documents",
         files={"file": ("k.md", b"# k", "text/markdown")},
     )
     document_id = upload.json()["id"]
-    assert upload.json()["status"] == "failed"
+    # Upload is now async: the immediate response is the accepted, queued record;
+    # the background job (run inline by TestClient) persists the failure.
+    assert upload.status_code == 202
+    assert upload.json()["status"] == "pending"
 
     # A fresh GET (new request/connection) still sees the persisted failure.
     fetched = client.get(f"/projects/{project_id}/documents/{document_id}")

@@ -78,11 +78,12 @@ describe("bff client requests", () => {
         expect(calls[3]).toMatchObject({ url: "http://bff.test:8002/projects/p1", init: { method: "DELETE" } });
     });
 
-    it("uploads markdown as multipart to the project documents endpoint", async () => {
+    it("uploads markdown as multipart and returns the accepted queued doc (202)", async () => {
         let captured: { url: string; init: RequestInit } | null = null;
         const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
             captured = { url, init };
-            return okJson(baseDocument({ status: "indexed" }), 201);
+            // Async ingest: the BFF accepts the upload and returns a queued doc.
+            return okJson(baseDocument({ status: "pending", phase: "queued" }), 202);
         }) as unknown as typeof fetch;
 
         const file = new File(["# Hello"], "note.md", { type: "text/markdown" });
@@ -92,7 +93,8 @@ describe("bff client requests", () => {
         expect(captured!.init.method).toBe("POST");
         expect(captured!.init.body).toBeInstanceOf(FormData);
         expect((captured!.init.body as FormData).get("file")).toBeInstanceOf(File);
-        expect(doc.status).toBe("indexed");
+        expect(doc.status).toBe("pending");
+        expect(doc.phase).toBe("queued");
     });
 
     it("throws a typed BffError carrying the real detail on a non-2xx", async () => {
@@ -191,11 +193,50 @@ describe("honest per-document status mapping", () => {
         expect(view.detail).toBe("Bedrock upstream failure");
     });
 
-    it("shows an honest blocking state while ingest is pending (no fake progress)", () => {
-        const view = describeStatus(baseDocument({ status: "pending" }));
+    it("falls back to a generic blocking state for a pending doc with no phase yet", () => {
+        const view = describeStatus(baseDocument({ status: "pending", phase: null }));
         expect(view.blocking).toBe(true);
         expect(view.detail).toBe(SYNCHRONOUS_INGEST_LABEL);
         // No fabricated percentage / progress number anywhere in the copy.
         expect(view.detail).not.toMatch(/\d+\s*%/);
+    });
+
+    it("renders the live phase for a pending doc (label + detail, still blocking)", () => {
+        const view = describeStatus(baseDocument({ status: "pending", phase: "parsing" }));
+        expect(view.tone).toBe("pending");
+        expect(view.blocking).toBe(true);
+        expect(view.label).toBe("Parsing…");
+        expect(view.detail).toBe("Parsing…");
+    });
+
+    it("shows real embedding sub-progress (chunk i of N — the service's own count)", () => {
+        const view = describeStatus(
+            baseDocument({
+                status: "pending",
+                phase: "embedding",
+                phase_current: 3,
+                phase_total: 8,
+            }),
+        );
+        expect(view.label).toBe("Embedding…");
+        expect(view.detail).toBe("Embedding chunk 3 of 8…");
+        // It is a real i/N count, not a fabricated percentage bar.
+        expect(view.detail).not.toMatch(/\d+\s*%/);
+    });
+
+    it("degrades gracefully if embedding counters are missing", () => {
+        const view = describeStatus(baseDocument({ status: "pending", phase: "embedding" }));
+        expect(view.detail).toBe("Embedding…");
+    });
+
+    it("humanizes an unknown phase from a newer ingestion (no 'undefined')", () => {
+        // Forward-compat: a phase this UI doesn't know is titled, not broken.
+        const view = describeStatus(
+            baseDocument({ status: "pending", phase: "reranking" as never }),
+        );
+        expect(view.blocking).toBe(true);
+        expect(view.label).toBe("Reranking…");
+        expect(view.detail).toBe("Reranking…");
+        expect(view.detail).not.toMatch(/undefined/);
     });
 });

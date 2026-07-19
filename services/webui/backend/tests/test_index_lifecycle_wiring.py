@@ -15,12 +15,12 @@ def _capture_ingest(monkeypatch):
     """Capture the `index` passed to ingestion; return a recorder dict."""
     captured: dict = {}
 
-    def _fake(source, ingestion_url, index=None):
+    def _fake(source, ingestion_url, index=None, *, on_phase):
         captured["source"] = source
         captured["index"] = index
         return ingest_client.IngestResult("d", "s", 3, False)
 
-    monkeypatch.setattr(documents_api.ingest_client, "ingest", _fake)
+    monkeypatch.setattr(documents_api.ingest_client, "ingest_stream", _fake)
     return captured
 
 
@@ -49,7 +49,7 @@ def test_markdown_upload_routes_to_ingest_with_the_index_target(client, monkeypa
         files={"file": ("doc.md", b"# Title\n\nBody.", "text/markdown")},
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 202
     assert captured["index"] == f"proj-{project_id}"
 
 
@@ -63,8 +63,11 @@ def test_pdf_upload_is_accepted_and_routes_with_the_index_target(client, monkeyp
         files={"file": ("report.pdf", b"%PDF-1.4 fake", "application/pdf")},
     )
 
-    assert response.status_code == 201
-    assert response.json()["status"] == "indexed"
+    assert response.status_code == 202
+    # The background job (TestClient runs it inline) drove the row to indexed.
+    doc_id = response.json()["id"]
+    docs = client.get(f"/projects/{project_id}/documents").json()
+    assert next(d for d in docs if d["id"] == doc_id)["status"] == "indexed"
     assert captured["index"] == f"proj-{project_id}"
 
 
@@ -74,7 +77,7 @@ def test_unsupported_type_still_rejected_before_storing(client, monkeypatch):
     def _boom(*args, **kwargs):
         raise AssertionError("must not reach ingestion for a rejected upload")
 
-    monkeypatch.setattr(documents_api.ingest_client, "ingest", _boom)
+    monkeypatch.setattr(documents_api.ingest_client, "ingest_stream", _boom)
 
     response = client.post(
         f"/projects/{project_id}/documents",

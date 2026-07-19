@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS documents (
     size_bytes     INTEGER NOT NULL,
     storage_uri    TEXT NOT NULL,
     status         TEXT NOT NULL,
+    phase          TEXT,
+    phase_current  INTEGER,
+    phase_total    INTEGER,
     ingest_doc_id  TEXT,
     sha256         TEXT,
     chunks_indexed INTEGER,
@@ -58,6 +61,11 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Async uploads run each ingest in its own background task with its own
+    # connection, so several writers now contend for the single-writer DB.
+    # busy_timeout makes a writer WAIT (up to 5s) for the lock instead of
+    # failing immediately with "database is locked" on a concurrent phase write.
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
@@ -76,12 +84,31 @@ def _migrate_index_name(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_document_phase(conn: sqlite3.Connection) -> None:
+    """Add the async-upload progress columns to `documents` if absent (idempotent).
+
+    A pre-async database created `documents` without live-progress columns; add
+    `phase` (queued/parsing/chunking/embedding/indexing while `status='pending'`)
+    and the embedding sub-counters `phase_current`/`phase_total` with guarded
+    `ALTER TABLE`s so existing databases gain them without a manual step. Older
+    rows are already terminal, so a NULL phase is the correct backfill (no UPDATE).
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+    if "phase" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN phase TEXT")
+    if "phase_current" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN phase_current INTEGER")
+    if "phase_total" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN phase_total INTEGER")
+
+
 def init_db(db_path: str) -> None:
     """Create the schema if absent. Safe to run on every startup (idempotent)."""
     conn = connect(db_path)
     try:
         conn.executescript(_SCHEMA)
         _migrate_index_name(conn)
+        _migrate_document_phase(conn)
         conn.commit()
     finally:
         conn.close()

@@ -131,6 +131,9 @@ def _row_to_document(row: sqlite3.Row) -> DocumentRecord:
         size_bytes=row["size_bytes"],
         storage_uri=row["storage_uri"],
         status=DocumentStatus(row["status"]),
+        phase=row["phase"],
+        phase_current=row["phase_current"],
+        phase_total=row["phase_total"],
         ingest_doc_id=row["ingest_doc_id"],
         sha256=row["sha256"],
         chunks_indexed=row["chunks_indexed"],
@@ -149,17 +152,30 @@ def create_document(
     size_bytes: int,
     storage_uri: str,
     status: DocumentStatus = DocumentStatus.pending,
+    phase: str | None = "queued",
 ) -> DocumentRecord:
+    """Insert a document. A `pending` upload starts life `phase='queued'` (the
+    background ingest job overwrites the phase as it progresses)."""
     now = _now()
     document_id = _new_id()
     conn.execute(
         """
         INSERT INTO documents
-            (id, project_id, filename, size_bytes, storage_uri, status,
+            (id, project_id, filename, size_bytes, storage_uri, status, phase,
              created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (document_id, project_id, filename, size_bytes, storage_uri, status.value, now, now),
+        (
+            document_id,
+            project_id,
+            filename,
+            size_bytes,
+            storage_uri,
+            status.value,
+            phase,
+            now,
+            now,
+        ),
     )
     conn.commit()
     return get_document(conn, project_id, document_id)  # type: ignore[return-value]
@@ -183,6 +199,30 @@ def get_document(
     return None if row is None else _row_to_document(row)
 
 
+def update_document_phase(
+    conn: sqlite3.Connection,
+    document_id: str,
+    *,
+    phase: str,
+    phase_current: int | None = None,
+    phase_total: int | None = None,
+) -> None:
+    """Record the live ingestion step for a still-`pending` document.
+
+    Called from the background ingest job as each SSE phase arrives; the status
+    stays `pending` and only the progress columns move. `phase_current`/
+    `phase_total` are the embedding chunk counters (NULL for other phases)."""
+    conn.execute(
+        """
+        UPDATE documents
+        SET phase = ?, phase_current = ?, phase_total = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (phase, phase_current, phase_total, _now(), document_id),
+    )
+    conn.commit()
+
+
 def update_document_result(
     conn: sqlite3.Connection,
     document_id: str,
@@ -195,10 +235,15 @@ def update_document_result(
     failure_reason: str | None = None,
     failure_code: int | None = None,
 ) -> None:
+    """Write the TERMINAL result and clear the live-progress columns.
+
+    Any terminal status (indexed/skipped/failed) means ingestion is done, so
+    `phase`/`phase_current`/`phase_total` are reset to NULL in the same write."""
     conn.execute(
         """
         UPDATE documents
-        SET status = ?, ingest_doc_id = ?, sha256 = ?, chunks_indexed = ?,
+        SET status = ?, phase = NULL, phase_current = NULL, phase_total = NULL,
+            ingest_doc_id = ?, sha256 = ?, chunks_indexed = ?,
             skipped = ?, failure_reason = ?, failure_code = ?, updated_at = ?
         WHERE id = ?
         """,

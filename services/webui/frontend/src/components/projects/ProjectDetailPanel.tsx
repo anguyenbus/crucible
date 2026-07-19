@@ -9,7 +9,7 @@ import {
     type BffError,
     type BffProjectDetail,
 } from "@/lib/bff";
-import { describeStatus } from "@/lib/documentStatus";
+import { describeStatus, isInProgress } from "@/lib/documentStatus";
 import { DocumentStatusBadge } from "./DocumentStatusBadge";
 import { AddDocumentsModal } from "./AddDocumentsModal";
 import { DocumentDetailView } from "./DocumentDetailView";
@@ -23,6 +23,10 @@ interface Props {
 }
 
 type Tab = "info" | "documents" | "chat";
+
+// How often to poll the document list while any upload is still ingesting.
+// Phases (parsing → chunking → embedding → indexing) advance on this cadence.
+const POLL_INTERVAL_MS = 1500;
 
 export function ProjectDetailPanel({
     projectId,
@@ -55,6 +59,28 @@ export function ProjectDetailPanel({
     useEffect(() => {
         void load();
     }, [load]);
+
+    // Silent re-fetch (no "Loading…" flash) used by the progress poller. A
+    // transient failure is swallowed — the next tick retries and the initial
+    // `load` owns the hard-error UI.
+    const refresh = useCallback(async () => {
+        try {
+            const data = await getProject(projectId);
+            setDetail(data);
+            onDocumentCountChange(projectId, data.document_count);
+        } catch {
+            /* keep last known state; next poll retries */
+        }
+    }, [projectId, onDocumentCountChange]);
+
+    // Poll the document list ONLY while an upload is mid-ingest; the interval is
+    // torn down as soon as every document reaches a terminal status (or unmount).
+    const hasPending = (detail?.documents ?? []).some(isInProgress);
+    useEffect(() => {
+        if (!hasPending) return;
+        const timer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
+        return () => clearInterval(timer);
+    }, [hasPending, refresh]);
 
     function handleUploaded(document: BffDocument) {
         setDetail((prev) =>

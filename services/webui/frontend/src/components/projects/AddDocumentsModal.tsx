@@ -8,14 +8,15 @@
  * ingestion (pypdf) — DOCX/image/OCR remain out of scope. Donna's
  * standalone-document browser, addDocumentToProject, owner-only delete
  * warnings, and file directory are all out of scope and dropped. Ingestion is
- * SYNCHRONOUS, so the upload BLOCKS — the modal shows an honest blocking state,
- * never a fabricated progress bar.
+ * ASYNCHRONOUS: selected files are uploaded CONCURRENTLY, each returns a queued
+ * document immediately, and the modal closes — per-document progress
+ * (parsing → chunking → embedding → indexing) then streams into the list, which
+ * polls until every upload is terminal.
  */
 
 import { useRef, useState } from "react";
 import { Upload, Loader2, X } from "lucide-react";
 import { uploadDocument, type BffDocument, type BffError } from "@/lib/bff";
-import { SYNCHRONOUS_INGEST_LABEL } from "@/lib/documentStatus";
 
 // Mirrors the BFF's _SUPPORTED_EXTENSIONS (services/webui/backend/app/api/documents.py).
 const UPLOAD_ACCEPT = ".md,.markdown,.pdf";
@@ -56,16 +57,28 @@ export function AddDocumentsModal({ open, projectId, onClose, onUploaded }: Prop
 
         setUploading(true);
         setError("");
-        try {
-            for (const file of supported) {
-                const document = await uploadDocument(projectId, file);
-                onUploaded(document);
+        // Upload every file CONCURRENTLY; each resolves fast with a queued doc
+        // (ingestion runs in the background). One file's failure never blocks
+        // the others — only immediate rejections (type/size) surface here.
+        const results = await Promise.allSettled(
+            supported.map((file) => uploadDocument(projectId, file)),
+        );
+        setUploading(false);
+
+        const failures: string[] = [];
+        for (const result of results) {
+            if (result.status === "fulfilled") {
+                onUploaded(result.value);
+            } else {
+                failures.push((result.reason as BffError).detail || "Upload failed");
             }
+        }
+
+        if (failures.length > 0) {
+            // Keep the modal open so the user sees which uploads were rejected.
+            setError(failures.join(" "));
+        } else {
             onClose();
-        } catch (err) {
-            setError((err as BffError).detail || "Upload failed");
-        } finally {
-            setUploading(false);
         }
     }
 
@@ -88,9 +101,9 @@ export function AddDocumentsModal({ open, projectId, onClose, onUploaded }: Prop
 
                 <div className="px-6 pb-6">
                     <p className="text-xs text-muted-foreground">
-                        The file is stored and ingested synchronously — this
-                        blocks until ingestion finishes and reports the real
-                        result (indexed, dedup-skipped, or failed).
+                        Pick one or more files — they upload at once and ingest
+                        in the background. Each document then shows live progress
+                        (parsing → chunking → embedding → indexing) in the list.
                     </p>
 
                     <input
@@ -112,7 +125,7 @@ export function AddDocumentsModal({ open, projectId, onClose, onUploaded }: Prop
                         ) : (
                             <Upload className="size-4" />
                         )}
-                        {uploading ? SYNCHRONOUS_INGEST_LABEL : "Choose a .md or .pdf file"}
+                        {uploading ? "Uploading…" : "Choose .md or .pdf files"}
                     </button>
 
                     {error && <p className="mt-3 text-sm text-destructive">{error}</p>}

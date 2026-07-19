@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api import ingest as ingest_module
 from app.main import create_app
+from app.pipeline import run as run_module
 from app.pipeline.parse import NoExtractableTextError, extract_pdf_text, extract_text
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -35,9 +35,11 @@ def mock_downstream(monkeypatch):
     def fake_dedup(doc_id, sha256, expected_chunk_count, index=None):
         return False
 
-    def fake_embed(chunks):
-        calls.append(("embed", list(chunks)))
-        return [[0.1] * 1024 for _ in chunks]
+    def fake_embed_iter(chunks):
+        chunks = list(chunks)
+        calls.append(("embed", chunks))
+        for _ in chunks:
+            yield [0.1] * 1024
 
     def fake_index(chunks, vectors, *, doc_id, source_uri, sha256, index=None):
         calls.append(("index", doc_id, len(chunks), index))
@@ -46,16 +48,16 @@ def mock_downstream(monkeypatch):
     def fake_prune(doc_id, *, keep_sha256, index=None):
         return 0
 
-    monkeypatch.setattr(ingest_module, "is_complete_duplicate", fake_dedup)
-    monkeypatch.setattr(ingest_module, "embed_texts", fake_embed)
-    monkeypatch.setattr(ingest_module, "index_chunks", fake_index)
-    monkeypatch.setattr(ingest_module, "prune_stale_chunks", fake_prune)
+    monkeypatch.setattr(run_module, "is_complete_duplicate", fake_dedup)
+    monkeypatch.setattr(run_module, "embed_texts_iter", fake_embed_iter)
+    monkeypatch.setattr(run_module, "index_chunks", fake_index)
+    monkeypatch.setattr(run_module, "prune_stale_chunks", fake_prune)
     return calls
 
 
 def test_pdf_source_parses_to_text_then_chunks_and_indexes(client, mock_downstream, monkeypatch):
     """A `.pdf` source is pypdf-parsed to text and yields non-empty indexed chunks."""
-    monkeypatch.setattr(ingest_module, "fetch_bytes", lambda source: TEXT_PDF)
+    monkeypatch.setattr(run_module, "fetch_bytes", lambda source: TEXT_PDF)
 
     response = client.post(
         "/ingest", json={"source": "s3://bucket/report.pdf", "index": "proj-x"}
@@ -74,7 +76,7 @@ def test_pdf_source_parses_to_text_then_chunks_and_indexes(client, mock_downstre
 def test_markdown_path_is_unchanged(client, mock_downstream, monkeypatch):
     """REQUIRED regression: a `.md` source still UTF-8-decodes and chunks/embeds."""
     monkeypatch.setattr(
-        ingest_module, "fetch_bytes", lambda source: MARKDOWN.encode("utf-8")
+        run_module, "fetch_bytes", lambda source: MARKDOWN.encode("utf-8")
     )
 
     response = client.post("/ingest", json={"source": "s3://bucket/guide.md"})
@@ -86,7 +88,7 @@ def test_markdown_path_is_unchanged(client, mock_downstream, monkeypatch):
 
 def test_scanned_pdf_with_no_text_fails_with_typed_422(client, mock_downstream, monkeypatch):
     """A no-extractable-text PDF returns a typed 422 — never a silent empty index."""
-    monkeypatch.setattr(ingest_module, "fetch_bytes", lambda source: NOTEXT_PDF)
+    monkeypatch.setattr(run_module, "fetch_bytes", lambda source: NOTEXT_PDF)
 
     response = client.post("/ingest", json={"source": "s3://bucket/scanned.pdf"})
 

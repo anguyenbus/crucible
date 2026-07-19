@@ -4,9 +4,10 @@ import type { BffDocument } from "@/lib/bff";
 
 /*
  * Honest per-document ingestion status. Colour is the only decoration; the label
- * and detail come straight from real BFF fields (chunks indexed / dedup skip /
- * failure reason). There is NO progress bar — a pending row is an honest
- * blocking state while the synchronous ingest runs.
+ * and detail come straight from real BFF fields (live phase / chunks indexed /
+ * dedup skip / failure reason). A pending row shows the current ingestion phase
+ * (e.g. "Embedding…") with a pulsing dot — the phase is the service's own,
+ * polled from the BFF, never a fabricated progress bar.
  */
 
 const TONE_CLASSES: Record<StatusTone, string> = {

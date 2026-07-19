@@ -51,6 +51,94 @@ def test_project_and_document_round_trip(tmp_path):
     conn.close()
 
 
+def test_document_defaults_to_queued_phase(tmp_path):
+    db_path = str(tmp_path / "webui.db")
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        project = store.create_project(conn, "P")
+        doc = store.create_document(
+            conn,
+            project_id=project.id,
+            filename="a.md",
+            size_bytes=10,
+            storage_uri="/tmp/a.md",
+        )
+        # A fresh pending upload starts life queued for the background job.
+        assert doc.status == DocumentStatus.pending
+        assert doc.phase == "queued"
+        assert doc.phase_current is None and doc.phase_total is None
+    finally:
+        conn.close()
+
+
+def test_update_phase_then_result_clears_progress(tmp_path):
+    db_path = str(tmp_path / "webui.db")
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        project = store.create_project(conn, "P")
+        doc = store.create_document(
+            conn,
+            project_id=project.id,
+            filename="a.md",
+            size_bytes=10,
+            storage_uri="/tmp/a.md",
+        )
+
+        # Live embedding progress lands and is readable (what a poll would see).
+        store.update_document_phase(
+            conn, doc.id, phase="embedding", phase_current=3, phase_total=8
+        )
+        mid = store.get_document(conn, project.id, doc.id)
+        assert mid.status == DocumentStatus.pending
+        assert (mid.phase, mid.phase_current, mid.phase_total) == ("embedding", 3, 8)
+
+        # The terminal write clears every progress column in the same update.
+        store.update_document_result(
+            conn,
+            doc.id,
+            status=DocumentStatus.indexed,
+            ingest_doc_id="d",
+            sha256="s",
+            chunks_indexed=8,
+            skipped=False,
+        )
+        final = store.get_document(conn, project.id, doc.id)
+        assert final.status == DocumentStatus.indexed
+        assert final.phase is None
+        assert final.phase_current is None and final.phase_total is None
+    finally:
+        conn.close()
+
+
+def test_unknown_phase_from_newer_ingestion_reads_without_error(tmp_path):
+    """A phase this BFF version doesn't know must pass through, never 500 a read.
+
+    Guards the cross-service contract: an independently-deployed ingestion could
+    emit a new phase; the stored `phase` is typed `str`, so the document read
+    tolerates it instead of failing Pydantic validation.
+    """
+    db_path = str(tmp_path / "webui.db")
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        project = store.create_project(conn, "P")
+        doc = store.create_document(
+            conn,
+            project_id=project.id,
+            filename="a.md",
+            size_bytes=10,
+            storage_uri="/tmp/a.md",
+        )
+        store.update_document_phase(conn, doc.id, phase="reranking")  # unknown here
+        read = store.get_document(conn, project.id, doc.id)
+        assert read.phase == "reranking"
+        assert read.status == DocumentStatus.pending
+    finally:
+        conn.close()
+
+
 def test_delete_project_cascades_documents(tmp_path):
     db_path = str(tmp_path / "webui.db")
     init_db(db_path)

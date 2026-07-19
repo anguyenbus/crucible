@@ -23,10 +23,20 @@ The document-detail view adds two READ endpoints:
 from pathlib import PurePosixPath
 from sqlite3 import Connection
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
 
 from app import analyze_client, index_client, ingest_client, storage, store
 from app.config import get_settings
+from app.db import connect
 from app.deps import get_conn
 from app.schemas import (
     AnalyzeMode,
@@ -248,16 +258,90 @@ def delete_document(
         )
 
 
+def _run_ingest_job(
+    *,
+    document_id: str,
+    storage_uri: str,
+    index_name: str,
+    ingestion_url: str,
+    db_path: str,
+) -> None:
+    """Background worker: stream ingestion, recording each phase, then the result.
+
+    Runs AFTER the upload response is sent (FastAPI `BackgroundTasks`), so it
+    opens its OWN short-lived connection — the request-scoped one is already
+    closed. Every event moves the document's live `phase`; the terminal `done`
+    persists `indexed`/`skipped` and a typed `IngestionError` persists `failed`
+    (never an unhandled crash — the row must always reach a terminal status).
+    """
+    conn = connect(db_path)
+    try:
+
+        def on_phase(event: dict) -> None:
+            store.update_document_phase(
+                conn,
+                document_id,
+                phase=event["phase"],
+                phase_current=event.get("current"),
+                phase_total=event.get("total"),
+            )
+
+        try:
+            result = ingest_client.ingest_stream(
+                storage_uri, ingestion_url, index=index_name, on_phase=on_phase
+            )
+        except ingest_client.IngestionError as exc:
+            store.update_document_result(
+                conn,
+                document_id,
+                status=DocumentStatus.failed,
+                failure_reason=exc.message,
+                failure_code=exc.status_code,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 — never leave a doc stuck pending
+            store.update_document_result(
+                conn,
+                document_id,
+                status=DocumentStatus.failed,
+                failure_reason=f"unexpected ingestion error: {exc}",
+                failure_code=500,
+            )
+            return
+
+        store.update_document_result(
+            conn,
+            document_id,
+            status=DocumentStatus.skipped if result.skipped else DocumentStatus.indexed,
+            ingest_doc_id=result.doc_id,
+            sha256=result.sha256,
+            chunks_indexed=result.chunks_indexed,
+            skipped=result.skipped,
+        )
+    finally:
+        conn.close()
+
+
 @router.post(
     "/{project_id}/documents",
     response_model=DocumentRecord,
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 def upload_document(
     project_id: str,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     conn: Connection = Depends(get_conn),
 ) -> DocumentRecord:
+    """Accept ONE upload and ingest it ASYNCHRONOUSLY (returns 202 immediately).
+
+    Cheap, deterministic rejections stay synchronous (unsupported type / over the
+    size limit → 400). Otherwise the bytes are stored, a `pending`/`queued`
+    document row is created, and the ingest runs in a background job that streams
+    per-phase progress into the row. The client uploads multiple files by firing
+    several of these requests concurrently and POLLS `GET .../documents` until
+    each row reaches a terminal status.
+    """
     project = _require_project(conn, project_id)
 
     if not _is_supported(file):
@@ -285,29 +369,16 @@ def upload_document(
         size_bytes=len(data),
         storage_uri=storage_uri,
         status=DocumentStatus.pending,
+        phase="queued",
     )
 
-    try:
-        result = ingest_client.ingest(
-            storage_uri, get_settings().ingestion_url, index=project.index_name
-        )
-    except ingest_client.IngestionError as exc:
-        store.update_document_result(
-            conn,
-            document.id,
-            status=DocumentStatus.failed,
-            failure_reason=exc.message,
-            failure_code=exc.status_code,
-        )
-    else:
-        store.update_document_result(
-            conn,
-            document.id,
-            status=DocumentStatus.skipped if result.skipped else DocumentStatus.indexed,
-            ingest_doc_id=result.doc_id,
-            sha256=result.sha256,
-            chunks_indexed=result.chunks_indexed,
-            skipped=result.skipped,
-        )
+    background_tasks.add_task(
+        _run_ingest_job,
+        document_id=document.id,
+        storage_uri=storage_uri,
+        index_name=project.index_name,
+        ingestion_url=get_settings().ingestion_url,
+        db_path=get_settings().db_path,
+    )
 
-    return store.get_document(conn, project_id, document.id)  # type: ignore[return-value]
+    return document

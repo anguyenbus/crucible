@@ -3,8 +3,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api import ingest as ingest_module
 from app.main import create_app
+from app.pipeline import run as run_module
 from app.pipeline.fetch import InvalidSourceError, SourceNotFoundError
 from app.pipeline.hash_dedup import content_sha256, derive_doc_id, is_complete_duplicate
 from app.pipeline.index import BulkIndexError, prune_stale_chunks
@@ -34,9 +34,11 @@ def pipeline_calls(monkeypatch):
         calls.append(("dedup", doc_id, sha256, expected_chunk_count, index))
         return False
 
-    def fake_embed(chunks):
-        calls.append(("embed", list(chunks)))
-        return [[0.1] * 1024 for _ in chunks]
+    def fake_embed_iter(chunks):
+        chunks = list(chunks)
+        calls.append(("embed", chunks))
+        for _ in chunks:
+            yield [0.1] * 1024
 
     def fake_index(chunks, vectors, *, doc_id, source_uri, sha256, index=None):
         calls.append(("index", doc_id, sha256, index))
@@ -46,11 +48,11 @@ def pipeline_calls(monkeypatch):
         calls.append(("prune", doc_id, keep_sha256, index))
         return 0
 
-    monkeypatch.setattr(ingest_module, "fetch_bytes", fake_fetch)
-    monkeypatch.setattr(ingest_module, "is_complete_duplicate", fake_dedup)
-    monkeypatch.setattr(ingest_module, "embed_texts", fake_embed)
-    monkeypatch.setattr(ingest_module, "index_chunks", fake_index)
-    monkeypatch.setattr(ingest_module, "prune_stale_chunks", fake_prune)
+    monkeypatch.setattr(run_module, "fetch_bytes", fake_fetch)
+    monkeypatch.setattr(run_module, "is_complete_duplicate", fake_dedup)
+    monkeypatch.setattr(run_module, "embed_texts_iter", fake_embed_iter)
+    monkeypatch.setattr(run_module, "index_chunks", fake_index)
+    monkeypatch.setattr(run_module, "prune_stale_chunks", fake_prune)
     return calls
 
 
@@ -105,7 +107,7 @@ def test_unchanged_complete_doc_is_skipped_without_embedding(
     client, pipeline_calls, monkeypatch
 ):
     monkeypatch.setattr(
-        ingest_module, "is_complete_duplicate", lambda *args, **kwargs: True
+        run_module, "is_complete_duplicate", lambda *args, **kwargs: True
     )
 
     response = client.post("/ingest", json={"source": SOURCE})
@@ -154,17 +156,17 @@ def test_invalid_source_returns_400_and_missing_source_returns_404(
     def raise_missing(source):
         raise SourceNotFoundError("no such object")
 
-    monkeypatch.setattr(ingest_module, "fetch_bytes", raise_invalid)
+    monkeypatch.setattr(run_module, "fetch_bytes", raise_invalid)
     assert client.post("/ingest", json={"source": "ftp://x"}).status_code == 400
 
-    monkeypatch.setattr(ingest_module, "fetch_bytes", raise_missing)
+    monkeypatch.setattr(run_module, "fetch_bytes", raise_missing)
     assert client.post("/ingest", json={"source": "s3://b/missing.md"}).status_code == 404
 
 
 def test_over_max_chunks_returns_400_before_any_embedding(
     client, pipeline_calls, monkeypatch
 ):
-    monkeypatch.setattr(ingest_module.get_settings(), "max_chunks_per_doc", 0)
+    monkeypatch.setattr(run_module.get_settings(), "max_chunks_per_doc", 0)
 
     response = client.post("/ingest", json={"source": SOURCE})
 
@@ -185,7 +187,7 @@ def test_bulk_failure_returns_502_with_per_chunk_details_and_no_prune(
     def raise_bulk_error(chunks, vectors, **kwargs):
         raise BulkIndexError("1 of 1 chunks failed to index", failures)
 
-    monkeypatch.setattr(ingest_module, "index_chunks", raise_bulk_error)
+    monkeypatch.setattr(run_module, "index_chunks", raise_bulk_error)
 
     response = client.post("/ingest", json={"source": SOURCE})
 

@@ -84,11 +84,22 @@ def embed_text(text: str, client=None) -> list[float]:
     raise EmbeddingUpstreamError("Bedrock embedding retries exhausted.")
 
 
-def embed_texts(texts: list[str], client=None) -> list[list[float]]:
-    """Embed chunks one at a time, in order — strictly sequential by design."""
+def embed_texts_iter(texts: list[str], client=None):
+    """Yield one 1024-dim vector per text, in order — strictly sequential.
+
+    The generator form lets a caller report per-chunk progress ("chunk i of N")
+    as each embedding completes; a raised `EmbeddingUpstreamError` propagates
+    from the offending chunk exactly as in `embed_texts`.
+    """
     if client is None:
         client = get_bedrock_client()
-    return [embed_text(text, client=client) for text in texts]
+    for text in texts:
+        yield embed_text(text, client=client)
+
+
+def embed_texts(texts: list[str], client=None) -> list[list[float]]:
+    """Embed chunks one at a time, in order — strictly sequential by design."""
+    return list(embed_texts_iter(texts, client=client))
 
 
 def _guard_input_limits(text: str) -> None:

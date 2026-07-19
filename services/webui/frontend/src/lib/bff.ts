@@ -14,6 +14,18 @@
 
 export type DocumentStatus = "pending" | "indexed" | "skipped" | "failed";
 
+/**
+ * The live ingestion step while a document is `pending` (browser polls for it).
+ * `queued` is the BFF's own pre-ingest state; the rest mirror the ingestion
+ * service's SSE phases. NULL once a terminal status is reached.
+ */
+export type DocumentPhase =
+    | "queued"
+    | "parsing"
+    | "chunking"
+    | "embedding"
+    | "indexing";
+
 export interface BffProject {
     id: string;
     name: string;
@@ -31,6 +43,11 @@ export interface BffDocument {
     size_bytes: number;
     storage_uri: string;
     status: DocumentStatus;
+    /** Live ingestion progress while `status === "pending"` (NULL when terminal).
+     *  `phase_current`/`phase_total` are the embedding chunk counters. */
+    phase?: DocumentPhase | null;
+    phase_current?: number | null;
+    phase_total?: number | null;
     ingest_doc_id: string | null;
     sha256: string | null;
     chunks_indexed: number | null;
@@ -166,9 +183,11 @@ export function listDocuments(
 }
 
 /**
- * Upload a markdown file and BLOCK until the BFF's synchronous ingest resolves.
- * There is no job id and no progress stream — the resolved document carries the
- * honest terminal status (`indexed` / `skipped` / `failed`).
+ * Upload one markdown/PDF file. Ingestion is ASYNCHRONOUS: the BFF returns a
+ * 202 with the accepted document in `pending`/`queued` state and runs the
+ * ingest in the background. The caller uploads multiple files by firing several
+ * of these concurrently, then POLLS `listDocuments` (watching `status`/`phase`)
+ * until each row reaches a terminal status (`indexed` / `skipped` / `failed`).
  */
 export function uploadDocument(
     projectId: string,

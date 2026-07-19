@@ -1,19 +1,30 @@
-"""POST /ingest — synchronous ingestion pipeline endpoint.
+"""POST /ingest (synchronous) and POST /ingest/stream (live per-phase SSE).
 
-Flow: fetch → normalize → sha256 → chunk (pure local tiktoken) →
-max-chunks guard → dedup check → embed → bulk index (refresh=wait_for) →
-prune stale chunks. Chunking runs before the dedup check because the check
-needs the locally computed expected chunk count; it is cheap and makes no
-AWS calls. The `max_chunks_per_doc` guard rejects oversized documents with a
-clear 400 BEFORE any embedding call is made.
+Both routes run the SAME pipeline via `app.pipeline.run.run_ingest`, a generator
+that yields a phase event at each stage (fetch → parse → normalize → sha256 →
+chunk → max-chunks guard → dedup check → embed → bulk index → prune) and a final
+result. Chunking runs before the dedup check because the check needs the locally
+computed expected chunk count; it is cheap and makes no AWS calls. The
+`max_chunks_per_doc` guard rejects oversized documents with a clear 400 BEFORE
+any embedding call is made.
+
+  - `/ingest` drains the generator and returns only the terminal `IngestResponse`
+    (behaviour byte-identical to the previous inline handler).
+  - `/ingest/stream` forwards every event to the client as `text/event-stream`
+    so a caller (the webui BFF) can record live per-phase progress; the
+    embedding phase reports `current`/`total` (chunk i of N). The HTTP status is
+    200 for the whole stream, so a mid-stream failure arrives as a terminal
+    `error` event (never a status change after the headers are sent).
 
 The OPTIONAL `index` on the request (project-scoped chat) targets a specific
 OpenSearch index for the dedup count, write, AND prune. ABSENT ⇒ the
 service-default single index (`settings.index_name`), byte-identical to today.
 
-Error contract:
+Error contract (identical for both routes — `/ingest` as the HTTP status,
+`/ingest/stream` as the terminal `error` event's `status`):
   400 — invalid/unsupported source string; document exceeds max_chunks_per_doc
   404 — S3 object or local file does not exist
+  422 — a .pdf with no extractable native text (scanned / image-only)
   502 — Bedrock or OpenSearch upstream failure: safe, non-technical message,
         plus per-chunk `_bulk` failure details when a bulk write fails
 
@@ -22,118 +33,84 @@ There is no partial-failure recovery beyond reporting: deterministic chunk
 no rollback logic exists anywhere.
 """
 
-from fastapi import APIRouter, HTTPException
-from opensearchpy.exceptions import OpenSearchException
+import json
+from collections.abc import Iterator
 
-from app.config import get_settings
-from app.pipeline.chunk import chunk_text
-from app.pipeline.embed import EmbeddingUpstreamError, embed_texts
-from app.pipeline.fetch import (
-    InvalidSourceError,
-    SourceNotFoundError,
-    fetch_bytes,
-)
-from app.pipeline.hash_dedup import content_sha256, derive_doc_id, is_complete_duplicate
-from app.pipeline.index import BulkIndexError, index_chunks, prune_stale_chunks
-from app.pipeline.normalize import normalize
-from app.pipeline.parse import NoExtractableTextError, extract_text
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+
+from app.pipeline.run import PhaseEvent, PipelineError, ResultEvent, run_ingest
 from app.schemas.ingest import IngestRequest, IngestResponse
 
 router = APIRouter()
 
-_EMBED_UPSTREAM_MESSAGE = (
-    "The embedding service is temporarily unavailable; please retry the ingest."
-)
-_INDEX_UPSTREAM_MESSAGE = (
-    "The search index is temporarily unavailable; please retry the ingest."
-)
-_BULK_FAILURE_MESSAGE = (
-    "Some chunks could not be indexed; please retry the ingest "
-    "(a retry safely overwrites the same chunk IDs)."
-)
-
 
 @router.post("/ingest", response_model=IngestResponse)
 def ingest(request: IngestRequest) -> IngestResponse:
+    """Run the pipeline to completion and return the terminal result.
+
+    Phase events are drained and ignored; only the `ResultEvent` matters. A
+    `PipelineError` surfaces as the same `HTTPException` (status + detail) the
+    previous inline handler raised.
+    """
     try:
-        raw_bytes = fetch_bytes(request.source)
-    except InvalidSourceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except SourceNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        for event in run_ingest(request):
+            if isinstance(event, ResultEvent):
+                return IngestResponse(
+                    doc_id=event.doc_id,
+                    sha256=event.sha256,
+                    chunks_indexed=event.chunks_indexed,
+                    skipped=event.skipped,
+                )
+    except PipelineError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
-    # Parse stage: dispatch by extension (.pdf via pypdf, .md/.markdown UTF-8).
-    # A .pdf with no extractable native text (scanned / image-only) fails
-    # honestly with a typed 422 — never a silent empty index.
-    try:
-        raw_text = extract_text(request.source, raw_bytes)
-    except NoExtractableTextError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except InvalidSourceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    text = normalize(raw_text)
-    sha256 = content_sha256(text)
-    doc_id = request.doc_id or derive_doc_id(request.source)
-    chunks = chunk_text(text)
-
-    settings = get_settings()
-    if len(chunks) > settings.max_chunks_per_doc:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Document produces {len(chunks)} chunks, which exceeds the "
-                f"limit of {settings.max_chunks_per_doc} (max_chunks_per_doc)."
-            ),
-        )
-
-    try:
-        if is_complete_duplicate(
-            doc_id, sha256, expected_chunk_count=len(chunks), index=request.index
-        ):
-            return IngestResponse(
-                doc_id=doc_id, sha256=sha256, chunks_indexed=0, skipped=True
-            )
-    except OpenSearchException as exc:
-        raise _upstream_index_error() from exc
-
-    try:
-        vectors = embed_texts(chunks)
-    except EmbeddingUpstreamError as exc:
-        raise HTTPException(
-            status_code=502, detail={"message": _EMBED_UPSTREAM_MESSAGE}
-        ) from exc
-
-    # Index-then-prune: the new version overwrites the same deterministic
-    # `_id`s first; stale-sha256 leftovers are removed only after indexing
-    # succeeds. NEVER delete before indexing — worst case must be
-    # stale-but-searchable content, never a data-loss window.
-    try:
-        chunks_indexed = index_chunks(
-            chunks,
-            vectors,
-            doc_id=doc_id,
-            source_uri=request.source,
-            sha256=sha256,
-            index=request.index,
-        )
-    except BulkIndexError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={"message": _BULK_FAILURE_MESSAGE, "failures": exc.failures},
-        ) from exc
-    except OpenSearchException as exc:
-        raise _upstream_index_error() from exc
-
-    try:
-        prune_stale_chunks(doc_id, keep_sha256=sha256, index=request.index)
-    except OpenSearchException as exc:
-        raise _upstream_index_error() from exc
-
-    return IngestResponse(
-        doc_id=doc_id, sha256=sha256, chunks_indexed=chunks_indexed, skipped=False
+    # A generator that finishes without a ResultEvent is a programming error.
+    raise HTTPException(
+        status_code=500, detail={"message": "ingest pipeline produced no result"}
     )
 
 
-def _upstream_index_error() -> HTTPException:
-    return HTTPException(status_code=502, detail={"message": _INDEX_UPSTREAM_MESSAGE})
+@router.post("/ingest/stream")
+def ingest_stream(request: IngestRequest) -> StreamingResponse:
+    """Run the pipeline and stream each phase to the client as SSE.
+
+    Emits `data: {json}` frames: one per `PhaseEvent`
+    (`{"phase": "...", "current": i, "total": n}`), then exactly one terminal
+    frame — `{"phase": "done", ...result}` on success or
+    `{"phase": "error", "status": N, "detail": ...}` on a typed failure.
+    """
+    return StreamingResponse(
+        _sse_events(request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _sse_frame(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _sse_events(request: IngestRequest) -> Iterator[str]:
+    try:
+        for event in run_ingest(request):
+            if isinstance(event, PhaseEvent):
+                frame: dict[str, object] = {"phase": event.phase}
+                if event.current is not None:
+                    frame["current"] = event.current
+                    frame["total"] = event.total
+                yield _sse_frame(frame)
+            elif isinstance(event, ResultEvent):
+                yield _sse_frame(
+                    {
+                        "phase": "done",
+                        "doc_id": event.doc_id,
+                        "sha256": event.sha256,
+                        "chunks_indexed": event.chunks_indexed,
+                        "skipped": event.skipped,
+                    }
+                )
+    except PipelineError as exc:
+        yield _sse_frame(
+            {"phase": "error", "status": exc.status_code, "detail": exc.detail}
+        )

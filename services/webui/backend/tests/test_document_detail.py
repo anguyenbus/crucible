@@ -21,14 +21,14 @@ def project_id(client):
 def _upload_indexed(client, monkeypatch, project_id, *, name="doc.md", body=b"# Hi"):
     """Upload a doc whose mocked ingest succeeds (so it has an ingest_doc_id)."""
 
-    def _fake(source, ingestion_url, index=None):
+    def _fake(source, ingestion_url, index=None, *, on_phase):
         from app import ingest_client
 
         return ingest_client.IngestResult(
             doc_id="doc-1", sha256="s", chunks_indexed=2, skipped=False
         )
 
-    monkeypatch.setattr(documents_api.ingest_client, "ingest", _fake)
+    monkeypatch.setattr(documents_api.ingest_client, "ingest_stream", _fake)
     return client.post(
         f"/projects/{project_id}/documents",
         files={"file": (name, body, "text/markdown")},
@@ -118,14 +118,17 @@ def test_text_for_failed_doc_returns_empty_without_calling_ingestion(
     """A doc that never indexed (no ingest_doc_id) → empty, no ingestion call."""
     from app import ingest_client
 
-    def _fail(source, ingestion_url, index=None):
+    def _fail(source, ingestion_url, index=None, *, on_phase):
         raise ingest_client.IngestionError(502, "Bedrock upstream failure")
 
-    monkeypatch.setattr(documents_api.ingest_client, "ingest", _fail)
-    doc = client.post(
+    monkeypatch.setattr(documents_api.ingest_client, "ingest_stream", _fail)
+    queued = client.post(
         f"/projects/{project_id}/documents",
         files={"file": ("bad.md", b"# x", "text/markdown")},
     ).json()
+    # The background job (run inline by TestClient) drove it to failed.
+    docs = client.get(f"/projects/{project_id}/documents").json()
+    doc = next(d for d in docs if d["id"] == queued["id"])
     assert doc["status"] == "failed"
     assert doc["ingest_doc_id"] is None
 
