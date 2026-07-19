@@ -7,6 +7,10 @@ needs the locally computed expected chunk count; it is cheap and makes no
 AWS calls. The `max_chunks_per_doc` guard rejects oversized documents with a
 clear 400 BEFORE any embedding call is made.
 
+The OPTIONAL `index` on the request (project-scoped chat) targets a specific
+OpenSearch index for the dedup count, write, AND prune. ABSENT ⇒ the
+service-default single index (`settings.index_name`), byte-identical to today.
+
 Error contract:
   400 — invalid/unsupported source string; document exceeds max_chunks_per_doc
   404 — S3 object or local file does not exist
@@ -24,10 +28,15 @@ from opensearchpy.exceptions import OpenSearchException
 from app.config import get_settings
 from app.pipeline.chunk import chunk_text
 from app.pipeline.embed import EmbeddingUpstreamError, embed_texts
-from app.pipeline.fetch import InvalidSourceError, SourceNotFoundError, fetch_markdown
+from app.pipeline.fetch import (
+    InvalidSourceError,
+    SourceNotFoundError,
+    fetch_bytes,
+)
 from app.pipeline.hash_dedup import content_sha256, derive_doc_id, is_complete_duplicate
 from app.pipeline.index import BulkIndexError, index_chunks, prune_stale_chunks
 from app.pipeline.normalize import normalize
+from app.pipeline.parse import NoExtractableTextError, extract_text
 from app.schemas.ingest import IngestRequest, IngestResponse
 
 router = APIRouter()
@@ -47,13 +56,23 @@ _BULK_FAILURE_MESSAGE = (
 @router.post("/ingest", response_model=IngestResponse)
 def ingest(request: IngestRequest) -> IngestResponse:
     try:
-        raw_markdown = fetch_markdown(request.source)
+        raw_bytes = fetch_bytes(request.source)
     except InvalidSourceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SourceNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    text = normalize(raw_markdown)
+    # Parse stage: dispatch by extension (.pdf via pypdf, .md/.markdown UTF-8).
+    # A .pdf with no extractable native text (scanned / image-only) fails
+    # honestly with a typed 422 — never a silent empty index.
+    try:
+        raw_text = extract_text(request.source, raw_bytes)
+    except NoExtractableTextError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except InvalidSourceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    text = normalize(raw_text)
     sha256 = content_sha256(text)
     doc_id = request.doc_id or derive_doc_id(request.source)
     chunks = chunk_text(text)
@@ -69,7 +88,9 @@ def ingest(request: IngestRequest) -> IngestResponse:
         )
 
     try:
-        if is_complete_duplicate(doc_id, sha256, expected_chunk_count=len(chunks)):
+        if is_complete_duplicate(
+            doc_id, sha256, expected_chunk_count=len(chunks), index=request.index
+        ):
             return IngestResponse(
                 doc_id=doc_id, sha256=sha256, chunks_indexed=0, skipped=True
             )
@@ -89,7 +110,12 @@ def ingest(request: IngestRequest) -> IngestResponse:
     # stale-but-searchable content, never a data-loss window.
     try:
         chunks_indexed = index_chunks(
-            chunks, vectors, doc_id=doc_id, source_uri=request.source, sha256=sha256
+            chunks,
+            vectors,
+            doc_id=doc_id,
+            source_uri=request.source,
+            sha256=sha256,
+            index=request.index,
         )
     except BulkIndexError as exc:
         raise HTTPException(
@@ -100,7 +126,7 @@ def ingest(request: IngestRequest) -> IngestResponse:
         raise _upstream_index_error() from exc
 
     try:
-        prune_stale_chunks(doc_id, keep_sha256=sha256)
+        prune_stale_chunks(doc_id, keep_sha256=sha256, index=request.index)
     except OpenSearchException as exc:
         raise _upstream_index_error() from exc
 

@@ -28,25 +28,25 @@ def pipeline_calls(monkeypatch):
 
     def fake_fetch(source):
         calls.append(("fetch", source))
-        return MARKDOWN
+        return MARKDOWN.encode("utf-8")
 
-    def fake_dedup(doc_id, sha256, expected_chunk_count):
-        calls.append(("dedup", doc_id, sha256, expected_chunk_count))
+    def fake_dedup(doc_id, sha256, expected_chunk_count, index=None):
+        calls.append(("dedup", doc_id, sha256, expected_chunk_count, index))
         return False
 
     def fake_embed(chunks):
         calls.append(("embed", list(chunks)))
         return [[0.1] * 1024 for _ in chunks]
 
-    def fake_index(chunks, vectors, *, doc_id, source_uri, sha256):
-        calls.append(("index", doc_id, sha256))
+    def fake_index(chunks, vectors, *, doc_id, source_uri, sha256, index=None):
+        calls.append(("index", doc_id, sha256, index))
         return len(chunks)
 
-    def fake_prune(doc_id, *, keep_sha256):
-        calls.append(("prune", doc_id, keep_sha256))
+    def fake_prune(doc_id, *, keep_sha256, index=None):
+        calls.append(("prune", doc_id, keep_sha256, index))
         return 0
 
-    monkeypatch.setattr(ingest_module, "fetch_markdown", fake_fetch)
+    monkeypatch.setattr(ingest_module, "fetch_bytes", fake_fetch)
     monkeypatch.setattr(ingest_module, "is_complete_duplicate", fake_dedup)
     monkeypatch.setattr(ingest_module, "embed_texts", fake_embed)
     monkeypatch.setattr(ingest_module, "index_chunks", fake_index)
@@ -84,7 +84,7 @@ def test_happy_path_returns_ids_counts_and_not_skipped(client, pipeline_calls):
         "skipped": False,
     }
     # Dedup check received the locally computed expected chunk count.
-    assert ("dedup", EXPECTED_DOC_ID, EXPECTED_SHA, 1) in pipeline_calls
+    assert ("dedup", EXPECTED_DOC_ID, EXPECTED_SHA, 1, None) in pipeline_calls
 
 
 def test_dedup_skip_requires_both_sha_match_and_complete_chunk_count():
@@ -131,7 +131,7 @@ def test_changed_content_indexes_new_chunks_before_pruning_stale(
     assert response.status_code == 200
     stages = [call[0] for call in pipeline_calls]
     assert stages.index("index") < stages.index("prune")
-    assert ("prune", EXPECTED_DOC_ID, EXPECTED_SHA) in pipeline_calls
+    assert ("prune", EXPECTED_DOC_ID, EXPECTED_SHA, None) in pipeline_calls
 
 
 def test_prune_deletes_only_same_doc_chunks_with_stale_sha():
@@ -154,10 +154,10 @@ def test_invalid_source_returns_400_and_missing_source_returns_404(
     def raise_missing(source):
         raise SourceNotFoundError("no such object")
 
-    monkeypatch.setattr(ingest_module, "fetch_markdown", raise_invalid)
+    monkeypatch.setattr(ingest_module, "fetch_bytes", raise_invalid)
     assert client.post("/ingest", json={"source": "ftp://x"}).status_code == 400
 
-    monkeypatch.setattr(ingest_module, "fetch_markdown", raise_missing)
+    monkeypatch.setattr(ingest_module, "fetch_bytes", raise_missing)
     assert client.post("/ingest", json={"source": "s3://b/missing.md"}).status_code == 404
 
 

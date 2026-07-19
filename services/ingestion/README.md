@@ -2,15 +2,20 @@
 
 FastAPI service that ingests markdown from S3 URIs (or local paths), chunks and
 embeds it with Bedrock Titan v2 (1024 dims), indexes into the `eval-poc`
-OpenSearch 2.19 domain (index `genai-ingestion-md`), and exposes a hybrid
-(k-NN + BM25) retrieval endpoint with min-max score normalization.
+OpenSearch 2.19 domain (default index `genai-ingestion-md`, or a per-request
+target index), and exposes a hybrid (k-NN + BM25) retrieval endpoint with
+min-max score normalization. PDF (native text via pypdf) is ingested
+alongside markdown; per-project index lifecycle (provision/delete) is
+service-owned so callers never touch OpenSearch directly.
 
 API surface:
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /ingest` | Synchronous pipeline: fetch → normalize → dedup → chunk → embed → bulk index → prune stale chunks |
+| `POST /ingest` | Synchronous pipeline: fetch → parse (pypdf for PDF) → normalize → dedup → chunk → embed → bulk index → prune stale chunks. Optional `index` targets a specific index (default `INGESTION_INDEX_NAME`) |
 | `POST /search` | Hybrid retrieval (knn + BM25, configurable weights), ranked scored chunks |
+| `POST /indices/{index_name}` | Idempotent provision of a knn index + the hybrid-search pipeline (an existing index is a no-op) |
+| `DELETE /indices/{index_name}` | Drop an index (a missing index is a benign no-op) |
 | `GET /healthz` | Liveness check |
 
 ## Setup
@@ -63,10 +68,25 @@ curl -X POST localhost:8000/search -H 'content-type: application/json' \
   -d '{"query": "how does hybrid search work", "top_k": 5, "knn_weight": 0.7, "keyword_weight": 0.3}'
 ```
 
-`POST /ingest` returns `{doc_id, sha256, chunks_indexed, skipped}`. Error
-contract: `400` invalid/unsupported source or over `max_chunks_per_doc`,
-`404` missing S3 object/local file, `502` Bedrock/OpenSearch upstream failure
-(with per-chunk `_bulk` failure details in the body when a bulk write fails).
+`POST /ingest` accepts `{source, doc_id?, index?}` and returns
+`{doc_id, sha256, chunks_indexed, skipped}`. `source` may be a `.md`/
+`.markdown` (UTF-8) or a `.pdf` (native text extracted with pypdf) S3 URI or
+local path; the optional `index` targets a specific OpenSearch index for the
+dedup count, write, AND prune (absent ⇒ the default `INGESTION_INDEX_NAME`,
+byte-identical to before). Error contract: `400` invalid/unsupported source or
+over `max_chunks_per_doc`, `404` missing S3 object/local file, `422` a PDF with
+no extractable native text (scanned/image-only — never a silent empty index;
+OCR is out of scope), `502` Bedrock/OpenSearch upstream failure (with per-chunk
+`_bulk` failure details in the body when a bulk write fails).
+
+`POST /indices/{index_name}` provisions the per-project index (knn mapping +
+the named hybrid-search pipeline) and is idempotent; `DELETE /indices/{index_name}`
+drops it (idempotent). Index names are validated (lowercase, no leading
+`-`/`_`/`+`) with a `400` before any OpenSearch call. EXPLICIT provisioning is
+REQUIRED before first ingest into a new index: dynamic auto-create on first
+write would map `content_vector` as a plain float array, not a `knn_vector`,
+silently breaking retrieval. Both endpoints keep index lifecycle inside the
+service that owns the OpenSearch client (the BFF calls them over HTTP).
 
 `POST /search` with default weights uses the named `hybrid-search-pipeline`;
 non-default weights send a temporary inline search pipeline in the request

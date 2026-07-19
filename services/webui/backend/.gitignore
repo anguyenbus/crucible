@@ -1,0 +1,15 @@
+# The uv venv lives on tmpfs via a gitignored symlink (root fs is ~99% full).
+# Re-create it with `uv sync` after a reboot. `uv.lock` IS committed.
+.venv/
+
+# Runtime artefacts
+*.db
+*.db-journal
+*.sqlite
+uploads/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/

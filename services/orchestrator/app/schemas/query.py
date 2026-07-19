@@ -20,6 +20,10 @@ There is still NO per-request ``top_k`` override — ``top_k`` comes only from
 the pinned pipeline config; a different ``top_k`` means publishing a NEW
 ``{name}-{semver}`` config version. This was dropped by decision, not
 deferred — it MUST NOT be added.
+
+``retrieval_indices`` (project-scoped chat) is the ONE other deliberate
+request field: an OPTIONAL index SCOPE (a LOCATION fact, never a behavior
+pin), additive and byte-identical-when-absent — see its field description.
 """
 
 import re
@@ -114,5 +118,21 @@ class QueryRequest(BaseModel):
             "and NEVER read by any pipeline stage — pipeline behavior is "
             "metadata-invariant. Enables eval dataset joins for replay "
             "(parallels eval's query.metadata)."
+        ),
+    )
+    retrieval_indices: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional per-request retrieval index SCOPE: the OpenSearch index (or "
+            "indices) to search. A single list mapping 1:1 to OpenSearch's native "
+            "comma-separated multi-index — the orchestrator stays index-agnostic "
+            "(no 'which one is general' logic, no per-project config). ABSENT "
+            "(the eval / demo_ui default) is byte-identical to today: the single "
+            "Settings opensearch_index (legal-rag-bench) is queried and echoed. "
+            "This is a LOCATION FACT, never a behavior pin — top_k, config "
+            "resolution, and config_sha256 are unaffected. PRESENT → exactly the "
+            "given indices are queried (comma-joined for OpenSearch) and "
+            "system_version.opensearch_index echoes that scope so replay stays "
+            "attributable."
         ),
     )

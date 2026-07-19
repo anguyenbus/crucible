@@ -1,8 +1,14 @@
-"""Fetch stage: resolve a source string to raw markdown text.
+"""Fetch stage: resolve a source string to raw document bytes (or markdown text).
 
 Supported sources:
-  - `s3://bucket/key.md` — the canonical ingestion source.
-  - `/abs/path/file.md` — local absolute path, for testing.
+  - `s3://bucket/key` — the canonical ingestion source.
+  - `/abs/path/file` — local absolute path, for testing.
+
+`fetch_bytes` is the bytes path (project-scoped chat, PDF support): it returns
+the raw object bytes and the caller's parse stage dispatches by extension
+(`.pdf` → pypdf text extraction; `.md`/`.markdown` → UTF-8 decode).
+`fetch_markdown` is retained (returns the UTF-8-decoded text) for the
+markdown-only callers and the fetch stage tests.
 
 Error types are distinguished so the API layer can map them precisely:
   - `InvalidSourceError` — the source string itself is unsupported (→ 400).
@@ -33,19 +39,28 @@ def _s3_client():
     return boto3.client("s3", region_name=get_settings().aws_region)
 
 
-def fetch_markdown(source: str) -> str:
-    """Return the raw markdown text for `source` (UTF-8 decoded)."""
+def fetch_bytes(source: str) -> bytes:
+    """Return the raw bytes for `source` (S3 object or local file).
+
+    The bytes path for PDF + markdown: the caller's parse stage decides how to
+    turn these bytes into text (UTF-8 decode for markdown, pypdf for PDF).
+    """
     if source.startswith("s3://"):
-        return _fetch_s3(source)
+        return _fetch_s3_bytes(source)
     if source.startswith("/"):
-        return _fetch_local(source)
+        return _fetch_local_bytes(source)
     raise InvalidSourceError(
         f"Unsupported source {source!r}: expected an s3://bucket/key URI "
         "or a local absolute path."
     )
 
 
-def _fetch_s3(source: str) -> str:
+def fetch_markdown(source: str) -> str:
+    """Return the raw markdown text for `source` (UTF-8 decoded)."""
+    return fetch_bytes(source).decode("utf-8")
+
+
+def _fetch_s3_bytes(source: str) -> bytes:
     bucket, _, key = source.removeprefix("s3://").partition("/")
     if not bucket or not key:
         raise InvalidSourceError(
@@ -58,11 +73,11 @@ def _fetch_s3(source: str) -> str:
         if code in _S3_NOT_FOUND_CODES:
             raise SourceNotFoundError(f"S3 object not found: {source}") from exc
         raise
-    return response["Body"].read().decode("utf-8")
+    return response["Body"].read()
 
 
-def _fetch_local(source: str) -> str:
+def _fetch_local_bytes(source: str) -> bytes:
     path = Path(source)
     if not path.is_file():
         raise SourceNotFoundError(f"Local file not found: {source}")
-    return path.read_text(encoding="utf-8")
+    return path.read_bytes()

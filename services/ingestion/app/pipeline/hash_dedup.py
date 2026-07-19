@@ -12,6 +12,11 @@ the locally computed expected chunk count (cheap tiktoken chunking of the
 normalized text — no embedding calls). A partial prior run leaves fewer
 chunks than expected, so it never masquerades as a completed ingest.
 
+The dedup COUNT runs against the SAME target `index` as the write/prune
+(project-scoped chat): `None` falls back to `settings.index_name` so
+absent-`index` behavior is byte-identical; a per-project `index` is checked
+in that index only (a fresh project index simply reports no duplicate).
+
 POC caveat (accepted, documented — not a bug): the doc_id is derived from the
 exact source URI string, so the same file ingested via a local path and via
 its S3 URI yields two different doc_ids.
@@ -43,18 +48,21 @@ def content_sha256(text: str) -> str:
 
 
 def is_complete_duplicate(
-    doc_id: str, sha256: str, expected_chunk_count: int, client=None
+    doc_id: str, sha256: str, expected_chunk_count: int, index: str | None = None, client=None
 ) -> bool:
-    """True only when the index already holds a COMPLETE copy of this content.
+    """True only when `index` already holds a COMPLETE copy of this content.
 
     Counts existing chunks for doc_id+sha256 and compares against the locally
     computed expected chunk count; a mismatch (partial prior run) or a missing
-    index means the document must be (re-)ingested in full.
+    index means the document must be (re-)ingested in full. `index` defaults to
+    `settings.index_name` when absent (unchanged single-index behavior).
     """
     if expected_chunk_count <= 0:
         return False
     if client is None:
         client = get_opensearch_client()
+    if index is None:
+        index = get_settings().index_name
     query = {
         "query": {
             "bool": {
@@ -66,7 +74,7 @@ def is_complete_duplicate(
         }
     }
     try:
-        response = client.count(index=get_settings().index_name, body=query)
+        response = client.count(index=index, body=query)
     except NotFoundError:
         return False  # index does not exist yet — nothing indexed
     return response.get("count", 0) == expected_chunk_count

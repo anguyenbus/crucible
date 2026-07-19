@@ -138,6 +138,21 @@ def endpoint_host(endpoint: str | None) -> str | None:
     return stripped.split("/")[0].split(":")[0]
 
 
+def _queried_index_scope(request: QueryRequest, settings: Settings) -> str:
+    """
+    The index scope actually queried for this request (provenance echo).
+
+    Present ``retrieval_indices`` (project-scoped chat) ⇒ the comma-joined
+    scope that reached OpenSearch's ``index=`` param, so replay stays
+    attributable to exactly what was searched. ABSENT ⇒ the single Settings
+    ``opensearch_index`` (legal-rag-bench) verbatim — byte-identical to today,
+    so eval's rag_query_output v1.1.0 and the demo_ui are unaffected.
+    """
+    if request.retrieval_indices:
+        return ",".join(request.retrieval_indices)
+    return settings.opensearch_index
+
+
 def _output_guard_active(pins: GuardrailsPin) -> bool:
     """
     Whether the deterministic output guard will actually scan for this config.
@@ -434,7 +449,7 @@ def _run_pre_generation(
         retrieval_span(
             tracer,
             question=retrieval_query,
-            index=settings.opensearch_index,
+            index=_queried_index_scope(request, settings),
             host=endpoint_host(settings.opensearch_endpoint),
         ) as retrieval,
     ):
@@ -444,6 +459,7 @@ def _run_pre_generation(
             resolved.config,
             settings,
             search_client=clients.search,
+            indices=request.retrieval_indices,
         )
         set_retrieval_documents(retrieval, chunks)
 
@@ -508,8 +524,10 @@ def _build_result(
         "generator_model": resolved.config.generator.model_id,
         "embedder_model": resolved.config.embedder.model_id,
         # Q8 provenance echo: identical config_sha256 against a DIFFERENT
-        # index must stay attributable in replay comparisons.
-        "opensearch_index": settings.opensearch_index,
+        # index must stay attributable in replay comparisons. Echoes the
+        # ACTUALLY-queried scope when retrieval_indices is present, else the
+        # Settings default (absent-field byte-identical to today).
+        "opensearch_index": _queried_index_scope(request, settings),
     }
     host = endpoint_host(settings.opensearch_endpoint)
     if host is not None:

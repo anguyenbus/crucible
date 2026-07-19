@@ -16,6 +16,12 @@ pipeline is bound explicitly PER REQUEST as a query parameter (never
 ``index.search.default_pipeline``); ``_source`` excludes the vector field
 (never haul 1024 floats per hit back over the wire).
 
+Index SCOPE is a per-request LOCATION fact (project-scoped chat): ``retrieve``
+takes an optional ``indices`` list. Absent ⇒ the search client falls back to
+its lifespan-bound index (today's single ``legal-rag-bench``), byte-identical
+to before; present ⇒ the list is comma-joined into OpenSearch's native
+multi-index ``index=`` param. It is NEVER a behavior pin.
+
 Hit mapping (pure): ``chunk_id`` = hit ``_id`` verbatim
 (``{doc_id}:{chunk_idx}``), ``rank`` = list position, ``score`` = raw
 ``_score`` pass-through, plus ``doc_id`` and text.
@@ -39,8 +45,16 @@ class QueryEmbedder(Protocol):
 class HybridSearchClient(Protocol):
     """Duck type of the injected read-only OpenSearch client."""
 
-    def search(self, body: dict[str, Any], *, search_pipeline: str) -> dict[str, Any]:
-        """Run one search with the pipeline bound per request."""
+    def search(
+        self, body: dict[str, Any], *, search_pipeline: str, index: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Run one search with the pipeline bound per request.
+
+        ``index`` is the optional per-request index scope (a comma-separated
+        OpenSearch multi-index string); ``None`` falls back to the client's
+        lifespan-bound index.
+        """
         ...
 
 
@@ -131,6 +145,7 @@ def retrieve(
     settings: SearchLocationSettings,
     *,
     search_client: HybridSearchClient,
+    indices: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Run the hybrid search and map hits to ranked ``retrieved_chunks``.
@@ -141,6 +156,10 @@ def retrieve(
         config: Resolved pinned config — supplies ``top_k`` (behavior).
         settings: Location facts — pipeline and text/vector field names.
         search_client: Injected read-only OpenSearch client instance.
+        indices: Optional per-request index scope (project-scoped chat).
+            ``None`` (the eval/default) leaves the search client on its
+            lifespan-bound index — byte-identical to before. A list is
+            comma-joined into OpenSearch's native multi-index string.
 
     Returns:
         Ranked chunk dicts per the schema mapping above.
@@ -153,7 +172,12 @@ def retrieve(
         text_field=settings.opensearch_text_field,
         vector_field=settings.opensearch_vector_field,
     )
-    response = search_client.search(body, search_pipeline=settings.opensearch_pipeline)
+    # Absent ⇒ index=None ⇒ the search client uses its lifespan-bound index
+    # (today's single legal-rag-bench), so default behavior is unchanged.
+    index = ",".join(indices) if indices else None
+    response = search_client.search(
+        body, search_pipeline=settings.opensearch_pipeline, index=index
+    )
     return hits_to_retrieved_chunks(
         response["hits"]["hits"], text_field=settings.opensearch_text_field
     )

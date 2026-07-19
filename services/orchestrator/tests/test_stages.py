@@ -39,8 +39,8 @@ class FakeSearchClient:
         self.calls = []
         self._hits = hits
 
-    def search(self, body, *, search_pipeline):
-        self.calls.append({"body": body, "search_pipeline": search_pipeline})
+    def search(self, body, *, search_pipeline, index=None):
+        self.calls.append({"body": body, "search_pipeline": search_pipeline, "index": index})
         return {"hits": {"hits": self._hits}}
 
 

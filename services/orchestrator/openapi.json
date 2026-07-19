@@ -1,6 +1,83 @@
 {
   "components": {
     "schemas": {
+      "AnalyzeRequest": {
+        "description": "One document's text to analyse into a summary and/or discrete facts.",
+        "properties": {
+          "max_facts": {
+            "default": 12,
+            "description": "Upper bound on the number of extracted facts returned.",
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Max Facts",
+            "type": "integer"
+          },
+          "mode": {
+            "default": "both",
+            "description": "Which analysis to run: 'facts', 'summary', or 'both'.",
+            "enum": [
+              "facts",
+              "summary",
+              "both"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "pipeline_config": {
+            "default": "legal-rag-default-1.1.0",
+            "description": "Fully-qualified config ref pinning the generator model, e.g. 'legal-rag-default-1.8.0'. Only the generator model id is used.",
+            "title": "Pipeline Config",
+            "type": "string"
+          },
+          "text": {
+            "description": "The full document text to analyse (e.g. joined chunk text).",
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AnalyzeRequest",
+        "type": "object"
+      },
+      "AnalyzeResponse": {
+        "description": "The extracted summary + facts, plus provenance for the caller.",
+        "properties": {
+          "facts": {
+            "description": "Discrete factual statements explicitly supported by the document.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "model_id": {
+            "description": "The Bedrock generator model id that produced this.",
+            "title": "Model Id",
+            "type": "string"
+          },
+          "summary": {
+            "description": "A concise plain-English summary of the document.",
+            "title": "Summary",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "True when the input text exceeded the cap and was truncated before analysis.",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "summary",
+          "facts",
+          "model_id",
+          "truncated"
+        ],
+        "title": "AnalyzeResponse",
+        "type": "object"
+      },
       "DependencyErrorResponse": {
         "description": "502/503 body: an upstream dependency failed (never a caller error).",
         "properties": {
@@ -81,6 +158,19 @@
           "decision"
         ],
         "title": "GuardrailDecision",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
         "type": "object"
       },
       "HealthzResponse": {
@@ -210,6 +300,21 @@
             "description": "The user question to answer (the current turn).",
             "title": "Question",
             "type": "string"
+          },
+          "retrieval_indices": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional per-request retrieval index SCOPE: the OpenSearch index (or indices) to search. A single list mapping 1:1 to OpenSearch's native comma-separated multi-index \u2014 the orchestrator stays index-agnostic (no 'which one is general' logic, no per-project config). ABSENT (the eval / demo_ui default) is byte-identical to today: the single Settings opensearch_index (legal-rag-bench) is queried and echoed. This is a LOCATION FACT, never a behavior pin \u2014 top_k, config resolution, and config_sha256 are unaffected. PRESENT \u2192 exactly the given indices are queried (comma-joined for OpenSearch) and system_version.opensearch_index echoes that scope so replay stays attributable.",
+            "title": "Retrieval Indices"
           }
         },
         "required": [
@@ -273,6 +378,46 @@
           "released_configs"
         ],
         "title": "ReadyzResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
         "type": "object"
       },
       "ValidationErrorItem": {
@@ -339,6 +484,48 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/analyze": {
+      "post": {
+        "description": "Analyse one document's text into a summary and/or discrete facts (non-RAG).\n\n``mode`` selects the work: ``facts`` and ``summary`` each run a single\nfocused generation (the UI's \"Extract\" / \"Summarise\" buttons); ``both``\nreturns both from one prompt. Fields not produced by the chosen mode come\nback empty (``summary=\"\"`` / ``facts=[]``).",
+        "operationId": "post_analyze_analyze_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyzeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyzeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Analyze",
+        "tags": [
+          "analyze"
+        ]
+      }
+    },
     "/healthz": {
       "get": {
         "description": "Liveness probe: returns 200 whenever the process is serving.",

@@ -17,12 +17,21 @@ a 60s timeout — the same construction shape as eval's
 ``dev/stubs/rag/opensearch_query.py`` (pattern parity only; eval code is
 never imported).
 
+``search`` takes an optional per-request ``index`` OVERRIDE (project-scoped
+chat): ``None`` keeps the lifespan-bound index (today's single
+``legal-rag-bench``), so absent-field behavior is byte-identical; a supplied
+string (OpenSearch's native comma-separated multi-index) scopes THIS request
+only. The index is a LOCATION fact, never a behavior pin.
+
 ``_meta`` guard (verify-IF-PRESENT, per docs/byo-index-contract.md): an index
 without a mapping ``_meta`` block is trusted as configured (the POC
 ``legal-rag-bench`` index has none); a ``_meta`` block whose ``embedder`` or
 ``dims`` contradicts the query-side embedder raises
 :class:`OpenSearchNotReadyError` so the service renders not-ready instead of
-scoring garbage retrieval as a real result.
+scoring garbage retrieval as a real result. The one-shot guard runs against
+the lifespan-bound index only; ingestion-built ``proj-{id}`` indices are
+Titan-v2-1024-compatible by construction (same pinned embedder), so extending
+the guard to per-request project indices is deliberately DEFERRED.
 """
 
 from __future__ import annotations
@@ -155,7 +164,9 @@ class OpenSearchSearchClient:
             embedder_dimensions=embedder_dimensions,
         )
 
-    def search(self, body: dict[str, Any], *, search_pipeline: str) -> dict[str, Any]:
+    def search(
+        self, body: dict[str, Any], *, search_pipeline: str, index: str | None = None
+    ) -> dict[str, Any]:
         """
         Run one search with the hybrid pipeline bound PER REQUEST.
 
@@ -164,13 +175,17 @@ class OpenSearchSearchClient:
             search_pipeline: Search-pipeline name, passed explicitly as the
                 ``search_pipeline`` query parameter on THIS request — never
                 relied on via ``index.search.default_pipeline``.
+            index: Optional per-request index scope (project-scoped chat). A
+                comma-separated OpenSearch multi-index string; ``None`` (the
+                eval/default) falls back to the lifespan-bound index so
+                absent-field behavior is byte-identical to before.
 
         Returns:
             The raw OpenSearch search response.
 
         """
         return self._raw.search(
-            index=self._index,
+            index=index if index is not None else self._index,
             body=body,
             params={"search_pipeline": search_pipeline},
         )

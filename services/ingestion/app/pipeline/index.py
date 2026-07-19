@@ -7,6 +7,12 @@ makes a just-ingested document immediately searchable.
 
 Per-item `_bulk` failures are never silently dropped: they are collected and
 raised as `BulkIndexError` with details for the API layer's 502 body.
+
+The target `index` is an OPTIONAL per-request argument (project-scoped chat):
+`None` falls back to `settings.index_name` (default `genai-ingestion-md`), so
+absent-`index` write + prune behavior is byte-identical to today; a supplied
+name (the BFF's `proj-{project_id}`) writes to and prunes within THAT index
+only.
 """
 
 from datetime import datetime, timezone
@@ -68,19 +74,29 @@ def index_chunks(
     doc_id: str,
     source_uri: str,
     sha256: str,
+    index: str | None = None,
     client=None,
 ) -> int:
-    """Bulk-index all chunks; return the number indexed.
+    """Bulk-index all chunks into `index`; return the number indexed.
 
-    Raises `BulkIndexError` with per-item details if any item fails.
+    `index` defaults to `settings.index_name` when absent (unchanged single-
+    index behavior). Raises `BulkIndexError` with per-item details if any item
+    fails.
     """
     if not chunks:
         return 0
     if client is None:
         client = get_opensearch_client()
+    if index is None:
+        index = get_settings().index_name
 
     actions = build_bulk_actions(
-        chunks, vectors, doc_id=doc_id, source_uri=source_uri, sha256=sha256
+        chunks,
+        vectors,
+        doc_id=doc_id,
+        source_uri=source_uri,
+        sha256=sha256,
+        index_name=index,
     )
     response = client.bulk(body=actions, refresh="wait_for")
 
@@ -102,8 +118,10 @@ def index_chunks(
     return len(chunks)
 
 
-def prune_stale_chunks(doc_id: str, *, keep_sha256: str, client=None) -> int:
-    """Delete chunks of `doc_id` whose sha256 differs from the new one.
+def prune_stale_chunks(
+    doc_id: str, *, keep_sha256: str, index: str | None = None, client=None
+) -> int:
+    """Delete chunks of `doc_id` in `index` whose sha256 differs from the new one.
 
     Called ONLY after bulk indexing of the new version has succeeded
     (index-then-prune): new chunks overwrite the same deterministic `_id`s in
@@ -111,12 +129,15 @@ def prune_stale_chunks(doc_id: str, *, keep_sha256: str, client=None) -> int:
     the new version is shorter. Deleting first is never acceptable; the worst
     case must be stale-but-searchable content, not a data-loss window.
 
-    Returns the number of stale chunks deleted.
+    `index` defaults to `settings.index_name` when absent (unchanged single-
+    index behavior). Returns the number of stale chunks deleted.
     """
     if client is None:
         client = get_opensearch_client()
+    if index is None:
+        index = get_settings().index_name
     response = client.delete_by_query(
-        index=get_settings().index_name,
+        index=index,
         body={
             "query": {
                 "bool": {

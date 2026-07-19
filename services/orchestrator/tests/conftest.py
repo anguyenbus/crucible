@@ -205,8 +205,12 @@ class MockSearchClient:
         self.search_hits: list[dict[str, Any]] | None = None
         self.index_exists_result = True
 
-    def search(self, body: dict[str, Any], *, search_pipeline: str) -> dict[str, Any]:
-        self.search_calls.append({"body": body, "search_pipeline": search_pipeline})
+    def search(
+        self, body: dict[str, Any], *, search_pipeline: str, index: str | None = None
+    ) -> dict[str, Any]:
+        self.search_calls.append(
+            {"body": body, "search_pipeline": search_pipeline, "index": index}
+        )
         if self.search_error is not None:
             raise self.search_error
         hits = self.search_hits if self.search_hits is not None else canned_hits()
