@@ -16,8 +16,10 @@ differs only in the guardrails block:
   the in-house Haiku confirm-step), ``output_self_check: true``,
   ``check_facts: true``;
 - a FRESH ``config_dir_digest`` (now covering ``detectors.yml``, DIFFERENT from
-  the retired pre-fold pin) + a BUMPED pod ``config_version`` (1.2.0);
-  ``uv_lock_sha256`` carried forward (a config/ fold does not touch uv.lock).
+  every retired pin) + a BUMPED pod ``config_version`` (1.4.0 — ONE bump covering
+  the 2026-07-23 calibration slice's two ``config/`` edits: the ``pii:``
+  detector-table withdrawal and the ``self_check_output`` advice boundary);
+  ``uv_lock_sha256`` carried forward UNCHANGED (no dependency was added).
 
 Configs 1.0.0-1.4.0 are IMMUTABLE history: their bytes AND manifest entries must
 stay byte-exact.
@@ -31,14 +33,16 @@ from pathlib import Path
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 CONFIGS_DIR = SERVICE_ROOT / "app" / "configs"
 
-# The FRESH post-fold config_dir_digest (regen:
-# `cd services/guardrail && uv run python -m app.config_digest`) pinned into
-# 1.8.0.yaml. DIFFERS from the retired pre-fold pin because detectors.yml is
-# now a hashed member of config_dir_digest.
-FRESH_CONFIG_DIR_DIGEST = "b5da30dbae57309c6045138bd569bf13d7c67ed19ceb2153484183e1eb7b2183"
-# The retired pre-fold digest — pinned here to PROVE 1.8.0 moved off it.
+# The FRESH config_dir_digest pinned into 1.8.0.yaml, covering the 2026-07-23
+# calibration slice's detectors.yml + prompts.yml edits. Regen + publish:
+# `cd services/guardrail && uv run python -m app.config_digest --write-env`.
+FRESH_CONFIG_DIR_DIGEST = "19e706bf05435f605bd3d04e2c37a79c69bcf5c681837aa201bce4e64f22a58d"
+# Retired digests — pinned here to PROVE 1.8.0 moved off each of them.
 PRE_FOLD_CONFIG_DIR_DIGEST = "413182c3937f6345ed957fcb2bc2c3f166672f75352367b7ed7bdae51ce5ec89"
-# uv.lock is UNCHANGED by a config/ fold — the SAME value 1.4.0's pod lane pins.
+PRE_CALIBRATION_CONFIG_DIR_DIGEST = (
+    "b5da30dbae57309c6045138bd569bf13d7c67ed19ceb2153484183e1eb7b2183"
+)
+# uv.lock is UNCHANGED by a config/ edit — the SAME value 1.4.0's pod lane pins.
 UV_LOCK_SHA256 = "86d6e9a5b1b7b1bb4bd549747890c232e5d8d521ec5078767ad7d060b1f19603"
 
 # 1.4.0 (the in-house lane) must stay byte-exact — the rollback fallback.
@@ -79,8 +83,9 @@ def test_1_8_0_routes_every_verdict_through_the_pod():
     # OUTPUT policy + grounding verdicts via the pod.
     assert nemo.output_self_check is True
     assert nemo.check_facts is True
-    # BUMPED pod config label (detectors.yml folded into the pod config/).
-    assert nemo.config_version == "1.2.0"
+    # BUMPED pod config label — ONE bump for the calibration slice's two config/
+    # edits (pii: withdrawal + the self_check_output advice boundary).
+    assert nemo.config_version == "1.4.0"
 
 
 def test_1_8_0_carries_1_4_0_non_guard_pins_forward_byte_identical():
@@ -98,14 +103,17 @@ def test_1_8_0_carries_1_4_0_non_guard_pins_forward_byte_identical():
     assert c18.history == c14.history
 
 
-def test_1_8_0_pins_a_fresh_digest_that_moved_off_the_pre_fold_pin():
-    """1.8.0's config_dir_digest is the FRESH post-fold value, not the retired one."""
+def test_1_8_0_pins_a_fresh_digest_that_moved_off_every_retired_pin():
+    """1.8.0's config_dir_digest is the FRESH value, not any retired one."""
     from app.config import resolve_pipeline_config
 
     nemo = resolve_pipeline_config("legal-rag-default-1.8.0").config.guardrails.nemo
     assert nemo.config_dir_digest == FRESH_CONFIG_DIR_DIGEST
-    assert nemo.config_dir_digest != PRE_FOLD_CONFIG_DIR_DIGEST
-    # uv.lock carried forward (a config/ fold does not touch it).
+    assert nemo.config_dir_digest not in (
+        PRE_FOLD_CONFIG_DIR_DIGEST,
+        PRE_CALIBRATION_CONFIG_DIR_DIGEST,
+    )
+    # uv.lock carried forward (a config/ edit does not touch it).
     assert nemo.uv_lock_sha256 == UV_LOCK_SHA256
 
 

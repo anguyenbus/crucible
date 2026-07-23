@@ -42,7 +42,7 @@ def _write_min_config(root: Path) -> None:
     """Write the three mandatory digest members into ``root`` (config.yml + prompts.yml + detectors.yml)."""
     (root / "config.yml").write_text("models: []\n")
     (root / "prompts.yml").write_text("prompts: []\n")
-    (root / "detectors.yml").write_text("secrets: []\npii: []\n")
+    (root / "detectors.yml").write_text("secrets: []\n")
 
 
 def test_config_dir_digest_is_deterministic_and_64_hex():
@@ -70,7 +70,7 @@ def test_config_dir_digest_changes_when_detectors_change(tmp_path):
 
     # A regex/detector change (e.g. adding a pattern) must move the digest so it
     # becomes a pod config_version bump + fresh orchestrator config_sha256.
-    (tmp_path / "detectors.yml").write_text("secrets: []\npii: []\n# new rule\n")
+    (tmp_path / "detectors.yml").write_text("secrets: []\n# new rule\n")
     assert compute_config_dir_digest(tmp_path) != baseline
 
 

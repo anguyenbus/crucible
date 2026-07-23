@@ -120,3 +120,66 @@ services:
       retries: 3
       start_period: 40s
     restart: unless-stopped
+
+  # Guardrail pod — the out-of-process NeMo Guardrails verdict service, backed
+  # EXCLUSIVELY by Bedrock Haiku (no OpenAI, no NIM). The orchestrator reaches it
+  # ONLY over HTTP; nothing imports it.
+  #
+  # DETERMINISM PINS — GUARDRAIL_EXPECTED_CONFIG_DIR_DIGEST and
+  # GUARDRAIL_EXPECTED_UV_LOCK_SHA256 are NEVER written here. They come from the
+  # single generated source `services/guardrail/deploy/guardrail-pins.env`, read
+  # below via `env_file:` and read as the SAME bytes by Kubernetes through the
+  # `configMapGenerator` in `services/guardrail/deploy/kustomization.yaml`. A pin
+  # hand-copied into this file dies at the pod boundary the moment compose stops
+  # being the deploy surface (compose is dev-only; the direction is independent
+  # K8s pods). Regenerate the source after ANY `services/guardrail/config/` edit:
+  #   cd services/guardrail && uv run python -m app.config_digest --write-env
+  #
+  # The pod recomputes both digests in its lifespan and REFUSES TO SERVE on
+  # mismatch, so a drifted config/ or uv.lock crash-loops visibly here (and
+  # CrashLoopBackOff in K8s) instead of quietly answering under a stale pin.
+  #
+  # AWS credentials — the ambient chain ONLY: the host's ~/.aws mounted read-only
+  # at the non-root runtime user's $HOME plus AWS_PROFILE, the same mechanism as
+  # ingestion/parser above (IRSA / instance role in K8s). No credential value is
+  # ever written into config.
+  guardrail:
+    build:
+      context: ./services/guardrail
+    image: guardrail:latest
+    container_name: guardrail
+    # Dev convenience: the orchestrator runs on the host in the demo flow and
+    # calls the pod on :8080. In K8s this is a ClusterIP Service, never ingress —
+    # the pod has no app-level auth.
+    ports:
+      - "8080:8080"
+    # The ONE generated source of both determinism pins (see above).
+    env_file:
+      - ./services/guardrail/deploy/guardrail-pins.env
+    environment:
+      # Guard model role separation: Haiku is the GUARD model, never the
+      # generator or the eval judge.
+      - GUARDRAIL_MODEL_ID=${GUARDRAIL_MODEL_ID:-au.anthropic.claude-haiku-4-5-20251001-v1:0}
+      - GUARDRAIL_REGION=${GUARDRAIL_REGION:-ap-southeast-2}
+      # Pass-through: set AWS_PROFILE on the host when using the mounted ~/.aws;
+      # left unset, boto3 walks its standard chain. An empty value would be
+      # treated as a profile name.
+      - AWS_PROFILE
+      - AWS_REGION=${AWS_REGION:-ap-southeast-2}
+    volumes:
+      # $HOME of the image's non-root `guardrail` user (uid 1000), which is where
+      # boto3 looks for the shared config/credentials files.
+      - ${HOME}/.aws:/home/guardrail/.aws:ro
+    healthcheck:
+      # Compose has ONE probe, so it watches /readyz (not /healthz): readiness is
+      # the guarantee that matters here — it is ready only once the LLMRails
+      # engine built AND the deterministic detector compiled, both of which come
+      # after the pin self-verification.
+      test:
+        ["CMD", "python", "-c",
+         "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/readyz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped

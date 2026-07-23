@@ -9,34 +9,21 @@ is ``generation_mode: "live"`` — the Phase 1 canned path is deleted and no
 env flag or config ref can bring it back (``stub`` survives only as an
 enum value in the envelope).
 
-Phase 3 (system-prompt-leakage input guard): ``check_input`` is the FIRST
-stage in the pre-generation chain and is now config-gated. Under a config that
-enables the guard (``legal-rag-default-1.3.0``), a prompt-leak/injection
-attempt raises :class:`app.orchestrator.guardrails.GuardrailTripwire` BEFORE
-any paid call. That is a SUCCESSFUL, honest refusal — NOT an error: both
-routes catch it specifically and return a 200 canned refusal envelope (answer
-text = ``REFUSAL_TEXT``, empty citations, one ``block`` decision in
-``guardrail_decisions[]``), never a 5xx. The Haiku guard call itself is a
-``guardrail_input`` LLM span (model id + token counts + latency) recorded in
-``_run_pre_generation`` on BOTH a SAFE allow and a block. On
-``/query/stream`` the tripwire raises BEFORE ``StreamingResponse`` is built, so
-exactly one ``final`` event and ZERO ``token`` events are emitted — nothing
-leaks. Configs that leave the guard OFF (1.0.0/1.1.0/1.2.0, the eval lane)
-behave byte-for-byte as before: ``check_input`` is a typed identity.
-
-Phase 3 (deterministic output PII/secrets guard): after generation both routes
-run ``check_output(generation.text, pins=...)`` — a PURE regex scan gated by
-the config's ``output_categories``. A ``secrets`` hit raises ``GuardrailTripwire``
-(reusing the SAME 200 canned-refusal path as the input block — NEVER a 5xx);
-redactable PII is masked in place (a ``transform`` decision), advisory email/
-phone is flagged (a ``flag`` decision), and citations are built over the
-possibly-REDACTED text. On ``/query/stream`` a NON-EMPTY ``output_categories``
-switches to BUFFERED delivery: ``token`` events are suppressed, the full answer
-is accumulated and scanned, and exactly ONE ``final`` event carries the refusal
-(block) or the possibly-redacted answer + its decisions (allow/redact) — the
-only form that guarantees no secret byte reaches the user. An EMPTY
-``output_categories`` (eval/1.1.0/1.2.0/1.3.0) keeps live token streaming
-byte-for-byte.
+Guarding is OUT-OF-PROCESS and NeMo-only: the guardrail pod owns every verdict
+on both lanes. On INPUT, a free regex pre-filter gates the paid call — a benign
+MISS makes zero pod calls; a HIT forwards the RAW question to the pod's
+``self_check_input``. On OUTPUT, ``check_output_nemo`` runs the pod's
+deterministic secrets rail plus ``self check output`` (and, when gated on,
+``self check facts``). A block raises
+:class:`app.orchestrator.guardrails.GuardrailTripwire`, which is a SUCCESSFUL,
+honest refusal — NOT an error: both routes catch it specifically and return a
+200 canned refusal envelope (answer text = ``REFUSAL_TEXT``, empty citations,
+one ``block`` decision in ``guardrail_decisions[]``), never a 5xx, and NeMo's
+own string never becomes the answer. An active output guard switches
+``/query/stream`` to BUFFERED delivery: ``token`` events are suppressed until
+the complete answer has cleared the pod, so exactly one ``final`` event is
+emitted and nothing leaks. Configs with no ``nemo`` selector (1.0.0-1.4.0, the
+eval lane) skip both lanes entirely as typed identities.
 
 Error mapping lives in app-level exception handlers registered in
 ``app.main`` — never per-route try/except:
@@ -151,69 +138,6 @@ def _queried_index_scope(request: QueryRequest, settings: Settings) -> str:
     if request.retrieval_indices:
         return ",".join(request.retrieval_indices)
     return settings.opensearch_index
-
-
-def _output_guard_active(pins: GuardrailsPin) -> bool:
-    """
-    Whether the deterministic output guard will actually scan for this config.
-
-    True iff ``output_categories`` is non-empty — the exact condition under which
-    ``check_output`` does real work (rather than returning a typed identity). The
-    output guard is pure regex with no model dependency, so this is INDEPENDENT of
-    ``enabled`` / the input classifier (matching the pure stage's own gate). The
-    released ``1.0.0``–``1.3.0`` configs (empty ``output_categories``) add NO
-    output-guard span and NO ``guardrail_output`` timing and stay byte-for-byte.
-    """
-    return bool(pins.output_categories)
-
-
-def _sum_rule_counts(rationale: str | None) -> int | None:
-    """
-    Sum the per-rule counts embedded in an output-guard decision rationale.
-
-    ``check_output`` builds a rationale like ``"ssn=2, credit_card=1"`` for a
-    ``transform``/``flag`` decision; this recovers the total span count (``3``)
-    for the ``guardrail.count`` span attribute. Returns ``None`` when the
-    rationale carries no ``label=N`` parts (e.g. a secrets block, whose rationale
-    names the secret class, not a count).
-    """
-    if not rationale:
-        return None
-    total = 0
-    found = False
-    for part in rationale.split(","):
-        _, sep, number = part.partition("=")
-        number = number.strip()
-        if sep and number.isdigit():
-            total += int(number)
-            found = True
-    return total if found else None
-
-
-def _record_output_guard_decisions(span: Span, decisions: tuple[GuardrailDecision, ...]) -> None:
-    """
-    Attach the (allow/transform/flag) output-guard outcome to its span.
-
-    A clean scan records ``decision="allow"`` with no category/rule/count; a
-    non-empty scan records the PRIMARY decision (redaction ranks above an
-    advisory flag, so ``decisions[0]`` — the ``transform`` when present) and a
-    ``count`` summed across ALL decisions (redactions + advisory flags), so a
-    turn that both masks and flags reports the full item total on the span. A
-    secrets BLOCK never reaches here (it raises ``GuardrailTripwire`` and is
-    recorded on the tripwire path instead).
-    """
-    if not decisions:
-        set_guardrail_output_attributes(span, decision="allow")
-        return
-    primary = decisions[0]
-    total = sum((_sum_rule_counts(d.rationale) or 0) for d in decisions) or None
-    set_guardrail_output_attributes(
-        span,
-        decision=primary.decision,
-        category=primary.category,
-        rule_id=primary.rule_id,
-        count=total,
-    )
 
 
 def _nemo_output_active(pins: GuardrailsPin) -> bool:
@@ -339,12 +263,12 @@ def _run_pre_generation(
     helpers exactly as the blocking path always recorded them. Must be called
     with the root query span CURRENT so stage spans parent correctly.
 
-    ``guardrails.check_input`` is FIRST and is config-gated: it receives the
-    resolved ``guardrails`` pins and the injected classifier. When the guard is
-    disabled (1.0.0/1.1.0/1.2.0) it is a typed identity — no behavior change and
-    no classifier call. When enabled and a system-prompt-leakage attempt is
-    detected it raises ``GuardrailTripwire``, which PROPAGATES here unchanged
-    (no try/except in the pure chain) for the routes to turn into a 200 refusal.
+    ``guardrails.check_input_nemo`` is FIRST and is config-gated: it receives the
+    resolved ``guardrails`` pins and the injected pod client. With no ``nemo``
+    selector (1.0.0-1.4.0) it is a typed identity — no pod call. On a pre-filter
+    HIT that the pod flags unsafe it raises ``GuardrailTripwire``, which
+    PROPAGATES here unchanged (no try/except in the pure chain) for the routes to
+    turn into a 200 refusal.
 
     ``request.history`` + the resolved config's history pins feed ONLY
     ``query_rewrite`` (the retrieval query — the history-prefixed rewrite is
@@ -359,42 +283,7 @@ def _run_pre_generation(
     # Config-gated input guard, then the parked policy-router identity — both
     # stay in-chain at their natural first positions.
     guard_pins = resolved.config.guardrails
-    if guardrails.prefilter_hit(request.question, guard_pins) and clients.classifier is not None:
-        # The Haiku classifier WILL run: wrap it in an LLM span so the guard call
-        # is visible in Phoenix (model id, token counts, latency) on a SAFE allow
-        # AND a block — parents to the current root span (both routes). A block
-        # raises through here; we record the outcome and end the span CLEANLY
-        # (not an error) before re-raising for the route to turn into a refusal.
-        guard_span = start_guardrail_input_span(tracer, model_id=guard_pins.classifier_model_id)
-        try:
-            guard_result = guardrails.check_input(
-                request.question, pins=guard_pins, classifier=clients.classifier
-            )
-        except guardrails.GuardrailTripwire as tripwire:
-            set_guardrail_input_attributes(
-                guard_span,
-                decision=tripwire.decision.decision,
-                category=tripwire.decision.category,
-                rule_id=tripwire.decision.rule_id,
-                input_tokens=tripwire.input_tokens,
-                output_tokens=tripwire.output_tokens,
-            )
-            guard_span.end()
-            raise
-        set_guardrail_input_attributes(
-            guard_span,
-            decision="allow",
-            input_tokens=guard_result.input_tokens,
-            output_tokens=guard_result.output_tokens,
-        )
-        guard_span.end()
-        question = guard_result.question
-    else:
-        # Gate off, pre-filter miss, or misconfiguration (classifier None) → no
-        # classifier call and no span. Misconfiguration still raises loudly here.
-        question = guardrails.check_input(
-            request.question, pins=guard_pins, classifier=clients.classifier
-        ).question
+    question = request.question
 
     # Out-of-process NeMo INPUT self-check lane (the nemo-all 1.8.0 config). The
     # orchestrator regex pre-filter is the FREE cost gate: a benign pre-filter
@@ -689,40 +578,9 @@ def post_query(request: QueryRequest, http_request: Request) -> QueryResponse:
         # path as the input block; redactable PII is masked and email/phone
         # flagged, and citations are built over the possibly-REDACTED text.
         guard_pins = resolved.config.guardrails
-        if _output_guard_active(guard_pins):
-            guard_out_span = start_guardrail_output_span(tracer)
-            out_guard_start = time.perf_counter()
-            # try/finally guarantees the span is ended on EVERY path (normal,
-            # the tripwire's early return, or an unexpected attribute-set error).
-            try:
-                out = guardrails.check_output(generation.text, pins=guard_pins)
-                timings_ms["guardrail_output"] = (time.perf_counter() - out_guard_start) * 1000.0
-                _record_output_guard_decisions(guard_out_span, out.decisions)
-                answer_text = out.answer_text
-                guardrail_decisions = list(out.decisions)
-            except guardrails.GuardrailTripwire as tripwire:
-                timings_ms["guardrail_output"] = (time.perf_counter() - out_guard_start) * 1000.0
-                set_guardrail_output_attributes(
-                    guard_out_span,
-                    decision=tripwire.decision.decision,
-                    category=tripwire.decision.category,
-                    rule_id=tripwire.decision.rule_id,
-                )
-                trace_block = trace_echo(root_span)
-                timings_ms["total"] = (time.perf_counter() - total_start) * 1000.0
-                result = _blocked_result(
-                    request, resolved, settings, timings_ms=timings_ms, trace_block=trace_block
-                )
-                return QueryResponse(
-                    result=result,
-                    guardrail_decisions=[tripwire.decision],
-                    generation_mode="live",
-                )
-            finally:
-                guard_out_span.end()
-        else:
-            answer_text = generation.text
-            guardrail_decisions = []
+        guard_pins = resolved.config.guardrails
+        answer_text = generation.text
+        guardrail_decisions = []
 
         # Out-of-process NeMo output/facts guard (Q6b: OUTPUT + FACTS only). Runs
         # over the possibly-REDACTED answer and the retrieved chunks (facts
@@ -975,12 +833,10 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
 
     generator_pin = resolved.config.generator
     guard_pins = resolved.config.guardrails
-    regex_output_active = _output_guard_active(guard_pins)
     nemo_output_active = _nemo_output_active(guard_pins)
-    # BUFFERED delivery when ANY output guard is active: no token events reach
-    # the client until the COMPLETE answer has cleared the output guard(s) — the
-    # regex PII/secrets scan and/or the out-of-process NeMo output/facts rails.
-    buffered = regex_output_active or nemo_output_active
+    # BUFFERED delivery when the NeMo output guard is active: no token events
+    # reach the client until the COMPLETE answer has cleared the pod's rails.
+    buffered = nemo_output_active
 
     def event_stream() -> Iterator[str]:
         """
@@ -1021,52 +877,8 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
             # built over the possibly-REDACTED text. Live mode (empty
             # output_categories) runs check_output as a typed identity — NO span,
             # NO guardrail_output timing → byte-for-byte unchanged.
-            if regex_output_active:
-                guard_out_span = start_guardrail_output_span(tracer, context=root_context)
-                open_spans.append(guard_out_span)
-                out_guard_start = time.perf_counter()
-                try:
-                    out = guardrails.check_output(generation.text, pins=guard_pins)
-                except guardrails.GuardrailTripwire as tripwire:
-                    # A successful, honest refusal — NOT an error. Caught HERE
-                    # (before the outer except) so it is never emitted as an
-                    # error event: exactly one final refusal, zero tokens.
-                    timings_ms["guardrail_output"] = (
-                        time.perf_counter() - out_guard_start
-                    ) * 1000.0
-                    set_guardrail_output_attributes(
-                        guard_out_span,
-                        decision=tripwire.decision.decision,
-                        category=tripwire.decision.category,
-                        rule_id=tripwire.decision.rule_id,
-                    )
-                    guard_out_span.end()
-                    open_spans.remove(guard_out_span)
-                    trace_block = trace_echo(root_span)
-                    timings_ms["total"] = (time.perf_counter() - total_start) * 1000.0
-                    result = _blocked_result(
-                        request,
-                        resolved,
-                        settings,
-                        timings_ms=timings_ms,
-                        trace_block=trace_block,
-                    )
-                    envelope = QueryResponse(
-                        result=result,
-                        guardrail_decisions=[tripwire.decision],
-                        generation_mode="live",
-                    )
-                    yield _sse_event("final", envelope.model_dump(mode="json"))
-                    return
-                timings_ms["guardrail_output"] = (time.perf_counter() - out_guard_start) * 1000.0
-                _record_output_guard_decisions(guard_out_span, out.decisions)
-                guard_out_span.end()
-                open_spans.remove(guard_out_span)
-                answer_text = out.answer_text
-                guardrail_decisions = list(out.decisions)
-            else:
-                answer_text = generation.text
-                guardrail_decisions = []
+            answer_text = generation.text
+            guardrail_decisions = []
 
             # Out-of-process NeMo output/facts guard (buffered: no tokens have
             # shipped). A block terminates the stream in ONE final canned refusal

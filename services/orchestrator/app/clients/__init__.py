@@ -23,7 +23,6 @@ from typing import Any
 
 from app.clients.bedrock import TITAN_EMBEDDING_DIMENSIONS, BedrockClient
 from app.clients.errors import OpenSearchNotReadyError
-from app.clients.guardrail import GuardClassifier
 from app.clients.nemo_guard import NemoGuardClient
 from app.clients.opensearch import OpenSearchSearchClient
 from app.config import DEFAULT_PIPELINE_CONFIG_REF, Settings, resolve_pipeline_config
@@ -40,26 +39,19 @@ class AppClients:
     ``readyz`` and maps ``/query`` to 502 (dependency: opensearch), instead
     of crashing at startup.
 
-    ``classifier`` is the injected Bedrock **Haiku** guard classifier. It is
-    consulted ONLY when the resolved config enables the input guard AND the
-    deterministic pre-filter hits — a distinct role from ``bedrock`` (the
-    generator) and from eval's judge; the no-self-grading invariant is
-    untouched. Constructing it makes NO paid call.
-
     ``nemo`` is the injected out-of-process NeMo Guardrails pod client (HTTP).
     It is consulted ONLY when the resolved config enables the ``nemo``
     output/facts lane (``guardrails.nemo.enabled``); constructing it opens NO
     connection and makes NO paid call. ``None`` when ``ORCHESTRATOR_NEMO_GUARD_URL``
     is unset — the lane is also config-gated, so the released 1.0.0-1.4.0
-    configs never reach it regardless. Per Q6b the NeMo lane is OUTPUT + FACTS
-    only this slice; the input lane keeps the in-house Haiku confirm-step.
+    configs never reach it regardless. The pod owns BOTH the input and the
+    output/facts lanes: it is the only guard.
 
     Fields are duck-typed ``Any`` so tests install mock instances directly.
     """
 
     bedrock: Any
     search: Any | None = None
-    classifier: Any | None = None
     nemo: Any | None = None
     # Human-readable reason search is None; surfaced by readyz and the 502.
     opensearch_unavailable_reason: str | None = None
@@ -75,21 +67,17 @@ def build_app_clients(settings: Settings) -> AppClients:
     pins (model ids, temperature, budgets) still arrive per call from each
     request's resolved config.
 
-    The Bedrock generator AND the guard classifier are both constructed here
-    (neither makes a paid call at construction); the guard classifier is
-    injected into the input-guard stage exactly like the generator reaches the
-    generation stage. The NeMo guardrail pod client is constructed from the
-    ``ORCHESTRATOR_NEMO_GUARD_URL`` location fact when set (opening no
-    connection); it is injected into the OUTPUT-guard stage the same way. An
+    The Bedrock generator is constructed here (no paid call at construction) and
+    reaches the generation stage by injection. The NeMo guardrail pod client is
+    constructed from the ``ORCHESTRATOR_NEMO_GUARD_URL`` location fact when set
+    (opening no connection); it is injected into the input and output guard
+    stages the same way — the pod is the only guard. An
     OpenSearch client that cannot be constructed NEVER crashes startup: the
     reason is recorded so ``readyz`` reports 503 and ``/query`` maps to 502
     naming the dependency.
     """
     default_config = resolve_pipeline_config(DEFAULT_PIPELINE_CONFIG_REF).config
     bedrock = BedrockClient(region=default_config.region)
-    # Distinct role from the generator: the guard classifier NEVER grades the
-    # generator's own output and never runs in eval. No paid call at build.
-    classifier = GuardClassifier(region=default_config.region)
     # Out-of-process NeMo output/facts lane client: constructed only when the pod
     # URL location fact is set (constructing opens no connection / makes no call).
     # The lane is ALSO config-gated (guardrails.nemo), so a None here just means
@@ -104,7 +92,6 @@ def build_app_clients(settings: Settings) -> AppClients:
         return AppClients(
             bedrock=bedrock,
             search=None,
-            classifier=classifier,
             nemo=nemo,
             opensearch_unavailable_reason=(
                 "ORCHESTRATOR_OPENSEARCH_ENDPOINT is not set — the service "
@@ -125,7 +112,6 @@ def build_app_clients(settings: Settings) -> AppClients:
         return AppClients(
             bedrock=bedrock,
             search=None,
-            classifier=classifier,
             nemo=nemo,
             opensearch_unavailable_reason=str(exc),
         )
@@ -135,10 +121,9 @@ def build_app_clients(settings: Settings) -> AppClients:
         return AppClients(
             bedrock=bedrock,
             search=None,
-            classifier=classifier,
             nemo=nemo,
             opensearch_unavailable_reason=(
                 f"OpenSearch was unreachable at startup ({type(exc).__name__})."
             ),
         )
-    return AppClients(bedrock=bedrock, search=search, classifier=classifier, nemo=nemo)
+    return AppClients(bedrock=bedrock, search=search, nemo=nemo)

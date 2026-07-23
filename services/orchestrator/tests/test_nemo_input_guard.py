@@ -30,9 +30,7 @@ import httpx
 import pytest
 from app.clients import AppClients
 from app.clients.nemo_guard import NemoVerdict
-from app.config import resolve_pipeline_config
 from app.main import app as main_app
-from app.orchestrator import guardrails
 from app.orchestrator.guardrails import (
     REFUSAL_TEXT,
     GuardMisconfiguredError,
@@ -205,7 +203,7 @@ class ExplodingClassifier:
 def _client(mock_bedrock, mock_search, nemo) -> TestClient:
     main_app.state.settings = FIXTURE_SETTINGS
     main_app.state.clients = AppClients(
-        bedrock=mock_bedrock, search=mock_search, classifier=ExplodingClassifier(), nemo=nemo
+        bedrock=mock_bedrock, search=mock_search, nemo=nemo
     )
     return TestClient(main_app)
 

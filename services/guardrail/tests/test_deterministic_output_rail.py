@@ -1,9 +1,14 @@
 """
-Task Group 1: the pod's FIRST, deterministic (pure-regex, NO-LLM) secrets/PII
-output rail — block/flag policy, Luhn gating, short-circuit attribution, the
-`detections` verdict shape, and the `/readyz` fail-fast on a non-compiling
-pattern. Fully offline (no AWS): the detector is pure `re`, and the LLM rail is a
-recording double so we can PROVE the paid `generate` is skipped on a block.
+The pod's FIRST, deterministic (pure-regex, NO-LLM) SECRETS output rail — block
+policy, short-circuit attribution, the `detections` verdict shape, and the
+`/readyz` fail-fast on a non-compiling pattern. Fully offline (no AWS): the
+detector is pure `re`, and the LLM rail is a recording double so we can PROVE the
+paid `generate` is skipped on a block.
+
+Scope note (item 6): the `pii:` table is WITHDRAWN, so this file no longer
+carries PII block/flag cases. The withdrawal itself — Australian financial
+identifiers delivered clean — plus the retained `blocks:` / `validator:`
+extension seam are asserted in `test_pii_retirement.py`.
 
 The single live-Bedrock round-trip (input block + a secrets short-circuit end to
 end through the pod) is the AWS-marked smoke in `test_bedrock_smoke.py`.
@@ -54,59 +59,20 @@ def test_secret_blocks_and_short_circuits_recording_attribution():
     assert verdict.input_tokens is None and verdict.output_tokens is None
 
 
-def test_high_severity_pii_blocks_with_luhn_gate():
-    """credit_card (valid Luhn) and ssn → BLOCK; the LLM rail is short-circuited."""
+def test_a_clean_answer_does_not_short_circuit_the_llm_rails():
+    """No deterministic hit → no block, no detections, and the LLM rail IS consulted."""
     rails = FakeRails(benign_res())
-    # 4111 1111 1111 1111 is a Luhn-valid test card.
-    cc = nemo_runtime.check_output(
-        rails, "card 4111 1111 1111 1111", chunks=[], model_id=TEST_MODEL_ID, detectors=_detectors()
-    )
-    assert cc.unsafe is True and cc.rationale == "credit_card"
-    assert _dets(cc) == {"credit_card": 1}
-    assert rails.calls == []
-
-    rails = FakeRails(benign_res())
-    ssn = nemo_runtime.check_output(
-        rails, "SSN 123-45-6789 on file", chunks=[], model_id=TEST_MODEL_ID, detectors=_detectors()
-    )
-    assert ssn.unsafe is True and ssn.rationale == "ssn"
-    assert rails.calls == []
-
-
-def test_luhn_gated_non_card_does_not_block():
-    """A 16-digit run that FAILS Luhn (a reference number) does NOT trip credit_card."""
-    rails = FakeRails(benign_res())
-    # 1234 5678 1234 5678 is 16 digits but NOT Luhn-valid → no block, no detection.
     verdict = nemo_runtime.check_output(
         rails,
-        "Exhibit reference 1234 5678 1234 5678 is enclosed.",
-        chunks=[],
+        "Exhibit reference 1234 5678 1234 5678 is enclosed; call 0412 345 678.",
+        chunks=["evidence"],
         model_id=TEST_MODEL_ID,
         detectors=_detectors(),
     )
     assert verdict.unsafe is False
-    assert "credit_card" not in _dets(verdict)
+    assert list(verdict.detections) == []
     # Not a block → the LLM rail WAS consulted (allow verdict rides through).
     assert len(rails.calls) == 1
-
-
-def test_low_severity_pii_flags_without_short_circuit():
-    """email/phone → FLAG (not block): the LLM rails STILL run; detections carry counts."""
-    rails = FakeRails(benign_res())
-    answer = "Contact a@b.com or c@d.com, or call (555) 123-4567."
-    verdict = nemo_runtime.check_output(
-        rails, answer, chunks=["evidence"], model_id=TEST_MODEL_ID, detectors=_detectors()
-    )
-    # Low-sev PII does NOT block and does NOT short-circuit.
-    assert verdict.unsafe is False
-    # The LLM output rail WAS consulted (one generate call) — no short-circuit.
-    assert len(rails.calls) == 1
-    # `detections` shape: {category, label, count} — labels + counts, NO offsets.
-    assert _dets(verdict) == {"email": 2, "phone": 1}
-    by_label = {d.label: d for d in verdict.detections}
-    assert by_label["email"].category == "pii" and by_label["email"].count == 2
-    assert by_label["phone"].category == "pii" and by_label["phone"].count == 1
-    assert not any(hasattr(d, "offset") or hasattr(d, "span") for d in verdict.detections)
 
 
 def test_detections_shape_over_the_endpoint(make_client):
@@ -114,19 +80,27 @@ def test_detections_shape_over_the_endpoint(make_client):
     client = make_client(FakeRails(benign_res()))
     resp = client.post(
         "/check/output",
-        json={"answer": "Reach me at a@b.com or c@d.com.", "chunks": ["e"]},
+        json={
+            "answer": (
+                "Rotate AKIA0123456789ABCDEF and AKIAFEDCBA9876543210 immediately."
+            ),
+            "chunks": ["e"],
+        },
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["unsafe"] is False
-    assert body["detections"] == [{"category": "pii", "label": "email", "count": 2}]
+    # An honest 200 refusal, never a 5xx; the wire shape is unchanged.
+    assert body["unsafe"] is True
+    assert body["detections"] == [
+        {"category": "secrets", "label": "aws_access_key", "count": 2}
+    ]
 
 
 def test_readyz_fails_fast_on_a_non_compiling_pattern(tmp_path, monkeypatch):
     """A non-compiling detector pattern → load raises, and /readyz reports 503 (never a silent no-op)."""
     # 1) The loader itself rejects a bad pattern (a broken detector must not no-op).
     bad = tmp_path / "detectors.yml"
-    bad.write_text("secrets:\n  - {pattern: '[unclosed', label: broken}\npii: []\n")
+    bad.write_text("secrets:\n  - {pattern: '[unclosed', label: broken}\n")
     with pytest.raises(DetectorConfigError, match="failed to compile"):
         load_detectors(tmp_path)
 

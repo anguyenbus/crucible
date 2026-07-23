@@ -23,15 +23,20 @@ actually exist here, and only a full-pipeline verdict catches them.
 **Mode A** (pod UP, the Bedrock/LLM rail fails — throttle / malformed / the
 stop-seq class we actually lived) is the core resilience payoff:
 
-  * a secrets / high-severity-PII answer STILL BLOCKS — the deterministic rail is
-    pure regex with no model, so it cannot be taken down by a Bedrock outage, and
-    it runs FIRST; and
+  * a secrets answer STILL BLOCKS — the deterministic rail is pure regex with no
+    model, so it cannot be taken down by a Bedrock outage, and it runs FIRST; and
   * ``self_check_output`` / ``self_check_facts`` fail OPEN + flag — a flaky paid
     rail must never nuke a valid legal answer.
 
 Note what Mode A proves about ordering: on a blocking row ``generate`` is never
 called AT ALL, so the block cannot be an artifact of the LLM rail's failure — it
 is the deterministic rail short-circuiting ahead of it.
+
+**The parity CONTRACT is ``secrets:`` only** (item 6): ``pii_high`` / ``pii_low``
+were withdrawn along with the pod's ``pii:`` table. Their rows are retained in
+the fixture and still driven through the pod — not as a parity score, but as the
+withdrawal regression, proving those answers are now delivered clean rather than
+blocked or flagged.
 """
 
 from __future__ import annotations
@@ -41,20 +46,24 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.helpers import TEST_MODEL_ID, FakeRes
+
+from tests.helpers import FakeRes
 
 # The labelled ANSWER-lane parity set (deterministic classes). The QUESTION-lane
 # slice — benign + jailbreak/prompt-leak + policy + grounding — is scored by the
 # Phoenix A/B harness instead, because those verdicts need a live Bedrock rail.
 PARITY_SET = Path(__file__).parent / "fixtures" / "parity" / "detector_answers.jsonl"
 
-# Class -> the verdict every row in it must receive end-to-end.
+# CONTRACT class -> the verdict every row in it must receive end-to-end.
 EXPECTED_BY_CLASS = {
     "secrets": "block",
-    "pii_high": "block",
-    "pii_low": "flag",
     "benign": "allow",
 }
+
+# Classes WITHDRAWN from the contract with the `pii:` table. Their fixture rows
+# are kept and scored as the withdrawal REGRESSION (every one must now deliver
+# clean), never as a parity number.
+WITHDRAWN_CLASSES = ("pii_high", "pii_low")
 
 
 # Secret-shaped samples are ASSEMBLED HERE at runtime from fragments, so neither
@@ -101,7 +110,9 @@ def load_parity_rows() -> list[dict[str, Any]]:
     return rows
 
 
-PARITY_ROWS = load_parity_rows()
+ALL_ROWS = load_parity_rows()
+PARITY_ROWS = [r for r in ALL_ROWS if r["attack_class"] in EXPECTED_BY_CLASS]
+WITHDRAWN_ROWS = [r for r in ALL_ROWS if r["attack_class"] in WITHDRAWN_CLASSES]
 
 
 class RaisingRails:
@@ -184,8 +195,8 @@ def test_deterministic_verdict_parity_end_to_end_through_the_pod(make_client, ro
         assert body["detections"] == []
 
 
-def test_parity_set_covers_every_deterministic_class_at_the_required_size():
-    """The parity set meets the gate's per-class minimum (>=20-30 per class)."""
+def test_parity_set_covers_every_contract_class_at_the_required_size():
+    """The scored parity set meets the gate's per-class minimum (>=20-30 per class)."""
     counts: dict[str, int] = {}
     for row in PARITY_ROWS:
         counts[row["attack_class"]] = counts.get(row["attack_class"], 0) + 1
@@ -195,13 +206,26 @@ def test_parity_set_covers_every_deterministic_class_at_the_required_size():
         assert count >= 20, f"{attack_class} has only {count} rows (gate floor is 20)"
 
 
-@pytest.mark.parametrize("attack_class", ["secrets", "pii_high"])
+@pytest.mark.parametrize(
+    "row", WITHDRAWN_ROWS, ids=[row["query_id"] for row in WITHDRAWN_ROWS]
+)
+def test_withdrawn_pii_rows_are_now_delivered_clean_through_the_pod(make_client, row):
+    """Item-6 regression: every withdrawn PII row now ALLOWS with no detections."""
+    client = make_client(CleanRails())
+
+    body = _post(client, row["answer"])
+
+    assert _verdict_of(body) == "allow"
+    assert body["detections"] == []
+
+
+@pytest.mark.parametrize("attack_class", ["secrets"])
 def test_mode_a_deterministic_rail_still_blocks_when_the_bedrock_rail_fails(
     make_client, attack_class
 ):
     """
-    Mode A: the deterministic rail STILL BLOCKS every secrets / high-PII row when
-    the paid Bedrock rail is failing — pure regex, no model, ordered FIRST.
+    Mode A: the deterministic rail STILL BLOCKS every secrets row when the paid
+    Bedrock rail is failing — pure regex, no model, ordered FIRST.
     """
     rails = RaisingRails(_throttle())
     client = make_client(rails)
@@ -236,21 +260,22 @@ def test_mode_a_policy_and_facts_fail_open_with_a_flag_when_the_bedrock_rail_fai
     assert len(rails.calls) == 1
 
 
-def test_mode_a_low_severity_pii_is_delivered_with_its_detections_on_the_fail_open_path(
+def test_mode_a_contact_details_are_delivered_unflagged_on_the_fail_open_path(
     make_client,
 ):
     """
-    Mode A: low-severity PII does NOT short-circuit, so it reaches the failing
-    paid rail — and its deterministic attribution still survives the fail-open.
+    Mode A + item 6: an answer carrying contact details no longer trips ANY
+    deterministic rule, so it does not short-circuit — it reaches the failing paid
+    rail and is delivered with the advisory fail-open flag and NO detections.
     """
     rails = RaisingRails(_throttle())
     client = make_client(rails)
 
-    body = _post(client, "Call the registry on 555-123-4567 or email clerk@example.gov.au.")
+    body = _post(client, "Call the registry on 0412 345 678 or email clerk@example.gov.au.")
 
-    assert body["unsafe"] is False, "low-severity PII must be FLAGGED, not blocked"
+    assert body["unsafe"] is False, "contact details must never block"
+    # The only flag here is the fail-open advisory, not a deterministic detection.
     assert body["flag"] is True
-    labels = {detection["label"] for detection in body["detections"]}
-    assert labels == {"phone", "email"}
+    assert body["detections"] == []
     # It rode the same pass as the LLM rails rather than short-circuiting them.
     assert len(rails.calls) == 1

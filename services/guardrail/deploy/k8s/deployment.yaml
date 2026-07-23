@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guardrail
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: guardrail
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: guardrail
+    spec:
+      # AWS credentials come from the ambient chain ONLY — annotate this
+      # ServiceAccount for IRSA (see serviceaccount.yaml), or fall back to the
+      # node role. No credential is ever written into a manifest or a ConfigMap.
+      serviceAccountName: guardrail
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: guardrail
+          # No pod image has been built yet — this mirrors
+          # `image_digest: "pending-ci-build"` in
+          # services/orchestrator/app/configs/legal-rag-default-1.8.0.yaml. CI
+          # replaces this with the immutable `@sha256:` digest it builds.
+          image: guardrail:pending-ci-build
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            # BOTH determinism pins, generated from services/guardrail/deploy/
+            # guardrail-pins.env by the configMapGenerator in kustomization.yaml
+            # — the same bytes compose reads via `env_file:`, never hand-copied.
+            # The pod recomputes both at startup and REFUSES to serve on
+            # mismatch, so a drifted config/ or uv.lock CrashLoopBackOffs here
+            # instead of answering under a stale pin.
+            - configMapRef:
+                name: guardrail-pins
+          env:
+            # Guard model role separation: Haiku is the GUARD model, never the
+            # generator or the eval judge.
+            - name: GUARDRAIL_MODEL_ID
+              value: au.anthropic.claude-haiku-4-5-20251001-v1:0
+            - name: GUARDRAIL_REGION
+              value: ap-southeast-2
+            - name: AWS_REGION
+              value: ap-southeast-2
+          livenessProbe:
+            # Process liveness only — touches no dependency, never a Bedrock call.
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            # Ready only once the LLMRails engine built AND the deterministic
+            # detector compiled — both of which follow the pin self-verification.
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          startupProbe:
+            # The engine build dominates startup; give it room before liveness
+            # begins, so a slow build is not mistaken for a dead process.
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 12
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL

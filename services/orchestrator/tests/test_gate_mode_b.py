@@ -98,7 +98,6 @@ def _client(mock_bedrock, mock_search, nemo) -> TestClient:
     main_app.state.clients = AppClients(
         bedrock=mock_bedrock,
         search=mock_search,
-        classifier=ExplodingClassifier(),
         nemo=nemo,
     )
     return TestClient(main_app)

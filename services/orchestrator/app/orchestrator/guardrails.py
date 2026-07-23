@@ -28,7 +28,6 @@ configs) makes it a typed identity, so those lanes stay byte-for-byte.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final, Protocol
 
@@ -38,31 +37,16 @@ from app.schemas.pipeline_config import GuardrailsPin
 # The single canned refusal the Chainlit UI renders verbatim on a block.
 REFUSAL_TEXT: Final[str] = "I'm sorry, but I can't help with that request."
 
-# Guard identity for the prompt-leak/injection class (this slice's only class).
 _INPUT_STAGE: Final[str] = "input"
-_BLOCK_CATEGORY: Final[str] = "prompt_leak"
-_BLOCK_RULE_ID: Final[str] = "prompt-leak-v1"
-_FAIL_SAFE_RATIONALE: Final[str] = (
-    "guard classifier unavailable on a pre-filter-flagged input — failing safe"
-)
-_DEFAULT_BLOCK_RATIONALE: Final[str] = "system-prompt extraction attempt"
+_OUTPUT_STAGE: Final[str] = "output"
 
-# Input-guard detector sub-classes selectable via ``pins.input_categories``.
-# ``prompt_leak`` is the shipped ``_PREFILTER_PATTERNS`` set (unchanged);
-# ``jailbreak`` and ``unicode_evasion`` are the second-slice additions, inert
-# unless a config opts in (so ``[prompt_leak]``-only configs stay byte-for-byte).
+# Pre-filter detector sub-classes — the FREE cost gate in front of the pod's
+# `self_check_input`. `prompt_leak` is the shipped `_PREFILTER_PATTERNS` set;
+# `jailbreak` and `unicode_evasion` are the second-slice additions. These decide
+# NOTHING: a hit only means the paid pod call is worth making.
 _PROMPT_LEAK_INPUT_CATEGORY: Final[str] = "prompt_leak"
 _JAILBREAK_INPUT_CATEGORY: Final[str] = "jailbreak"
 _UNICODE_EVASION_INPUT_CATEGORY: Final[str] = "unicode_evasion"
-
-# Output-guard detector classes selectable via ``pins.output_categories`` and
-# the fixed decision identities each produces.
-_OUTPUT_STAGE: Final[str] = "output"
-_SECRETS_CATEGORY: Final[str] = "secrets"
-_PII_CATEGORY: Final[str] = "pii"
-_OUTPUT_SECRETS_RULE_ID: Final[str] = "output-secrets-v1"
-_OUTPUT_PII_REDACT_RULE_ID: Final[str] = "output-pii-redact-v1"
-_OUTPUT_PII_FLAG_RULE_ID: Final[str] = "output-pii-flag-v1"
 
 # NeMo out-of-process OUTPUT/facts lane identities (self check output +
 # independently-gated self check facts). A NeMo block reuses the SAME honest
@@ -106,15 +90,6 @@ _NEMO_INPUT_PREFILTER_CATEGORIES: Final[tuple[str, ...]] = (
     _JAILBREAK_INPUT_CATEGORY,
     _UNICODE_EVASION_INPUT_CATEGORY,
 )
-
-
-class ClassifierVerdict(Protocol):
-    """Structural shape of the injected classifier's plain-data verdict."""
-
-    unsafe: bool
-    rationale: str | None
-    input_tokens: int | None
-    output_tokens: int | None
 
 
 @dataclass(frozen=True)
@@ -162,20 +137,6 @@ class GuardOutputResult:
     output_tokens: int | None = None
 
 
-class GuardClassifier(Protocol):
-    """
-    Structural type of the injected Bedrock Haiku guard classifier.
-
-    Matches ``app.clients.guardrail.GuardClassifier`` WITHOUT importing it — the
-    stage stays free of any boto3-carrying module (``stages-pure``). The client
-    is injected by the router exactly like ``bedrock``/``search``.
-    """
-
-    def classify(self, question: str, *, model_id: str) -> ClassifierVerdict:
-        """Classify one user turn for system-prompt-leakage / injection."""
-        ...
-
-
 class NemoOutputVerdict(Protocol):
     """
     Structural shape of the NeMo pod's plain-data OUTPUT verdict.
@@ -215,7 +176,8 @@ class NemoGuardClient(Protocol):
         ...
 
     def check_input(self, question: str) -> NemoOutputVerdict:
-        """Self-check ONE user turn via the pod's ``self_check_input`` rail.
+        """
+        Self-check ONE user turn via the pod's ``self_check_input`` rail.
 
         Wired ONLY on the nemo-all ``1.8.0`` config (``input_self_check``); the
         in-house ``1.0.0``-``1.4.0`` configs keep the in-house Haiku
@@ -272,94 +234,6 @@ _PREFILTER_PATTERNS: Final[tuple[re.Pattern[str], ...]] = tuple(
 # so case-sensitive prefixes (``AKIA``, ``sk-ant-``) stay exact; the one
 # case-insensitive rule (the DB URL) carries its own inline ``(?i)``.
 # (regex, rule_label, source_confidence)
-_SECRET_PATTERNS: Final[tuple[tuple[re.Pattern[str], str, float], ...]] = tuple(
-    (re.compile(pattern), label, confidence)
-    for pattern, label, confidence in (
-        (r"sk-ant-[a-zA-Z0-9\-_]{40,}", "anthropic_api_key", 0.95),
-        (r"AKIA[0-9A-Z]{16}", "aws_access_key", 0.95),
-        (r"sk-(?:proj-)?[a-zA-Z0-9\-_]{40,}", "openai_api_key", 0.90),
-        (r"AIza[0-9A-Za-z\-_]{35}", "google_api_key", 0.95),
-        (r"gh[posur]_[0-9a-zA-Z]{36}", "github_token", 0.99),
-        (
-            r"xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24}",
-            "slack_token",
-            0.95,
-        ),
-        (r"hf_[a-zA-Z0-9]{34}", "huggingface_token", 0.95),
-        (
-            r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
-            "private_key",
-            0.95,
-        ),
-        (
-            r"eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*",
-            "jwt_token",
-            0.85,
-        ),
-        (
-            r"(?i)(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis)://"
-            r"[^\s]+:[^\s]+@[^\s]+",
-            "database_url",
-            0.95,
-        ),
-    )
-)
-
-# --- Pattern set 2: PII (OUTPUT guard, REDACT + advisory FLAG classes) --------
-# Source: references/agent-learning-kit/python/fi/evals/guardrails/scanners/regex.py
-# (COMMON_PATTERNS: credit_card, ssn, passport, mrn, email, phone_us).
-# Each row carries a per-rule ACTION so ``check_output`` can branch redact-vs-flag:
-#   "redact"  -> mask the span in place (credit_card / ssn / passport / mrn)
-#   "flag"    -> advisory only, answer unchanged (email / phone)
-# The SSN rule REQUIRES an explicit ``-``/space separator (tightened from the
-# source's optional separator) so a plain run of 9 digits -- e.g. a statute
-# number in a legal answer -- does NOT trip it (FP reduction).
-# (regex, rule_label, action, source_confidence)
-_PII_PATTERNS: Final[tuple[tuple[re.Pattern[str], str, str, float], ...]] = tuple(
-    (re.compile(pattern), label, action, confidence)
-    for pattern, label, action, confidence in (
-        (r"\b(?:\d{4}[- ]?){3}\d{4}\b", "credit_card", "redact", 0.85),
-        (r"\b\d{3}[- ]\d{2}[- ]\d{4}\b", "ssn", "redact", 0.80),
-        (
-            r"(?i)\b(?:passport)\s*[#:]?\s*[A-Z0-9]{6,9}\b",
-            "passport",
-            "redact",
-            0.80,
-        ),
-        (
-            r"(?i)\b(?:mrn|medical\s*record)\s*[#:]?\s*\d{6,10}\b",
-            "mrn",
-            "redact",
-            0.85,
-        ),
-        (
-            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-            "email",
-            "flag",
-            0.90,
-        ),
-        (
-            # Tightened from the source's all-separators-optional form: a real
-            # separator (or parenthesized area code) is REQUIRED, so a bare
-            # 10-digit run — a matter/registry/reference number common in legal
-            # text — no longer trips a phantom advisory flag. Space-grouped
-            # numbers that genuinely look like a phone still match.
-            r"(?:\+?1[-. ]?)?(?:\([0-9]{3}\)[-. ]?|[0-9]{3}[-. ])[0-9]{3}[-. ][0-9]{4}\b",
-            "phone",
-            "flag",
-            0.75,
-        ),
-    )
-)
-
-# --- Pattern set 3: invisible-char / BIDI codepoints (INPUT hardening) --------
-# Source: references/agent-learning-kit/python/fi/evals/guardrails/scanners/invisible_chars.py
-# (INVISIBLE_CHARS, BIDI_CHARS). The large homoglyph confusable tables in that
-# file are higher-FP and deliberately SKIPPED in this slice.
-#   _INVISIBLE -> zero-width / invisible codepoints stripped BEFORE the keyword
-#                 pre-filter runs, so ``ig<ZWSP>nore previous`` no longer bypasses.
-#   _BIDI      -> BIDI override codepoints; U+202E is the dangerous one. Their
-#                 presence is a standalone pre-filter HIT.
 _INVISIBLE: Final[frozenset[int]] = frozenset(
     {0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD, 0x180E, 0x2061, 0x2062, 0x2063, 0x2064}
 )
@@ -466,50 +340,6 @@ class GuardMisconfiguredError(RuntimeError):
     """
 
 
-def _block_decision(rationale: str) -> GuardrailDecision:
-    """Build the structured ``block`` decision for the prompt-leak class."""
-    return GuardrailDecision(
-        stage=_INPUT_STAGE,
-        decision="block",
-        category=_BLOCK_CATEGORY,
-        rule_id=_BLOCK_RULE_ID,
-        rationale=rationale,
-    )
-
-
-def _output_block_decision(rationale: str) -> GuardrailDecision:
-    """Build the output-stage secrets ``block`` decision (mirrors ``_block_decision``)."""
-    return GuardrailDecision(
-        stage=_OUTPUT_STAGE,
-        decision="block",
-        category=_SECRETS_CATEGORY,
-        rule_id=_OUTPUT_SECRETS_RULE_ID,
-        rationale=rationale,
-    )
-
-
-def _output_redact_decision(rationale: str) -> GuardrailDecision:
-    """Build the single output-stage PII ``transform`` (redaction) decision."""
-    return GuardrailDecision(
-        stage=_OUTPUT_STAGE,
-        decision="transform",
-        category=_PII_CATEGORY,
-        rule_id=_OUTPUT_PII_REDACT_RULE_ID,
-        rationale=rationale,
-    )
-
-
-def _output_flag_decision(rationale: str) -> GuardrailDecision:
-    """Build the single output-stage advisory PII ``flag`` decision (answer unchanged)."""
-    return GuardrailDecision(
-        stage=_OUTPUT_STAGE,
-        decision="flag",
-        category=_PII_CATEGORY,
-        rule_id=_OUTPUT_PII_FLAG_RULE_ID,
-        rationale=rationale,
-    )
-
-
 def _nemo_output_block_decision(rationale: str) -> GuardrailDecision:
     """Build the NeMo output-lane ``block`` decision (honest 200 refusal path, I3)."""
     return GuardrailDecision(
@@ -550,91 +380,6 @@ def _nemo_output_flag_decision(rationale: str) -> GuardrailDecision:
     )
 
 
-def _format_rule_counts(counts: dict[str, int]) -> str:
-    """Render a deterministic per-rule count summary (e.g. ``ssn=2, credit_card=1``)."""
-    return ", ".join(f"{label}={counts[label]}" for label in counts)
-
-
-def _redaction_token(rule_label: str) -> str:
-    """Fixed, deterministic mask token for a redactable PII span."""
-    return f"‹redacted:{rule_label}›"
-
-
-def _luhn_ok(candidate: str) -> bool:
-    """
-    Luhn checksum over the digits of ``candidate`` (the standard card-number check).
-
-    Gates ``credit_card`` redaction: a 16-digit run that is NOT a valid card
-    number — a reference / control / exhibit number common in legal text — fails
-    Luhn and is left INTACT rather than destructively masked (FP reduction).
-    """
-    digits = [int(ch) for ch in candidate if ch.isdigit()]
-    if len(digits) < 13:
-        return False
-    checksum = 0
-    parity = len(digits) % 2
-    for index, digit in enumerate(digits):
-        if index % 2 == parity:
-            digit *= 2
-            if digit > 9:
-                digit -= 9
-        checksum += digit
-    return checksum % 10 == 0
-
-
-# Redact rules that fire ONLY when the matched text ALSO passes a validator.
-# credit_card requires a valid Luhn checksum so a 16-digit non-card is not masked.
-_REDACT_VALIDATORS: Final[dict[str, Callable[[str], bool]]] = {"credit_card": _luhn_ok}
-
-
-def _subn_validated(
-    pattern: re.Pattern[str], token: str, validator: Callable[[str], bool], text: str
-) -> tuple[str, int]:
-    """Like ``pattern.subn(token, text)`` but replaces ONLY matches passing ``validator``."""
-    replaced = 0
-
-    def _replace(match: re.Match[str]) -> str:
-        nonlocal replaced
-        if validator(match.group(0)):
-            replaced += 1
-            return token
-        return match.group(0)
-
-    return pattern.sub(_replace, text), replaced
-
-
-# Citation-marker grammar, mirroring ``citation_builder._MARKER_RE``. Redaction
-# skips these spans so a ``[chunk_id]`` whose id contains a PII-shaped run (e.g. a
-# 16-digit doc id the ``credit_card`` rule would match, or a 10-digit id the
-# ``phone`` rule would match) is preserved VERBATIM — otherwise the marker would
-# be mangled in place and the downstream citation builder, which runs AFTER
-# redaction over the same text, would fail to resolve it and silently DROP the
-# citation (miscounting it as a hallucinated marker).
-_CITATION_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"\[[^\[\]]+\]")
-
-
-def _split_citation_markers(text: str) -> list[tuple[bool, str]]:
-    """
-    Split ``text`` into ordered ``(is_marker, segment)`` parts.
-
-    ``is_marker`` True marks a ``[chunk_id]`` citation marker to be preserved
-    verbatim (never scanned or masked); False marks scannable text between
-    markers. Concatenating the segments reproduces ``text`` exactly, so it is
-    offset-preserving: citation ``claim_span`` offsets built over the redacted
-    result stay consistent with the delivered answer.
-    """
-    parts: list[tuple[bool, str]] = []
-    last = 0
-    for match in _CITATION_MARKER_RE.finditer(text):
-        if match.start() > last:
-            parts.append((False, text[last : match.start()]))
-        parts.append((True, match.group(0)))
-        last = match.end()
-    if last < len(text):
-        parts.append((False, text[last:]))
-    return parts
-
-
 def _prefilter_hit(question: str, categories: tuple[str, ...]) -> bool:
     """
     Return True when any ACTIVE pre-filter detector class matches ``question``.
@@ -666,188 +411,6 @@ def _prefilter_hit(question: str, categories: tuple[str, ...]) -> bool:
     ):
         return True
     return False
-
-
-def prefilter_hit(question: str, pins: GuardrailsPin) -> bool:
-    """
-    Report whether the guard is enabled AND an active pre-filter class matches.
-
-    A True result means the classifier WILL run for this question. The router
-    uses this to open the ``guardrail_input`` LLM span only around an actual
-    classifier call (so a benign pre-filter miss adds no span), then calls
-    :func:`check_input` as usual. ``check_input`` re-checks the pre-filter itself,
-    so it stays fully self-contained (callable without the router's gate). The
-    active pattern set + normalization are selected from ``pins.input_categories``.
-    """
-    return pins.enabled and _prefilter_hit(question, pins.input_categories)
-
-
-def check_input(
-    question: str,
-    *,
-    pins: GuardrailsPin,
-    classifier: GuardClassifier | None,
-) -> GuardInputResult:
-    """
-    Config-gated system-prompt-leakage input guard (allows with telemetry, or blocks).
-
-    Args:
-        question: The user turn (the current question, pre-rewrite).
-        pins: The resolved config's ``guardrails`` block. ``enabled=False`` ⇒
-            a typed IDENTITY: return the ``question`` unchanged, NO classifier
-            call (the eval/1.0.0/1.1.0/1.2.0 path — behavior identical to today).
-            ``pins.input_categories`` selects the active pre-filter classes.
-        classifier: The injected Bedrock Haiku guard classifier (or ``None``).
-
-    Returns:
-        A :class:`GuardInputResult` carrying the unchanged ``question`` when
-        allowed (gate off, pre-filter miss, or pre-filter hit classified SAFE);
-        the classifier-call telemetry (model id + token counts) is populated
-        only when the classifier actually ran.
-
-    Raises:
-        GuardrailTripwire: On a pre-filter hit that the classifier flags UNSAFE,
-            OR any classifier error on that (already suspicious) input — fail
-            SAFE. Carries the guard call's telemetry for the span. Normal traffic
-            never calls the classifier, so an outage can neither refuse benign
-            queries nor add cost to them.
-        GuardMisconfiguredError: Guard enabled but no classifier/model wired.
-
-    """
-    if not pins.enabled:
-        return GuardInputResult(question=question)
-    if not _prefilter_hit(question, pins.input_categories):
-        return GuardInputResult(question=question)
-
-    # Misconfiguration (guard enabled but no classifier client / model id wired)
-    # is a DEPLOY error, NOT a per-request classifier failure. Raise it LOUDLY
-    # (→ 500) so a wiring bug can never masquerade as a silent refusal of every
-    # flagged query. Deliberately OUTSIDE the fail-safe try below.
-    if classifier is None or not pins.classifier_model_id:
-        raise GuardMisconfiguredError(
-            "guardrails.enabled is true but no classifier client / model id was "
-            "injected — the input guard cannot run."
-        )
-
-    # Suspicious candidate: the classifier confirms or clears it. A RUNTIME
-    # classifier failure (throttle, ClientError, unparseable verdict) on this
-    # already-flagged input fails SAFE (BLOCK) — no verdict, so no token counts.
-    try:
-        verdict = classifier.classify(question, model_id=pins.classifier_model_id)
-    except Exception as exc:  # noqa: BLE001 — fail-safe: runtime classifier failure ⇒ block
-        raise GuardrailTripwire(
-            _block_decision(_FAIL_SAFE_RATIONALE), model_id=pins.classifier_model_id
-        ) from exc
-
-    if verdict.unsafe:
-        raise GuardrailTripwire(
-            _block_decision(verdict.rationale or _DEFAULT_BLOCK_RATIONALE),
-            model_id=pins.classifier_model_id,
-            input_tokens=verdict.input_tokens,
-            output_tokens=verdict.output_tokens,
-        )
-    return GuardInputResult(
-        question=question,
-        model_id=pins.classifier_model_id,
-        input_tokens=verdict.input_tokens,
-        output_tokens=verdict.output_tokens,
-    )
-
-
-def check_output(answer_text: str, *, pins: GuardrailsPin) -> GuardOutputResult:
-    """
-    Config-gated, PURE, deterministic output PII/secrets guard (regex-only, NO model).
-
-    Args:
-        answer_text: The generated answer (with any ``[chunk_id]`` citation
-            markers still embedded — redaction leaves them intact).
-        pins: The resolved config's ``guardrails`` block. An empty
-            ``output_categories`` ⇒ a typed IDENTITY:
-            ``GuardOutputResult(answer_text, ())`` — no scan, the released
-            ``1.0.0``–``1.3.0`` path. ``output_categories`` selects the active
-            scan classes (``secrets`` / ``pii``) and is the SOLE gate: the output
-            guard is pure regex with no model dependency, so it is INDEPENDENT of
-            ``enabled`` / the input classifier (a config may run the output guard
-            with ``enabled=False`` and no classifier wired).
-
-    Returns:
-        A :class:`GuardOutputResult` carrying the possibly-redacted ``answer_text``
-        (redactable PII spans masked left-to-right with a fixed token) and the
-        accumulated non-block decisions: at most one ``transform`` (PII redaction,
-        per-rule count) and one ``flag`` (advisory email/phone, count).
-
-    Raises:
-        GuardrailTripwire: On a ``secrets`` hit (only when ``"secrets"`` is in
-            ``output_categories``) — the whole answer is suppressed to the canned
-            refusal. Regex-only, so NO model/token telemetry on the tripwire.
-    """
-    if not pins.output_categories:
-        return GuardOutputResult(answer_text=answer_text, decisions=())
-
-    active = frozenset(pins.output_categories)
-
-    # secrets ⇒ BLOCK: the whole answer is suppressed. Checked first so a
-    # credential-bearing answer never has PII merely masked and delivered. Scans
-    # ONLY the text BETWEEN [chunk_id] markers (like the PII scan): a marker is a
-    # machine-generated chunk id, not model prose, so a credential-shaped doc id
-    # must never trigger a false full-answer block.
-    if _SECRETS_CATEGORY in active:
-        for is_marker, segment in _split_citation_markers(answer_text):
-            if is_marker:
-                continue
-            for pattern, label, _confidence in _SECRET_PATTERNS:
-                if pattern.search(segment):
-                    raise GuardrailTripwire(_output_block_decision(label))
-
-    decisions: list[GuardrailDecision] = []
-    text = answer_text
-
-    if _PII_CATEGORY in active:
-        # Redactable PII ⇒ mask each span in place with a fixed deterministic
-        # token; advisory PII (email/phone) ⇒ FLAG only. BOTH operate ONLY on the
-        # text BETWEEN [chunk_id] citation markers (_split_citation_markers): a
-        # marker is preserved verbatim, so a numeric-heavy chunk id can never be
-        # corrupted (which would silently drop the citation downstream) and never
-        # yields a phantom redaction/flag. Advisory counts run on the already-
-        # redacted segment so a masked span never re-counts as a flag. Marker
-        # spans are offset-preserving, so citation claim_span offsets stay valid.
-        redact_counts: dict[str, int] = {}
-        flag_counts: dict[str, int] = {}
-        rebuilt: list[str] = []
-        for is_marker, segment in _split_citation_markers(text):
-            if is_marker:
-                rebuilt.append(segment)  # never scanned or masked
-                continue
-            for pattern, label, action, _confidence in _PII_PATTERNS:
-                if action != "redact":
-                    continue
-                validator = _REDACT_VALIDATORS.get(label)
-                if validator is None:
-                    segment, n = pattern.subn(_redaction_token(label), segment)
-                else:
-                    # e.g. credit_card: mask ONLY Luhn-valid matches; a 16-digit
-                    # non-card reference number is left intact.
-                    segment, n = _subn_validated(
-                        pattern, _redaction_token(label), validator, segment
-                    )
-                if n:
-                    redact_counts[label] = redact_counts.get(label, 0) + n
-            for pattern, label, action, _confidence in _PII_PATTERNS:
-                if action != "flag":
-                    continue
-                n = len(pattern.findall(segment))
-                if n:
-                    flag_counts[label] = flag_counts.get(label, 0) + n
-            rebuilt.append(segment)
-        text = "".join(rebuilt)
-        # Redaction decision is appended BEFORE the flag decision so decisions[0]
-        # is the transform when both fire (the router records it as primary).
-        if redact_counts:
-            decisions.append(_output_redact_decision(_format_rule_counts(redact_counts)))
-        if flag_counts:
-            decisions.append(_output_flag_decision(_format_rule_counts(flag_counts)))
-
-    return GuardOutputResult(answer_text=text, decisions=tuple(decisions))
 
 
 def nemo_output_active(pins: GuardrailsPin) -> bool:
@@ -918,6 +481,7 @@ def check_output_nemo(
         GuardMisconfiguredError: The NeMo lane is enabled but no client was
             injected — a deploy/wiring error, raised LOUDLY (→ 500), NOT masked
             as a silent refusal (mirrors ``check_input``).
+
     """
     if not nemo_output_active(pins):
         return GuardOutputResult(answer_text=answer_text)
@@ -1062,6 +626,7 @@ def check_input_nemo(
         GuardMisconfiguredError: The lane is enabled but no client was injected —
             a deploy/wiring error, raised LOUDLY (→ 500), NOT masked as a silent
             refusal (mirrors ``check_input`` / ``check_output_nemo``).
+
     """
     if not nemo_input_active(pins):
         return GuardInputResult(question=question)

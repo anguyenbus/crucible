@@ -54,20 +54,23 @@ class Detection(BaseModel):
     """
     One deterministic detector hit: labels + COUNTS only, NO spans/offsets.
 
-    Emitted by the pod's pure-regex secrets/PII output rail
-    (``app.detectors``). ``category`` is the CLASS that fired (``"secrets"`` /
-    ``"pii"``), ``label`` the specific rule (e.g. ``"email"``, ``"credit_card"``,
-    ``"aws_access_key"``), ``count`` how many times it matched (e.g. ``email=2``).
-    Verdict-only, scoreable data (feeds Phase-2 scoring); the pod NEVER rewrites
-    the answer, so offsets would be dead weight — deliberately omitted.
+    Emitted by the pod's pure-regex secrets output rail (``app.detectors``).
+    ``category`` is the CLASS that fired (``"secrets"`` is the only class the
+    shipping detector table can produce), ``label`` the specific rule (e.g.
+    ``"aws_access_key"``), ``count`` how many times it matched. Verdict-only,
+    scoreable data (feeds Phase-2 scoring); the pod NEVER rewrites the answer, so
+    offsets would be dead weight — deliberately omitted.
+
+    The FIELDS are the frozen wire contract and do not change with the detector
+    table: the withdrawal of the ``pii:`` table changed only what can populate
+    them.
     """
 
     category: str = Field(
-        description="The detector CLASS that fired: 'secrets' or 'pii'.",
+        description="The detector CLASS that fired (currently only 'secrets').",
     )
     label: str = Field(
-        description="The specific rule label (e.g. 'email', 'credit_card', "
-        "'aws_access_key').",
+        description="The specific rule label (e.g. 'aws_access_key').",
     )
     count: int = Field(
         description="How many times the rule matched the answer text.",

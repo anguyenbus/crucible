@@ -1,0 +1,7 @@
+# Files NeMo's RailsConfig.from_path must NOT merge as rails config.
+#
+# `detectors.yml` is the pod's own deterministic secrets/PII pattern table (a
+# HASHED data file folded into config_dir_digest), NOT a NeMo rails/prompts
+# artifact — without this line NeMo would try to merge its `secrets:` / `pii:`
+# keys into the RailsConfig. The pod loads it directly via app/detectors.py.
+detectors.yml

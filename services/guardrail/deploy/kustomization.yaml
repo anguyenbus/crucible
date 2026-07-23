@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Kubernetes deploy surface for the guardrail pod. Compose is dev-only; this is
+# the surface the pins must survive.
+#
+# THE PINS ARE NOT WRITTEN HERE. `guardrail-pins.env` is the single generated
+# source (regenerate with
+# `cd services/guardrail && uv run python -m app.config_digest --write-env`);
+# Docker Compose reads those exact bytes via `env_file:` and kustomize reads the
+# SAME bytes here. Equivalent without kustomize:
+#   kubectl create configmap guardrail-pins --from-env-file=deploy/guardrail-pins.env
+#
+# The generated ConfigMap name carries a content hash, so a pin change rewrites
+# the Deployment's reference and ROLLS the pods — a config/ edit cannot leave a
+# running pod on a stale pin. It carries NO credentials: AWS credentials come
+# from the ambient chain (IRSA on the pod's ServiceAccount, or the node role).
+
+commonLabels:
+  app.kubernetes.io/name: guardrail
+  app.kubernetes.io/component: guard
+
+resources:
+  - k8s/serviceaccount.yaml
+  - k8s/deployment.yaml
+  - k8s/service.yaml
+
+configMapGenerator:
+  - name: guardrail-pins
+    envs:
+      - guardrail-pins.env

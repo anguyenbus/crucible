@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: guardrail
+spec:
+  # ClusterIP, never ingress: the pod has no app-level auth and is east-west only
+  # (the orchestrator calls it over HTTP inside the cluster).
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: guardrail
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

@@ -1,0 +1,13 @@
+# The pod's FIRST output rail: a pure-regex, NO-LLM secrets block, ordered before
+# `self check output` / `self check facts` in config.yml so a hit short-circuits
+# the paid LLM self-checks. Mirrors the library `self check output` subflow
+# shape, but the executed action (`deterministic_output_scan`,
+# config/actions.py) is deterministic regex — it returns True to BLOCK an answer
+# carrying a credential. With `enable_rails_exceptions: true`, the refuse+stop
+# surfaces as an OutputRailException turn (the pod's `unsafe: true` signal).
+
+define flow self check deterministic output
+  $blocked = execute deterministic_output_scan
+  if $blocked
+    bot refuse to respond
+    stop

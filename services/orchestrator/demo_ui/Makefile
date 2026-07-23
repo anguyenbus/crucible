@@ -18,21 +18,24 @@ REGION           ?= ap-southeast-2
 ORCH_DIR         := ..
 GUARDRAIL_DIR    := ../../guardrail
 
-# Two-hash determinism digests for the ACTIVE NeMo config (`legal-rag-default-1.8.0`,
-# the nemo-all config whose config_dir_digest now covers detectors.yml). The pod's
-# `verify_pinned_digests` (services/guardrail/app/main.py lifespan) recomputes these
-# live at startup and REFUSES to serve on any config/ or uv.lock drift. Regenerate
-# with: `cd services/guardrail && uv run python -m app.config_digest`.
+# Two-hash determinism digests for the ACTIVE NeMo config (`legal-rag-default-1.8.0`).
+# The pod's `verify_pinned_digests` (services/guardrail/app/main.py lifespan)
+# recomputes these live at startup and REFUSES to serve on any config/ or uv.lock
+# drift.
 #
-# NOTE: the pre-fold config_dir_digest (413182c3...) is SUPERSEDED by the
-# detectors.yml fold — this 1.8.0 digest matches the post-fold live pod config/.
+# The values are READ FROM THE SINGLE GENERATED SOURCE, never hand-copied — a
+# hand-copied pin goes stale the moment config/ is edited and the pod then refuses
+# to serve for no visible reason. Regenerate the source with:
+#   cd services/guardrail && uv run python -m app.config_digest --write-env
 #
 # ESCAPE HATCH (dev iteration): to edit services/guardrail/config/ WITHOUT the pod
 # refusing to serve, run `make guardrail-pod-dev` (or launch uvicorn with BOTH env
 # vars UNSET). A `None` expectation skips that half of verify_pinned_digests — an
 # EMPTY string does NOT (it is compared and mismatches), so genuinely unset them.
-GUARDRAIL_EXPECTED_CONFIG_DIR_DIGEST ?= b5da30dbae57309c6045138bd569bf13d7c67ed19ceb2153484183e1eb7b2183
-GUARDRAIL_EXPECTED_UV_LOCK_SHA256    ?= 86d6e9a5b1b7b1bb4bd549747890c232e5d8d521ec5078767ad7d060b1f19603
+GUARDRAIL_PINS_ENV := $(GUARDRAIL_DIR)/deploy/guardrail-pins.env
+_pin = $(shell sed -n 's/^$(1)=//p' $(GUARDRAIL_PINS_ENV))
+GUARDRAIL_EXPECTED_CONFIG_DIR_DIGEST ?= $(call _pin,GUARDRAIL_EXPECTED_CONFIG_DIR_DIGEST)
+GUARDRAIL_EXPECTED_UV_LOCK_SHA256    ?= $(call _pin,GUARDRAIL_EXPECTED_UV_LOCK_SHA256)
 
 # Redaction test query. Neutral "exhibit / test card" framing so the model
 # actually reproduces the number in its answer (an SSN it usually refuses to

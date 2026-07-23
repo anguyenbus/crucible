@@ -4,21 +4,21 @@ NeMo Guardrails pod client: a thin HTTP wrapper over the guardrail pod.
 Speaks to the out-of-process ``services/guardrail/`` FastAPI pod
 (Bedrock-Haiku-backed NeMo rails). Constructed ONCE in FastAPI lifespan and
 injected into the guard stages exactly like
-:class:`app.clients.guardrail.GuardClassifier` — the pure stage receives the
+the pure stage receives the
 instance and never imports ``httpx`` / ``nemoguardrails`` / ``langchain`` itself
 (the ``stages-pure`` import-linter contract, invariant I2). ALL HTTP +
 NeMo-contract detail lives HERE; the stage sees only a
 :class:`typing.Protocol` describing :meth:`check_output` / :meth:`check_input`.
 
-Role separation mirrors :class:`GuardClassifier`: this client speaks HTTP to a
+Role separation: this client speaks HTTP to a
 SEPARATE pod whose ``type: main`` model is Haiku — DISTINCT from the Sonnet
 generator and from eval's judge. The pod STAMPS its configured Haiku id into the
 response ``model_id`` (NeMo's own reported id is unreliable — spike FINDINGS #2),
 so the orchestrator never guesses it.
 
-Design decision — this client is THIN and mirrors ``GuardClassifier``: it
+Design decision — this client is THIN: it
 performs the HTTP round-trip and RAISES on a transport / non-2xx failure (like
-``GuardClassifier`` re-raises a botocore ``ClientError``). The per-rail FAIL
+a transport error is re-raised as-is). The per-rail FAIL
 POLICY lives in the PURE stage (``app.orchestrator.guardrails``), exactly as
 ``check_input`` owns the in-house classifier's fail-SAFE policy: the output/facts
 lane fails OPEN (deliver the answer + an advisory ``flag``) when this client

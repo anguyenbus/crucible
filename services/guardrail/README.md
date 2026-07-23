@@ -41,6 +41,38 @@ Endpoints: `POST /check/input`, `POST /check/output`, `GET /healthz` (liveness),
 
 ---
 
+## Deploy surfaces — where the determinism pins come from
+
+`GUARDRAIL_EXPECTED_CONFIG_DIR_DIGEST` and `GUARDRAIL_EXPECTED_UV_LOCK_SHA256` are
+what make "the pod refuses to serve on drift" real. They have **one** source —
+`deploy/guardrail-pins.env`, generated, never hand-edited and never hand-copied:
+
+```bash
+# Regenerate after ANY config/ edit (and commit the result with the config change)
+uv run python -m app.config_digest --write-env
+```
+
+| Surface | How it reads the pins |
+|---|---|
+| Docker Compose (dev-only) | `env_file: ./services/guardrail/deploy/guardrail-pins.env` on the repo-root `guardrail` service |
+| Kubernetes | `deploy/kustomization.yaml` → `configMapGenerator` over the **same file** → `envFrom` in `deploy/k8s/deployment.yaml` (equivalently `kubectl create configmap guardrail-pins --from-env-file=deploy/guardrail-pins.env`) |
+| Demo Makefile | `services/orchestrator/demo_ui/Makefile` reads the values out of the same file |
+
+A pin hand-copied into a compose file dies at the pod boundary the moment compose
+stops being the deploy surface, so the value must never appear anywhere but the
+generated file — asserted by `tests/test_deploy_surface_pins.py`. Neither surface
+carries an AWS credential: the pod uses the ambient chain (mounted `~/.aws` +
+`AWS_PROFILE` in compose, IRSA / node role in K8s).
+
+Prove the guarantee end-to-end against a real process — shipping config serves,
+drifted config refuses, drift with the pins unset still serves (the control):
+
+```bash
+scripts/demo_refuse_to_serve.sh
+```
+
+---
+
 ## File tree
 
 ```
@@ -64,14 +96,20 @@ services/guardrail/
 │   ├── rails/
 │   │   └── deterministic_output.co   # Colang flow that invokes the deterministic action as an output rail
 │   └── .railsignore         # Tells NeMo to skip detectors.yml (it's a hashed DATA file, not a rails artifact)
+├── deploy/                  # The deploy surfaces that POPULATE the determinism pins
+│   ├── guardrail-pins.env   # GENERATED single source of both pins — read by compose `env_file:` AND by kustomize
+│   ├── kustomization.yaml   # K8s: configMapGenerator turns those same bytes into the `guardrail-pins` ConfigMap
+│   └── k8s/                 # Deployment (envFrom the pins ConfigMap, /healthz + /readyz probes), Service, ServiceAccount
 ├── scripts/
-│   └── demo_nemo_capability.py       # Capability walk-through: fires the block/grounding cases at a running pod
+│   ├── demo_nemo_capability.py       # Capability walk-through: fires the block/grounding cases at a running pod
+│   └── demo_refuse_to_serve.sh       # Proves refuse-on-drift against a real process using the deploy surface's pins
 ├── tests/
 │   ├── test_deterministic_output_rail.py   # Detector: block/short-circuit/Luhn/flag/attribution, /readyz fail-fast
 │   ├── test_gate_parity_and_mode_a.py      # Phase-2 deterministic parity + Mode A (LLM-rail failure → detector still blocks)
 │   ├── test_bedrock_smoke.py               # @requires_aws live smoke — real Haiku verdicts end-to-end
 │   ├── test_config_digest.py               # Digest computation is stable + folds detectors.yml
 │   ├── test_digest_enforcement.py          # Startup refuses to serve on a config/ or uv.lock drift
+│   ├── test_deploy_surface_pins.py         # Compose + K8s carry both pins from the ONE generated source; no credentials in config
 │   ├── test_no_openai_guard.py             # I1: `openai` is absent from the resolved environment
 │   ├── test_rails.py / test_skeleton.py    # Contract + engine wiring
 │   ├── conftest.py / helpers.py            # The substitution seam: pre-install mock rails/settings/detectors — tests never reach AWS

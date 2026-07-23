@@ -174,17 +174,19 @@ def test_parked_stages_are_typed_identities_on_their_natural_types():
     assert reranker.rerank(chunks) is chunks
 
     answer = "answer text [d:0]"
-    # check_input is config-gated: with the guard OFF (the released
-    # 1.0.0/1.1.0/1.2.0 pins) it is a typed identity and never consults a
-    # classifier — the parked-behavior guarantee for the eval lane.
+    # The pod is the only guard: with no `nemo` selector (the released
+    # 1.0.0/1.1.0/1.2.0 pins) BOTH lanes are typed identities and no pod call is
+    # made — the parked-behavior guarantee for the eval lane.
     gate_off = resolve_pipeline_config("legal-rag-default-1.1.0").config.guardrails
-    assert gate_off.enabled is False
-    # check_input returns a GuardInputResult; gate-off carries the question
-    # unchanged (same object) and no classifier telemetry.
-    assert guardrails.check_input(question, pins=gate_off, classifier=None).question is question
-    # check_output is config-gated too: the released 1.1.0 pin has an empty
-    # output_categories, so it is a typed identity — the answer passes through
-    # unchanged with no decisions (the eval-lane parked-behavior guarantee).
-    out = guardrails.check_output(answer, pins=gate_off)
+    assert gate_off.nemo is None
+    assert guardrails.nemo_input_active(gate_off) is False
+    assert guardrails.nemo_output_active(gate_off) is False
+    # Both lanes are typed identities: the question and the answer pass through
+    # unchanged, with no decisions and no injected client consulted.
+    assert (
+        guardrails.check_input_nemo(question, pins=gate_off, nemo_client=None).question
+        is question
+    )
+    out = guardrails.check_output_nemo(answer, [], pins=gate_off, nemo_client=None)
     assert out.answer_text is answer
     assert out.decisions == ()
