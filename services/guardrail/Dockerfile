@@ -42,9 +42,20 @@ FROM python:3.13-slim AS runtime
 # framework at import time — Bedrock's ONLY path (FINDINGS: the default OpenAI-
 # compatible framework RAISES for bedrock). Defence in depth: the lifespan also
 # calls set_default_framework("langchain") before building LLMRails.
+#
+# NEMO_GUARDRAILS_NO_USAGE_STATS + DO_NOT_TRACK disable NeMo's anonymous usage
+# telemetry, which `LLMRails.__init__` otherwise fires as an outbound HTTP event
+# (nemoguardrails/telemetry.py `report_usage`, called from rails/llm/llmrails.py)
+# on EVERY engine construction, plus a heartbeat daemon thread. This pod guards
+# legal/accounting traffic: NO unsolicited egress. Both vars are set because NeMo
+# honours either (telemetry.py `_is_usage_stats_enabled`); defence in depth, the
+# lifespan also calls app.bedrock_engine.disable_usage_telemetry() BEFORE the
+# nemoguardrails import, so a dropped ENV cannot silently re-enable the beacon.
 ENV PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
-    NEMOGUARDRAILS_LLM_FRAMEWORK=langchain
+    NEMOGUARDRAILS_LLM_FRAMEWORK=langchain \
+    NEMO_GUARDRAILS_NO_USAGE_STATS=1 \
+    DO_NOT_TRACK=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
