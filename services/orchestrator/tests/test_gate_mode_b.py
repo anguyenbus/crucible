@@ -10,15 +10,20 @@ is precisely the failure the pod itself cannot report.
 
 **Mode B** (pod crashed / network gone — nothing runs):
 
-  * INPUT (on a pre-filter HIT, i.e. already-suspicious traffic) fails
-    **SAFE/BLOCK** — surfaced as an honest 200 refusal, never a 5xx;
-  * OUTPUT fails **OPEN + advisory flag** (the answer is DELIVERED) — the joint
-    probability of "this answer contains a secret" AND "the pod is down" is
-    negligible, whereas failing closed would take down all answering on every pod
-    hiccup; and
-  * the fail-open window is **LOUD**: it carries its OWN rule id, distinct from a
-    genuine pod advisory, so an unguarded-delivery window is countable in
-    telemetry rather than silent. Loud fail-open is acceptable; silent is not.
+  * INPUT fails **CLOSED**: post-Group-7 the ACTIVE input rail is the
+    UNCONDITIONAL triage (ATTACK enforcing), so an unreachable pod cannot
+    adjudicate ATTACK — surfaced as an honest 200 ``guard-unavailable`` refusal
+    with ``Retry-After``, never a 5xx (``self_check_input`` still runs on a
+    pre-filter hit but only SHADOWS);
+  * OUTPUT fails **CLOSED** (ruling 0.3, MANAGER / security-posture owner,
+    2026-07-24): the unadjudicated answer is SUPPRESSED to an honest 200 refusal
+    carrying the distinct ``nemo-output-guard-unavailable-v1`` rule id +
+    ``Retry-After`` — for audit consistency with the input lane (no answer reaches
+    the officer unadjudicated). This REPLACES the earlier fail-OPEN advisory-flag
+    path; the manager accepted the availability cost for audit completeness. The
+    deterministic secrets rail ran FIRST at the pod, so a secrets answer was
+    already blocked; the circuit breaker + alarm on SUSTAINED unavailability keep
+    the fail-closed window a monitored, bounded, rare degraded mode; and
 
 **Verdict wiring** is asserted through the REAL ``NemoGuardClient`` parsing REAL
 pod-shaped JSON over a mocked transport, then through the REAL pure stage — the
@@ -49,9 +54,10 @@ from tests.conftest import FIXTURE_SETTINGS
 
 HAIKU = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
 
-# The rule ids that make the Mode-B window loud: a fail-open (pod never answered,
-# response UNGUARDED) must be distinguishable from an advisory (pod DID answer).
-FAIL_OPEN_RULE_ID = "nemo-output-fail-open-v1"
+# The rule ids that make the Mode-B window countable: a FAIL-CLOSED pod-unreachable
+# refusal (ruling 0.3) is distinct from a genuine pod advisory (pod DID answer).
+OUTPUT_GUARD_UNAVAILABLE_RULE_ID = "nemo-output-guard-unavailable-v1"
+INPUT_GUARD_UNAVAILABLE_RULE_ID = "nemo-input-guard-unavailable-v1"
 ADVISORY_RULE_ID = "nemo-output-flag-v1"
 
 # The 1.8.0 guardrails shape: in-house decision gates EMPTY, NeMo input+output on.
@@ -83,6 +89,20 @@ class UnreachablePod:
 
     def check_output(self, answer: str, chunks: list[str], *, check_facts: bool) -> Any:
         self.output_calls.append((answer, chunks, check_facts))
+        raise httpx.ConnectError("connection refused: guardrail pod unreachable")
+
+
+class UnreachableTriagePod(UnreachablePod):
+    """Mode B for the POST-CUTOVER input lane: the triage rail ALSO fails.
+
+    Post-Group-7 the ACTIVE input adjudicator is the UNCONDITIONAL triage rail
+    (ATTACK enforcing). A fully unreachable pod fails the triage call too — so the
+    ATTACK adjudication is UNAVAILABLE and the input lane fails CLOSED (never open
+    on the exact input that timed out). ``self_check_input`` still runs (on the
+    pre-filter hit) but only SHADOWS now.
+    """
+
+    def check_input_triage(self, question: str) -> Any:
         raise httpx.ConnectError("connection refused: guardrail pod unreachable")
 
 
@@ -122,11 +142,18 @@ def _pod_client(handler) -> NemoGuardClient:
     )
 
 
-def test_mode_b_input_on_a_prefilter_hit_fails_safe_as_an_honest_200_refusal(
+def test_mode_b_input_adjudication_unavailable_fails_closed_as_an_honest_200_refusal(
     mock_bedrock, mock_search, _cleanup_state
 ):
-    """Mode B: pod unreachable + pre-filter HIT ⇒ input fails SAFE/BLOCK, 200 not 5xx."""
-    nemo = UnreachablePod()
+    """Mode B: pod unreachable ⇒ the ATTACK adjudication is UNAVAILABLE → fail CLOSED.
+
+    Post-Group-7 the ACTIVE input rail is the UNCONDITIONAL triage (ATTACK
+    enforcing). An unreachable pod cannot adjudicate ATTACK, so the input lane
+    fails CLOSED — an honest 200 ``guard-unavailable`` refusal carrying
+    ``Retry-After`` (NEVER fail-open on the input that timed out; arXiv 2606.14517),
+    never a 5xx.
+    """
+    nemo = UnreachableTriagePod()
     client = _client(mock_bedrock, mock_search, nemo)
 
     response = client.post(
@@ -134,23 +161,27 @@ def test_mode_b_input_on_a_prefilter_hit_fails_safe_as_an_honest_200_refusal(
         json={"question": LEAK_QUESTION, "pipeline_config": "legal-rag-default-1.8.0"},
     )
 
-    # An honest 200 refusal — a guard block is NEVER a 5xx.
+    # An honest 200 refusal — a guard fail-closed is NEVER a 5xx.
     assert response.status_code == 200
     body = response.json()
     assert body["result"]["answer"]["text"] == REFUSAL_TEXT
     decision = body["guardrail_decisions"][0]
-    assert decision["decision"] == "block"
+    assert decision["decision"] == "guard-unavailable"  # fail CLOSED, not delivered
+    assert decision["rule_id"] == INPUT_GUARD_UNAVAILABLE_RULE_ID
     assert decision["category"] == "nemo"
     assert decision["stage"] == "input"
-    # The pod call was attempted (and failed); nothing was generated.
+    # Retryable: a transient throttle clears in seconds.
+    assert int(response.headers["Retry-After"]) > 0
+    # self_check_input still ran on the pre-filter hit (now SHADOW); nothing was
+    # generated — the input lane short-circuited before generation.
     assert nemo.input_calls == [LEAK_QUESTION]
     assert mock_bedrock.generate_calls == []
 
 
-def test_mode_b_output_fails_open_and_delivers_the_answer_with_a_loud_flag(
+def test_mode_b_output_fails_closed_to_a_guard_unavailable_refusal(
     mock_bedrock, mock_search, _cleanup_state
 ):
-    """Mode B: pod unreachable on OUTPUT ⇒ the answer is DELIVERED with a loud flag."""
+    """Mode B: pod unreachable on OUTPUT ⇒ the answer is SUPPRESSED (ruling 0.3)."""
     nemo = UnreachablePod()
     client = _client(mock_bedrock, mock_search, nemo)
 
@@ -159,28 +190,32 @@ def test_mode_b_output_fails_open_and_delivers_the_answer_with_a_loud_flag(
         json={"question": BENIGN_QUESTION, "pipeline_config": "legal-rag-default-1.8.0"},
     )
 
+    # Audit wins: the unadjudicated answer is refused (honest 200, never a 5xx).
     assert response.status_code == 200
     body = response.json()
-    # Availability wins: a valid legal answer is NOT nuked by a pod outage.
-    assert body["result"]["answer"]["text"] != REFUSAL_TEXT
+    assert body["result"]["answer"]["text"] == REFUSAL_TEXT
     # Benign question ⇒ pre-filter MISS ⇒ zero input pod calls; output was tried.
     assert nemo.input_calls == []
     assert len(nemo.output_calls) == 1
 
     decisions = body["guardrail_decisions"]
     assert len(decisions) == 1
-    assert decisions[0]["decision"] == "flag"  # advisory, never a block
-    # LOUD: the window is marked by its OWN rule id.
-    assert decisions[0]["rule_id"] == FAIL_OPEN_RULE_ID
+    assert decisions[0]["decision"] == "guard-unavailable"  # fail CLOSED, not a flag
+    # The window is marked by its OWN distinct rule id (alarm on the id).
+    assert decisions[0]["rule_id"] == OUTPUT_GUARD_UNAVAILABLE_RULE_ID
+    # Retryable: the honest 200 carries a Retry-After.
+    assert int(response.headers["Retry-After"]) > 0
 
 
-def test_mode_b_fail_open_is_loud_and_distinguishable_from_a_genuine_advisory():
+def test_mode_b_fail_closed_is_distinguishable_from_a_genuine_advisory():
     """
-    A fail-open (pod never answered) must not masquerade as an advisory (pod DID).
+    A pod-unreachable FAIL-CLOSED refusal must not be confused with an advisory.
 
-    Both deliver with a `flag`, so `decision` alone cannot tell an operator that a
-    window of answers went out UNGUARDED. The rule id is the machine-readable
-    signal that makes a silent fail-open impossible.
+    A genuine advisory (pod DID answer) DELIVERS the answer with a non-block
+    ``flag``; a pod-unreachable outage (ruling 0.3) RAISES a ``guard-unavailable``
+    tripwire that SUPPRESSES the answer. The two outcomes are structurally
+    different — deliver vs refuse — not merely different rule ids on the same
+    delivery.
     """
 
     def advisory(request: httpx.Request) -> httpx.Response:
@@ -197,20 +232,23 @@ def test_mode_b_fail_open_is_loud_and_distinguishable_from_a_genuine_advisory():
             },
         )
 
+    # A genuine advisory DELIVERS with a non-block flag.
     advisory_out = check_output_nemo(
         "answer", ["c"], pins=NEMO_ALL, nemo_client=_pod_client(advisory)
     )
-    fail_open_out = check_output_nemo(
-        "answer", ["c"], pins=NEMO_ALL, nemo_client=UnreachablePod()
-    )
-
-    # Both are delivered, non-blocking flags...
-    assert advisory_out.answer_text == fail_open_out.answer_text == "answer"
-    assert advisory_out.decisions[0].decision == fail_open_out.decisions[0].decision == "flag"
-    # ...but they are NOT the same signal.
+    assert advisory_out.answer_text == "answer"
+    assert advisory_out.decisions[0].decision == "flag"
     assert advisory_out.decisions[0].rule_id == ADVISORY_RULE_ID
-    assert fail_open_out.decisions[0].rule_id == FAIL_OPEN_RULE_ID
-    assert advisory_out.decisions[0].rule_id != fail_open_out.decisions[0].rule_id
+
+    # A pod-unreachable outage REFUSES (fail CLOSED) — a distinct decision + id.
+    with pytest.raises(GuardrailTripwire) as excinfo:
+        check_output_nemo("answer", ["c"], pins=NEMO_ALL, nemo_client=UnreachablePod())
+    tw = excinfo.value
+    assert tw.decision.decision == "guard-unavailable"
+    assert tw.decision.rule_id == OUTPUT_GUARD_UNAVAILABLE_RULE_ID
+    assert tw.retry_after is not None and tw.retry_after > 0
+    # Not the same signal as an advisory, and not even a delivery.
+    assert tw.decision.rule_id != ADVISORY_RULE_ID
 
 
 def test_deterministic_block_verdict_serializes_through_the_real_client_to_a_refusal():

@@ -12,8 +12,9 @@ Binding contract proven here:
   (I3); NeMo's own rationale string NEVER becomes the UI answer;
 - an advisory ``flag`` ⇒ the answer is DELIVERED with a non-block ``flag``
   decision (Q2 output/facts fail-OPEN);
-- a transport error on the output/facts path ⇒ FAIL OPEN (deliver + advisory
-  flag), never a block;
+- a transport error on the output path ⇒ FAIL CLOSED (ruling 0.3): the answer
+  is SUPPRESSED to a ``guard-unavailable`` refusal + ``Retry-After``, NOT
+  delivered with a flag;
 - ``check_facts`` is forwarded to the client (the independent facts gate);
 - the INPUT lane is UNCHANGED — ``check_input`` still blocks a leak via the
   in-house Haiku classifier with no NeMo involvement.
@@ -141,14 +142,17 @@ def test_clean_verdict_delivers_the_answer_with_no_decisions():
     assert out.decisions == ()
 
 
-def test_transport_error_fails_open_with_an_advisory_flag_not_a_block():
+def test_transport_error_fails_closed_to_a_guard_unavailable_refusal():
     nemo = FakeNemo(error=httpx.ConnectError("pod down"))
-    # Must NOT raise (fail OPEN): deliver the answer with an advisory flag.
-    out = check_output_nemo("valid answer", ["c"], pins=NEMO_ON, nemo_client=nemo)
-    assert out.answer_text == "valid answer"
-    assert len(out.decisions) == 1
-    assert out.decisions[0].decision == "flag"
-    assert out.decisions[0].category == "nemo"
+    # Ruling 0.3: pod UNREACHABLE ⇒ fail CLOSED (raise), NOT deliver-with-flag.
+    with pytest.raises(GuardrailTripwire) as excinfo:
+        check_output_nemo("valid answer", ["c"], pins=NEMO_ON, nemo_client=nemo)
+    tw = excinfo.value
+    assert tw.decision.stage == "output"
+    assert tw.decision.decision == "guard-unavailable"
+    assert tw.decision.category == "nemo"
+    assert tw.decision.rule_id == "nemo-output-guard-unavailable-v1"
+    assert tw.retry_after is not None and tw.retry_after > 0
 
 
 def test_check_facts_toggle_is_passed_through_to_the_client():
@@ -242,22 +246,29 @@ def test_nemo_block_on_query_is_a_200_refusal_never_5xx_nemo_string_hidden(
     assert nemo.calls[0][2] is False
 
 
-def test_nemo_fail_open_on_query_delivers_the_answer_with_an_advisory_flag(
+def test_nemo_pod_unreachable_on_query_fails_closed_to_a_200_refusal(
     monkeypatch, mock_bedrock, mock_search, _cleanup_state
 ):
     _nemo_config(monkeypatch)
     nemo = FakeNemo(error=httpx.ConnectError("pod down"))
     client = _client(mock_bedrock, mock_search, nemo)
 
-    body = client.post(
+    response = client.post(
         "/query", json={"question": BENIGN_QUESTION, "pipeline_config": "legal-rag-default-1.8.0"}
-    ).json()
+    )
 
-    # Fail OPEN: the valid answer is delivered (not the refusal) with an advisory.
-    assert body["result"]["answer"]["text"] != REFUSAL_TEXT
+    # Ruling 0.3: the unadjudicated answer is SUPPRESSED to an honest 200 refusal
+    # (never a 5xx), NOT delivered with an advisory flag.
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result"]["answer"]["text"] == REFUSAL_TEXT
     assert len(body["guardrail_decisions"]) == 1
-    assert body["guardrail_decisions"][0]["decision"] == "flag"
-    assert body["guardrail_decisions"][0]["category"] == "nemo"
+    decision = body["guardrail_decisions"][0]
+    assert decision["decision"] == "guard-unavailable"
+    assert decision["rule_id"] == "nemo-output-guard-unavailable-v1"
+    assert decision["category"] == "nemo"
+    # Retryable: the honest 200 carries a Retry-After.
+    assert int(response.headers["Retry-After"]) > 0
 
 
 def test_nemo_block_on_stream_emits_zero_tokens_and_one_final_refusal(

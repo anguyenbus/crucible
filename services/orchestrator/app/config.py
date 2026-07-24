@@ -59,14 +59,26 @@ _MANIFEST_LINE_RE: Final[re.Pattern[str]] = re.compile(
 # Length of the truncated config_sha256 echoed in result.system_version.
 CONFIG_SHA256_LENGTH: Final[int] = 12
 
-# The documented default config: Phase 2 acceptance runs against it, eval's
-# ORCHESTRATOR_PIPELINE_CONFIG defaults to it, and lifespan uses its pins for
+# The documented PRODUCT default config. Lifespan uses its pins for
 # construction-time client facts (region, query-side embedder for the _meta
-# guard). Per-request behavior still comes from each request's resolved ref.
-# The Chainlit demo UI defaults to "legal-rag-default-1.2.0" (the multi-turn
-# history config) via its OWN env surface — the eval lane's default here
-# stays 1.1.0, unchanged.
-DEFAULT_PIPELINE_CONFIG_REF: Final[str] = "legal-rag-default-1.1.0"
+# guard); the /analyze + /compare request schemas default their pipeline_config
+# to it. Per-request behavior still comes from each request's resolved ref.
+#
+# GROUP 3 FLIP (guardrail input/output validation, 2026-07-24): flipped from the
+# UNGUARDED legal-rag-default-1.1.0 to the GUARDED nemo-all legal-rag-default-1.8.0
+# (the pod owns every verdict). A shadow verdict on an unguarded default observes
+# NOTHING — the flip is what makes the shadow data real. The NEW LLM triage layer
+# ships in SHADOW (app.orchestrator.guard_policy.GuardModes defaults every LLM
+# class to shadow); the DETERMINISTIC FLOOR (Group 1 malformed pre-check +
+# promoted pre-filter) is ENFORCING and pod-independent. The guarded config's two
+# determinism hashes are unchanged (config/ + uv.lock did not move), so the pod
+# does not refuse to serve on the new default.
+#
+# EVAL'S 1.1.0 MEASUREMENT LANE IS FROZEN and is NOT this constant: eval pins its
+# orchestrator config INDEPENDENTLY in services/eval/dev/stubs/rag/
+# orchestrator_query.py (DEFAULT_PIPELINE_CONFIG = "legal-rag-default-1.1.0"),
+# which this flip does not touch.
+DEFAULT_PIPELINE_CONFIG_REF: Final[str] = "legal-rag-default-1.8.0"
 
 
 class MalformedConfigRefError(ValueError):

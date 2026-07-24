@@ -17,6 +17,23 @@ honours the Phase-0 FINDINGS exactly:
   everything else off), so a ``/check/input`` call never pays for a wasted main
   generation (FINDINGS #4).
 
+Per-call input lane routing (Group 4)
+-------------------------------------
+``config.yml`` lists ONE input flow — the ``guarded input`` DISPATCHER — because
+``run input rails`` iterates the FULL ``config.rails.input.flows`` list on EVERY
+input-rail ``generate()`` (the per-request ``rails.input`` list only toggles input
+rails on/off; it does NOT select which flows run, unlike the output lane). The
+dispatcher routes to exactly ONE lane using a per-call ``triage_mode`` CONTEXT
+variable set here:
+
+- ``check_input`` sends ``triage_mode=False`` → the dispatcher does
+  ``self check input`` (the enforcing binary block rail, byte-for-byte unchanged).
+- ``check_input_triage`` sends ``triage_mode=True`` → the dispatcher does
+  ``input triage`` (the Group 4 three-way triage rail).
+
+The two never fire inside one turn, so the SHADOW triage coexists with the
+still-enforcing self-check without interfering with it and without a wasted call.
+
 Deterministic FIRST output rail (Phase 0)
 -----------------------------------------
 ``check_output`` runs the pure-regex secrets/PII detector (``app.detectors``)
@@ -66,6 +83,10 @@ The two failure MODES are distinguished explicitly:
      a flaky guard must not nuke a valid legal answer. (The deterministic
      detector already ran first, so a secrets/high-PII answer was blocked BEFORE
      this fail-open branch is ever reached.)
+   - ``check_input_triage`` marks ``unavailable=true`` and returns verdict
+     ``ok``: the pod cannot adjudicate, so the ORCHESTRATOR applies the layered
+     fail policy (ATTACK closed, OFFTOPIC open) — the triage rail must never be
+     able to take the service down, and it ships SHADOW anyway.
 
 Only the ``generate`` call itself is wrapped; a genuine block and a mapping bug
 are NOT swallowed. Unit-tested with ``LLMRails`` either MOCKED or driven by an
@@ -76,20 +97,30 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.contract import CheckResponse, Detection
+from app.contract import CheckResponse, Detection, TriageResponse
 from app.detectors import Detectors
 
-# Built-in library flow names (config.yml rails.output.flows).
+# Built-in / declared flow names (config.yml rails.*.flows + the dispatcher).
+FLOW_GUARDED_INPUT: str = "guarded input"
+FLOW_SELF_CHECK_INPUT: str = "self check input"
+FLOW_INPUT_TRIAGE: str = "input triage"
 FLOW_SELF_CHECK_OUTPUT: str = "self check output"
 FLOW_SELF_CHECK_FACTS: str = "self check facts"
+
+# The Group 4 triage flow's two distinct exception types (config/rails/input_triage.co).
+# Distinct so the orchestrator can tell an attack BLOCK from a topic REDIRECT.
+_TRIAGE_ATTACK_EXCEPTION: str = "TriageAttackException"
+_TRIAGE_REDIRECT_EXCEPTION: str = "TriageRedirectException"
 
 # The generate() options that turn on per-LLM-call token logging (FINDINGS #3).
 _LOG_LLM_CALLS: dict[str, Any] = {"log": {"llm_calls": True}}
 
-# Input lane: run the input rail ONLY — no main generation, no output/dialog/
-# retrieval rails — so a /check/input call never pays for a wasted answer
-# generation (FINDINGS #4).
-_INPUT_ONLY_RAILS: dict[str, Any] = {
+# Input lane: run the input rails ONLY (the single `guarded input` dispatcher) —
+# no main generation, no output/dialog/retrieval rails — so an input call never
+# pays for a wasted answer generation (FINDINGS #4). Both the self-check and the
+# triage call use these options; the `triage_mode` CONTEXT variable (below) is
+# what routes the dispatcher to exactly one lane.
+_INPUT_RAILS_ONLY: dict[str, Any] = {
     "input": True,
     "output": False,
     "dialog": False,
@@ -121,6 +152,31 @@ def _extract_block(res: Any) -> tuple[bool, str | None]:
                 rationale = content.get("type")
             return True, rationale or "rail exception"
     return False, None
+
+
+def _extract_triage(res: Any) -> tuple[str, str | None]:
+    """
+    Recover the triage LABEL from the response turns' exception type (Group 4).
+
+    Returns ``(verdict, rationale)`` where verdict is ``attack`` / ``offtopic`` /
+    ``ok``. The two blocking labels are DISTINCT exception types
+    (``TriageAttackException`` / ``TriageRedirectException``); an ``ok`` verdict
+    raises no exception. Any OTHER exception type fails toward ``ok`` (topicality
+    is product quality; the ATTACK regex floor sits behind this rail in the
+    orchestrator), never surfacing NeMo's own prose.
+    """
+    response = getattr(res, "response", None) or []
+    for turn in response:
+        if isinstance(turn, dict) and turn.get("role") == "exception":
+            content = turn.get("content")
+            exc_type = content.get("type") if isinstance(content, dict) else None
+            if exc_type == _TRIAGE_ATTACK_EXCEPTION:
+                return "attack", exc_type
+            if exc_type == _TRIAGE_REDIRECT_EXCEPTION:
+                return "offtopic", exc_type
+            # Unknown exception → fail toward OK (never a refusal on a hiccup).
+            return "ok", exc_type
+    return "ok", None
 
 
 def _extract_tokens(res: Any) -> tuple[int | None, int | None]:
@@ -221,17 +277,67 @@ def check_input(rails: Any, question: str, *, model_id: str) -> CheckResponse:
     Run the input self-check over ONE user turn and map to the contract.
 
     The orchestrator calls this ONLY on a pre-filter HIT (I6), so the paid guard
-    call never fires on benign traffic. The input rail runs ALONE (no main
-    generation, FINDINGS #4). An infrastructure error fails SAFE → BLOCK (Q2).
+    call never fires on benign traffic. The ``guarded input`` dispatcher routes to
+    ``self check input`` because ``triage_mode`` is False — the enforcing binary
+    block rail runs ALONE (no main generation, FINDINGS #4, and NOT the triage
+    lane). An infrastructure error fails SAFE → BLOCK (Q2).
     """
+    messages = [
+        {"role": "context", "content": {"triage_mode": False}},
+        {"role": "user", "content": question},
+    ]
     try:
         res = rails.generate(
-            messages=[{"role": "user", "content": question}],
-            options={**_LOG_LLM_CALLS, "rails": _INPUT_ONLY_RAILS},
+            messages=messages,
+            options={**_LOG_LLM_CALLS, "rails": _INPUT_RAILS_ONLY},
         )
     except Exception as exc:  # noqa: BLE001 — deliberate: any rail-call failure
         return _fail_safe_block(model_id, exc)
     return _to_response(res, model_id=model_id)
+
+
+def check_input_triage(rails: Any, question: str, *, model_id: str) -> TriageResponse:
+    """
+    Run the Group 4 input triage rail over ONE RAW user turn and map to the label.
+
+    Sets ``triage_mode=True`` so the ``guarded input`` dispatcher routes to the
+    ``input triage`` flow ALONE (the enforcing self-check never fires here).
+    Returns the three-way LABEL (``attack`` / ``offtopic`` / ``ok``) recovered
+    from the flow's two distinct exception types; ``ok`` when no exception fired.
+    The RAW question is forwarded (the pod never sanitizes the payload before the
+    judge).
+
+    An infrastructure error marks ``unavailable=true`` with verdict ``ok``: the
+    pod cannot adjudicate, so the orchestrator applies the layered fail policy
+    (ATTACK closed, OFFTOPIC open). The rail ships SHADOW, so this can never take
+    the service down.
+    """
+    messages = [
+        {"role": "context", "content": {"triage_mode": True}},
+        {"role": "user", "content": question},
+    ]
+    try:
+        res = rails.generate(
+            messages=messages,
+            options={**_LOG_LLM_CALLS, "rails": _INPUT_RAILS_ONLY},
+        )
+    except Exception as exc:  # noqa: BLE001 — deliberate: any rail-call failure
+        return TriageResponse(
+            verdict="ok",
+            unavailable=True,
+            rationale=f"input triage unavailable ({type(exc).__name__})",
+            model_id=model_id,
+        )
+    verdict, rationale = _extract_triage(res)
+    input_tokens, output_tokens = _extract_tokens(res)
+    return TriageResponse(
+        verdict=verdict,  # type: ignore[arg-type]
+        unavailable=False,
+        rationale=rationale,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        model_id=model_id,
+    )
 
 
 def check_output(

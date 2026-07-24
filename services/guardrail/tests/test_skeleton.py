@@ -59,8 +59,14 @@ def test_check_input_accepts_user_turn_and_returns_plain_data(make_client):
     assert body["output_tokens"] == 114
     # model_id is STAMPED by the pod from settings, NOT read from NeMo (FINDINGS #2).
     assert body["model_id"] == _HAIKU_ID
-    # Only the user turn was sent to the rail.
-    assert rails.calls[0]["messages"] == [{"role": "user", "content": "What is a lease?"}]
+    # Group 4: a routing context turn (triage_mode=False → the enforcing binary
+    # self-check, NOT the shadow triage lane) precedes the single user turn.
+    # It is pod-internal routing metadata, not a CONTENT turn — the rail still
+    # runs alone over one user turn, no wasted generation (FINDINGS #4).
+    assert rails.calls[0]["messages"] == [
+        {"role": "context", "content": {"triage_mode": False}},
+        {"role": "user", "content": "What is a lease?"},
+    ]
 
 
 def test_check_output_accepts_answer_and_chunks_and_maps_block(make_client):

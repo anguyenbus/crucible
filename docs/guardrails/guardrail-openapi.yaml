@@ -1,0 +1,364 @@
+openapi: 3.1.0
+
+info:
+  title: Guardrail Service — Internal API
+  version: 1.0.0
+  description: |
+    East-west (service-to-service) contract for the guardrail microservice — a
+    verdict-only NeMo Guardrails pod backed EXCLUSIVELY by AWS Bedrock Claude
+    Haiku (no OpenAI, no NIM). In-mesh callers only.
+
+    This is the INTERNAL spec. The orchestrator calls the request-time lanes
+    (/check/input/triage, /check/output); the ingestion service calls the
+    document lane (/check/document) on parser-produced markdown before indexing.
+    The BFF twin (guardrail-api.yaml) exposes only the document verdict surface to
+    the api-wrapper for the upload flow; the input/output lanes are NOT
+    end-user-facing and appear ONLY here.
+
+    STATUS:
+      * /check/input, /check/input/triage, /check/output, /healthz, /readyz are
+        AS-BUILT (services/guardrail).
+      * /check/document + its schemas are PROPOSED (Requirement 3, corpus-poisoning
+        detection at ingestion) — hand-authored ahead of implementation, marked
+        `x-status: proposed`.
+
+    INVARIANTS (contractual):
+      * VERDICT-ONLY. The pod returns a decision + attribution; it NEVER returns
+        the caller's text rewritten as authoritative. (`normalized_text` on the
+        document lane is advisory deterministic Unicode normalisation, not a
+        rewrite — the caller decides whether to index it.)
+      * HONEST 200, NEVER 5xx for a verdict. A block / redirect / flag / quarantine
+        is a 200 with a machine-readable verdict. NeMo's own refusal string is
+        NEVER forwarded. A 5xx means a genuine infrastructure fault, not a policy
+        decision.
+      * FAIL-CLOSED at the caller. When the pod cannot adjudicate, the caller does
+        NOT proceed unguarded: the orchestrator fails ATTACK closed; the ingestion
+        service quarantines the document (retryable).
+      * DETERMINISM-PINNED. The config-dir digest + uv.lock sha256 are pinned; the
+        pod refuses to serve on drift. Each verdict is reproducible from its inputs
+        + the guard config version.
+      * BEDROCK-ONLY. `model_id` is STAMPED by the pod from its configured Haiku id
+        (NeMo's reported id is unreliable).
+
+    AUTH MODEL — ASSUMPTION, NOT YET RATIFIED (mirrors the eval service proposal).
+    Caller authentication is mutualTLS: a request is served only if the mesh
+    presents a verified in-mesh peer identity (orchestrator / ingestion / ops). No
+    verified peer => 401 before any body parsing. The guardrail holds no tenant
+    data and reads no project id — isolation is by network policy + mTLS peer
+    allow-listing, not by a body field.
+
+servers:
+  - url: https://guardrail.internal
+    description: In-mesh (VPC-only). No public endpoint.
+
+security:
+  - mtlsPeer: []
+
+tags:
+  - name: check
+    description: Verdict-only guard checks.
+  - name: health
+    description: Liveness and readiness probes.
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness
+      description: Always 200 while the process serves. No dependency calls.
+      security: []
+      responses:
+        "200":
+          description: Alive.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthzResponse" }
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness
+      description: |
+        200 when the ONE reusable LLMRails engine is constructed and the
+        deterministic detectors compiled. 503 (with a reason) otherwise. Bedrock
+        reachability is proven by the first real /check call, not here.
+      security: []
+      responses:
+        "200":
+          description: Ready to serve /check.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadyzResponse" }
+        "503":
+          description: Not ready (engine not constructed, or a detector failed to compile).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /check/input:
+    post:
+      tags: [check]
+      summary: Binary input self-check (legacy — now a shadow monitor)
+      description: |
+        Self-check ONE user turn via the enforcing `self check input` rail. Since
+        the Group 7 cutover this runs as a PRODUCTION SHADOW regression monitor;
+        the active input adjudicator is /check/input/triage. Retained for the
+        contract and for shadow comparison.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckInputRequest" }
+      responses:
+        "200":
+          description: Verdict (honest 200; `unsafe=true` is a block, never a 5xx).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckResponse" }
+        "503":
+          description: Guard engine not initialised.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /check/input/triage:
+    post:
+      tags: [check]
+      summary: Three-way input triage (ATTACK / OFF-TOPIC / OK) — the active input rail
+      description: |
+        Classify ONE user turn in a single Haiku call. The RAW turn is forwarded
+        (never sanitised before the judge). `verdict`: attack (orchestrator blocks),
+        offtopic (redirect), ok (allow). `unavailable: true` means the pod could not
+        adjudicate — the verdict reads `ok` and the caller applies its layered fail
+        policy (ATTACK closed, OFF-TOPIC open) at the boundary.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckInputRequest" }
+      responses:
+        "200":
+          description: Triage verdict (honest 200).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TriageResponse" }
+        "503":
+          description: Guard engine not initialised.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /check/output:
+    post:
+      tags: [check]
+      summary: Output self-check (deterministic secrets first, then content, optional grounding)
+      description: |
+        Check a generated answer against its grounding chunks. The deterministic
+        secrets/PII detector runs FIRST and short-circuits the paid LLM rail on a
+        secret hit. `self check facts` (grounding) runs ONLY when `check_facts` is
+        true. PII is deliberately NOT blocked — the cleared officer sees it.
+        `flag: true` is the advisory deliver-with-flag signal; never itself a block.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckOutputRequest" }
+      responses:
+        "200":
+          description: Verdict + deterministic detections (honest 200).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckResponse" }
+        "503":
+          description: Guard engine not initialised.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /check/document:
+    post:
+      tags: [check]
+      summary: "PROPOSED — check parser-produced markdown before ingestion indexes it"
+      x-status: proposed
+      description: |
+        PROPOSED (Requirement 3). Verdict-only content check over the markdown a
+        document parsed to, called by the ingestion service after /parse and
+        BEFORE chunk/embed/index. Checks the WHOLE document (not per chunk) so an
+        injection spanning chunk boundaries is still seen.
+
+        Cheapest-first: (1) deterministic Unicode sanitisation — strip zero-width
+        and tag characters, NFC-normalise, HARD-REJECT BIDI overrides; (2)
+        deterministic injection scan — YARA-style (SQLi/XSS/code/template) plus
+        prompt-injection patterns aimed at an AI reviewer; (3) OPTIONAL one bounded
+        Haiku classification (config-gated, off by default) for fluent evasions.
+
+        LIMITATION (contractual): this sees the TEXT. Visual hiding (zero-size /
+        off-canvas / colour-hidden / metadata-only text) is destroyed at parse and
+        is NOT detectable here — it is the parser's job (text-layer-vs-OCR diff,
+        per-span provenance), optionally supplied via `provenance`. A `clean`
+        verdict means "no injected content detected in the text", NOT "no hidden
+        text in the source".
+
+        Verdict: `clean` (index), `flag` (index but tag; advisory), `quarantine`
+        (do NOT index; high-confidence injection or a BIDI hard-reject). For a
+        first release `quarantine` requires a deterministic high-confidence signal;
+        the LLM signal is `flag`, not `quarantine`, until its false-positive rate is
+        measured — over-quarantining legitimate case documents deletes the corpus.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckDocumentRequest" }
+      responses:
+        "200":
+          description: Document verdict + detections (+ advisory normalised text).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentCheckResponse" }
+        "503":
+          description: Guard engine not initialised.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+components:
+  securitySchemes:
+    mtlsPeer:
+      type: mutualTLS
+      description: |
+        Verified in-mesh peer identity (orchestrator / ingestion / ops). Enforced
+        by the mesh; no verified peer => 401 before body parsing.
+
+  schemas:
+    HealthzResponse:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, const: "ok", description: "Always 'ok' while serving." }
+
+    ReadyzResponse:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, const: "ready", description: "Engine constructed + detectors compiled." }
+
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: { type: string, description: "Human-readable reason. Class name / short prose only — never raw internals." }
+
+    Detection:
+      type: object
+      description: One deterministic detector hit — labels + counts only, NO spans/offsets (verdict-only).
+      required: [category, label, count]
+      properties:
+        category: { type: string, description: "The class that fired (e.g. 'secrets', 'injection')." }
+        label: { type: string, description: "The specific rule (e.g. 'aws_access_key', 'prompt_injection_ai_directed')." }
+        count: { type: integer, minimum: 1, description: "How many times the rule matched." }
+
+    CheckInputRequest:
+      type: object
+      required: [question]
+      properties:
+        question: { type: string, description: "The RAW user turn to check. Never sanitised before the judge." }
+
+    CheckOutputRequest:
+      type: object
+      required: [answer]
+      properties:
+        answer: { type: string, description: "The generated answer to self-check." }
+        chunks:
+          type: array
+          items: { type: string }
+          default: []
+          description: "Retrieved grounding chunks (evidence for the facts rail)."
+        check_facts:
+          type: boolean
+          default: false
+          description: "Run the grounding rail over answer vs chunks (independent facts gate)."
+
+    CheckResponse:
+      type: object
+      description: Plain-data verdict returned by /check/input and /check/output.
+      required: [unsafe, model_id, flag, detections]
+      properties:
+        unsafe: { type: boolean, description: "true => BLOCK (a rail fired). Honest 200, never a 5xx." }
+        rationale:
+          type: [string, "null"]
+          description: "Terse label (exception type / fail-policy label). NeMo's own refusal string is NEVER forwarded."
+        input_tokens: { type: [integer, "null"], description: "Bedrock prompt tokens for the guard call." }
+        output_tokens: { type: [integer, "null"], description: "Bedrock completion tokens for the guard call." }
+        model_id: { type: string, description: "The configured Haiku id, STAMPED by the pod." }
+        flag: { type: boolean, description: "Advisory deliver-with-flag signal (output lane). Never itself a block." }
+        detections:
+          type: array
+          items: { $ref: "#/components/schemas/Detection" }
+          description: "Deterministic detector attribution (labels + counts, NO offsets)."
+
+    TriageResponse:
+      type: object
+      description: Plain-data three-way verdict returned by /check/input/triage.
+      required: [verdict, unavailable, model_id]
+      properties:
+        verdict:
+          type: string
+          enum: [attack, offtopic, ok]
+          description: "attack (block) | offtopic (redirect) | ok (allow). Fails toward 'ok' on an unparseable/absent verdict."
+        unavailable:
+          type: boolean
+          default: false
+          description: "true when the pod could NOT adjudicate — verdict defaults to 'ok' and the caller's layered fail policy decides."
+        rationale:
+          type: [string, "null"]
+          description: "Terse reason (exception type / fail label). NeMo's refusal string is NEVER forwarded."
+        input_tokens: { type: [integer, "null"] }
+        output_tokens: { type: [integer, "null"] }
+        model_id: { type: string, description: "The configured Haiku id, stamped by the pod." }
+
+    CheckDocumentRequest:
+      type: object
+      x-status: proposed
+      required: [text]
+      properties:
+        text:
+          type: string
+          description: "The parser-produced markdown for the WHOLE document (not a single chunk)."
+        source_ref:
+          type: [string, "null"]
+          description: "Opaque reference to the source document (for the verdict audit record). Never fetched by the pod."
+        provenance:
+          type: [object, "null"]
+          description: |
+            OPTIONAL parser-supplied hints the guardrail cannot derive from text
+            alone — e.g. spans the parser found render invisibly (text-layer-vs-OCR
+            diff). Lets the deterministic rails weight likely-hidden text. The
+            visual-hiding detection itself is the parser's job; this is the channel
+            for its result.
+          additionalProperties: true
+
+    DocumentCheckResponse:
+      type: object
+      x-status: proposed
+      description: Plain-data document verdict returned by /check/document.
+      required: [verdict, detections, model_id]
+      properties:
+        verdict:
+          type: string
+          enum: [clean, flag, quarantine]
+          description: "clean (index) | flag (index but tag; advisory) | quarantine (do NOT index)."
+        detections:
+          type: array
+          items: { $ref: "#/components/schemas/Detection" }
+          description: "What fired (injection patterns, YARA rules, BIDI/Unicode). Labels + counts, NO offsets."
+        normalized_text:
+          type: [string, "null"]
+          description: "ADVISORY deterministic Unicode normalisation (zero-width/tag stripped, NFC). NOT a rewrite of the caller's authoritative copy — ingestion decides whether to index this form."
+        rationale:
+          type: [string, "null"]
+          description: "Terse reason for a flag/quarantine (e.g. 'bidi_override', 'ai_directed_instruction')."
+        model_id:
+          type: [string, "null"]
+          description: "Stamped Haiku id when the optional LLM classifier ran; null on a purely deterministic verdict."
+        input_tokens: { type: [integer, "null"] }
+        output_tokens: { type: [integer, "null"] }

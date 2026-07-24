@@ -10,9 +10,13 @@ env flag or config ref can bring it back (``stub`` survives only as an
 enum value in the envelope).
 
 Guarding is OUT-OF-PROCESS and NeMo-only: the guardrail pod owns every verdict
-on both lanes. On INPUT, a free regex pre-filter gates the paid call — a benign
-MISS makes zero pod calls; a HIT forwards the RAW question to the pod's
-``self_check_input``. On OUTPUT, ``check_output_nemo`` runs the pod's
+on both lanes. On INPUT, the ACTIVE adjudicator is the UNCONDITIONAL Haiku triage
+rail (ATTACK/OFFTOPIC/OK) — its ATTACK class is ENFORCING (Group 7). A free regex
+pre-filter still gates the SHADOW ``self_check_input`` call (retired from the
+enforcing path but kept as a production-shadow regression monitor) — a benign MISS
+makes zero self-check pod calls; a HIT forwards the RAW question to the pod's
+``self_check_input`` and its verdict is recorded, not acted on. On OUTPUT,
+``check_output_nemo`` runs the pod's
 deterministic secrets rail plus ``self check output`` (and, when gated on,
 ``self check facts``). A block raises
 :class:`app.orchestrator.guardrails.GuardrailTripwire`, which is a SUCCESSFUL,
@@ -24,6 +28,17 @@ own string never becomes the answer. An active output guard switches
 the complete answer has cleared the pod, so exactly one ``final`` event is
 emitted and nothing leaks. Configs with no ``nemo`` selector (1.0.0-1.4.0, the
 eval lane) skip both lanes entirely as typed identities.
+
+Group 7 makes the UNCONDITIONAL Haiku triage the ACTIVE input adjudicator: on
+EVERY question (not only pre-filter hits) a SEPARATE pod call classifies the RAW
+turn as ATTACK/OFFTOPIC/OK and records the verdict on a ``guardrail_input`` span.
+The ATTACK class is ENFORCING (``input_triage.CUTOVER_MODES``) — it blocks, or
+fails CLOSED (``guard-unavailable`` + ``Retry-After``) on an unavailable/timed-out
+adjudication, never open. OFFTOPIC stays SHADOW (recorded, not redirected —
+Group 8.5). The swap from ``self_check_input`` is ATOMIC: enforcement transfers to
+the strictly-stronger triage in the SAME change (zero ATTACK regression, G6
+parity), so the input lane never has an unguarded instant. ``self_check_input``
+now runs in production SHADOW alongside it.
 
 Error mapping lives in app-level exception handlers registered in
 ``app.main`` — never per-route try/except:
@@ -61,7 +76,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import StreamingResponse
 from opensearchpy.exceptions import OpenSearchException
 
@@ -90,7 +105,14 @@ from app.observability import (
     trace_echo,
     use_context,
 )
-from app.orchestrator import guardrails, policy_router, query_rewrite, reranker
+from app.orchestrator import (
+    guardrails,
+    input_triage,
+    policy_router,
+    query_rewrite,
+    reranker,
+)
+from app.orchestrator.guard_policy import GuardMode, record_verdict
 from app.orchestrator.citation_builder import build_citations
 from app.orchestrator.context_assembler import assemble_context
 from app.orchestrator.prompt_builder import build_prompt
@@ -111,6 +133,7 @@ if TYPE_CHECKING:
 
     from app.clients import AppClients
     from app.clients.bedrock import GenerationResult
+    from app.orchestrator.guard_policy import VerdictRecord
     from app.schemas.envelope import GuardrailDecision
     from app.schemas.pipeline_config import GuardrailsPin
 
@@ -151,6 +174,84 @@ def _nemo_output_active(pins: GuardrailsPin) -> bool:
     ``_output_guard_active`` this drives buffered streaming + span emission.
     """
     return guardrails.nemo_output_active(pins)
+
+
+class _SpanVerdictSink:
+    """
+    A :class:`VerdictSink` that persists a shadow verdict onto a guardrail span.
+
+    The audit trail lives OUTSIDE the answering code path (Group 2's
+    independent-enforcement rationale): the ``guardrail_input`` span (Phoenix)
+    carries the shadow triage verdict keyed to the trace id, so fail-open/closed
+    windows are countable by rule id without the verdict ever touching the
+    response envelope.
+    """
+
+    def __init__(self, span: Span) -> None:
+        self._span = span
+
+    def record(self, record: VerdictRecord) -> None:
+        """Attach the verdict projection to the span (mode + decision + rule id)."""
+        self._span.set_attribute("guardrail.mode", record.mode)
+        self._span.set_attribute("guardrail.decision", record.decision)
+        if record.rule_id:
+            self._span.set_attribute("guardrail.rule_id", record.rule_id)
+        if record.category:
+            self._span.set_attribute("guardrail.category", record.category)
+
+
+def _run_input_triage(tracer: Any, clients: AppClients, question: str) -> None:
+    """
+    Group 7: UNCONDITIONAL triage over the RAW question — ATTACK now ENFORCING.
+
+    Runs on EVERY question on the guarded lane (a SEPARATE pod call, independent
+    of the now-SHADOW ``self_check_input``): classifies the turn ATTACK/OFFTOPIC/OK
+    and records the verdict on a ``guardrail_input`` span. After the Group 7
+    cutover the ATTACK class is ENFORCING (:data:`input_triage.CUTOVER_MODES`) —
+    it is the ACTIVE input adjudicator, strictly stronger than the retired
+    ``self_check_input`` (zero ATTACK regression, G6 parity). OFFTOPIC stays
+    SHADOW (recorded, not redirected — Group 8.5). An enforcing ATTACK verdict (or
+    a fail-CLOSED ``guard-unavailable`` on an unavailable adjudication) raises
+    :class:`GuardrailTripwire`, which is re-raised for the route's honest-200
+    refusal path — the layered fail policy lives in the pure stage
+    (:func:`input_triage.run_input_triage`), so an unreachable/timed-out ATTACK
+    adjudication fails CLOSED (with ``Retry-After``), never open. A client that
+    predates the triage method (older configs / test doubles) skips triage
+    entirely. A non-tripwire hiccup (span/sink bookkeeping) is swallowed — that is
+    telemetry, not adjudication (the adjudication failure is already a fail-CLOSED
+    tripwire).
+    """
+    client = clients.nemo
+    if client is None or getattr(client, "check_input_triage", None) is None:
+        return
+    span = start_guardrail_input_span(tracer)
+    try:
+        interaction_id = format(span.get_span_context().trace_id, "032x")
+        observation = input_triage.run_input_triage(
+            client,
+            question,
+            sink=_SpanVerdictSink(span),
+            interaction_id=interaction_id,
+            modes=input_triage.CUTOVER_MODES,
+        )
+        set_guardrail_input_attributes(
+            span,
+            decision=observation.decision.decision,
+            category=observation.decision.category,
+            rule_id=observation.decision.rule_id,
+            model_id=observation.model_id,
+            input_tokens=observation.input_tokens,
+            output_tokens=observation.output_tokens,
+        )
+        span.set_attribute("guardrail.mode", observation.mode.value)
+    except guardrails.GuardrailTripwire:
+        # ENFORCING action (Group 8) — never with the default all-shadow modes.
+        span.end()
+        raise
+    except Exception:  # noqa: BLE001 — a SHADOW observation must NEVER affect traffic
+        span.end()
+        return
+    span.end()
 
 
 def _chunk_texts(chunks: list[dict[str, Any]]) -> list[str]:
@@ -208,8 +309,10 @@ def _run_nemo_output_guard(
     ``GuardrailTripwire`` (span recorded + ended before it propagates) for the
     route to turn into a 200 canned refusal — NeMo's string never becomes the
     answer (I3). A no-op returning ``(answer_text, [])`` when the lane is off.
-    The output/facts fail-OPEN policy lives in the pure stage, so a flaky/
-    unreachable pod returns an advisory flag here, never a block.
+    The output-lane fail policy lives in the pure stage: ruling 0.3 FAILS CLOSED,
+    so a pod-unreachable outage RAISES ``GuardrailTripwire``
+    (``nemo-output-guard-unavailable-v1`` + ``Retry-After``) here, suppressing the
+    unadjudicated answer rather than delivering it with a flag.
     """
     if not _nemo_output_active(guard_pins):
         return answer_text, []
@@ -263,12 +366,14 @@ def _run_pre_generation(
     helpers exactly as the blocking path always recorded them. Must be called
     with the root query span CURRENT so stage spans parent correctly.
 
-    ``guardrails.check_input_nemo`` is FIRST and is config-gated: it receives the
-    resolved ``guardrails`` pins and the injected pod client. With no ``nemo``
-    selector (1.0.0-1.4.0) it is a typed identity — no pod call. On a pre-filter
-    HIT that the pod flags unsafe it raises ``GuardrailTripwire``, which
-    PROPAGATES here unchanged (no try/except in the pure chain) for the routes to
-    turn into a 200 refusal.
+    The deterministic malformed floor is FIRST, then (Group 7) the input adjudicator
+    is the UNCONDITIONAL triage rail with ATTACK ENFORCING — a triage ATTACK verdict
+    (or a fail-CLOSED ``guard-unavailable``) raises ``GuardrailTripwire``, which
+    PROPAGATES here for the routes to turn into a 200 refusal. ``check_input_nemo``
+    (``self_check_input``) still runs on a pre-filter HIT but in PRODUCTION SHADOW:
+    its verdict is recorded, and it does NOT block (its tripwire is caught + shadowed
+    HERE, not propagated). With no ``nemo`` selector (1.0.0-1.4.0) both are typed
+    identities — no pod call.
 
     ``request.history`` + the resolved config's history pins feed ONLY
     ``query_rewrite`` (the retrieval query — the history-prefixed rewrite is
@@ -283,23 +388,55 @@ def _run_pre_generation(
     # Config-gated input guard, then the parked policy-router identity — both
     # stay in-chain at their natural first positions.
     guard_pins = resolved.config.guardrails
-    question = request.question
+
+    # Deterministic malformed pre-check (Group 1): the NORMALIZE-ONCE floor. It
+    # runs FIRST, makes NO model call, and is POD-INDEPENDENT (config-gated, not
+    # pod-reachability-gated) so it keeps guarding when the pod is down. It is
+    # ENFORCING from day one and never shadowed. Off on the released
+    # 1.0.0-1.4.0 / eval 1.1.0 lanes (floor inactive ⇒ identity, byte-for-byte).
+    # The SAME canonical NFC text it returns is forwarded to the guard, the
+    # retriever, and the model — no parser differential. A malformed input raises
+    # GuardrailTripwire (distinct `input-malformed-reject-v1` decision), which
+    # PROPAGATES here for the routes to turn into a 200 refusal — never a 5xx.
+    if guardrails.input_floor_active(guard_pins):
+        question = guardrails.check_input_malformed(request.question)
+    else:
+        question = request.question
 
     # Out-of-process NeMo INPUT self-check lane (the nemo-all 1.8.0 config). The
     # orchestrator regex pre-filter is the FREE cost gate: a benign pre-filter
-    # MISS makes ZERO paid pod calls and adds no span; a HIT forwards the RAW
-    # question (unchanged, NOT normalized) to the pod's self_check_input, whose
-    # LLM verdict REPLACES the in-house Haiku confirm-step on this config. A block
-    # raises GuardrailTripwire, which PROPAGATES here unchanged (no try/except in
-    # the pure chain) for the routes to turn into a 200 refusal — never a 5xx
-    # (I3). Off (in-house 1.0.0-1.4.0, no input_self_check) ⇒ skipped entirely.
-    if guardrails.nemo_prefilter_hit(request.question, guard_pins):
+    # MISS makes ZERO paid pod calls and adds no span; a HIT forwards the CANONICAL
+    # question (NORMALIZE-ONCE — the same text retrieval/generation see, invisible
+    # smuggling channels already stripped, which can only reveal an attack) to the
+    # pod's self_check_input, whose LLM verdict REPLACES the in-house Haiku
+    # confirm-step on this config. A block raises GuardrailTripwire, which
+    # PROPAGATES here unchanged (no try/except in the pure chain) for the routes to
+    # turn into a 200 refusal — never a 5xx (I3). Off (in-house 1.0.0-1.4.0, no
+    # input_self_check) ⇒ skipped entirely.
+    if guardrails.nemo_prefilter_hit(question, guard_pins):
         nemo_in_span = start_guardrail_input_span(tracer)
+        interaction_id = format(nemo_in_span.get_span_context().trace_id, "032x")
         try:
             nemo_in = guardrails.check_input_nemo(
-                request.question, pins=guard_pins, nemo_client=clients.nemo
+                question, pins=guard_pins, nemo_client=clients.nemo
             )
         except guardrails.GuardrailTripwire as tripwire:
+            # Group 7 cutover: `self_check_input` is RETIRED from the enforcing
+            # path and now runs in PRODUCTION SHADOW. Its verdict is still
+            # PERSISTED (keyed to the trace id, OUTSIDE the answering path) so a
+            # post-cutover prod window can catch regressions the gate missed — but
+            # the orchestrator NO LONGER ACTS on it: it does NOT re-raise. The
+            # active input adjudicator is the (strictly-stronger, unconditional)
+            # triage ATTACK class below. `GuardMisconfiguredError` (a deploy error)
+            # is NOT a GuardrailTripwire, so it still propagates loudly (→ 500,
+            # fail-closed-at-deploy). A pre-filter-flagged input still reaches the
+            # enforcing triage lane unchanged (question is not rewritten here).
+            record_verdict(
+                _SpanVerdictSink(nemo_in_span),
+                interaction_id=interaction_id,
+                decision=tripwire.decision,
+                mode=GuardMode.SHADOW,
+            )
             set_guardrail_input_attributes(
                 nemo_in_span,
                 decision=tripwire.decision.decision,
@@ -310,16 +447,29 @@ def _run_pre_generation(
                 output_tokens=tripwire.output_tokens,
             )
             nemo_in_span.end()
-            raise
-        set_guardrail_input_attributes(
-            nemo_in_span,
-            decision="allow",
-            model_id=nemo_in.model_id,
-            input_tokens=nemo_in.input_tokens,
-            output_tokens=nemo_in.output_tokens,
-        )
-        nemo_in_span.end()
-        question = nemo_in.question
+        else:
+            set_guardrail_input_attributes(
+                nemo_in_span,
+                decision="allow",
+                model_id=nemo_in.model_id,
+                input_tokens=nemo_in.input_tokens,
+                output_tokens=nemo_in.output_tokens,
+            )
+            nemo_in_span.set_attribute("guardrail.mode", GuardMode.SHADOW.value)
+            nemo_in_span.end()
+            question = nemo_in.question
+
+    # Group 7: UNCONDITIONAL triage — now the ACTIVE input adjudicator. On the
+    # guarded lane EVERY question is triaged (not only pre-filter hits); the ATTACK
+    # class is ENFORCING (it blocks / fails CLOSED), OFFTOPIC stays SHADOW
+    # (recorded, not redirected). It is a SEPARATE pod call, independent of the
+    # now-SHADOW self_check_input above, and sees the RAW (NORMALIZE-ONCE, never
+    # rewritten) question so the adversarial payload reaches the judge as written.
+    # A block / fail-CLOSED refusal raises GuardrailTripwire, which PROPAGATES here
+    # for the routes to turn into a 200 refusal — never a 5xx. Off on the in-house
+    # 1.0.0-1.4.0 lanes (no nemo input lane).
+    if guardrails.nemo_input_active(guard_pins):
+        _run_input_triage(tracer, clients, question)
 
     question = policy_router.route(question)
     # Deterministic history-aware rewrite: builds the RETRIEVAL query only.
@@ -442,30 +592,50 @@ def _blocked_result(
     *,
     timings_ms: dict[str, float],
     trace_block: dict[str, str] | None,
+    answer_text: str = guardrails.REFUSAL_TEXT,
 ) -> dict[str, Any]:
     """
     Build the schema-valid refusal ``result`` for a guard block.
 
-    A refusal is just an answer with the canned ``REFUSAL_TEXT``, an EMPTY
-    ``citations`` array, and an EMPTY ``retrieved_chunks`` array. For the INPUT
-    guard the guard short-circuits BEFORE retrieval, so ``retrieved_chunks``
-    stays ``[]``; the OUTPUT secrets block happens AFTER retrieval but still
-    suppresses the whole answer to the canned refusal, and by contract a refusal
-    carries no citations and no retrieved chunks (the answer that referenced them
-    is gone). ``system_version`` still echoes the config provenance honestly —
-    the pinned config that decided to block is on record — so this stays within
-    the same ``rag_query_output`` v1.1.0 contract.
+    A refusal is just an answer with the decision-derived ``answer_text`` (the
+    canned ``REFUSAL_TEXT`` for a block / guard-unavailable, the generic
+    ``REDIRECT_TEXT`` for an OFFTOPIC redirect — task 4.5: the text derives from
+    the decision, not a single constant), an EMPTY ``citations`` array, and an
+    EMPTY ``retrieved_chunks`` array. For the INPUT guard the guard short-circuits
+    BEFORE retrieval, so ``retrieved_chunks`` stays ``[]``; the OUTPUT secrets
+    block happens AFTER retrieval but still suppresses the whole answer, and by
+    contract a refusal carries no citations and no retrieved chunks (the answer
+    that referenced them is gone). ``system_version`` still echoes the config
+    provenance honestly — the pinned config that decided to block is on record —
+    so this stays within the same ``rag_query_output`` v1.1.0 contract.
     """
     return _build_result(
         request,
         resolved,
         settings,
         retrieved_chunks=[],
-        answer_text=guardrails.REFUSAL_TEXT,
+        answer_text=answer_text,
         citations=[],
         timings_ms=timings_ms,
         trace_block=trace_block,
     )
+
+
+def _apply_guard_retry_after(
+    response: Response, tripwire: guardrails.GuardrailTripwire
+) -> None:
+    """
+    Ride a ``Retry-After`` header on a fail-CLOSED ``guard-unavailable`` refusal.
+
+    The honest 200 refusal a ``guard-unavailable`` tripwire produces (the input
+    lane's ATTACK-adjudication-unavailable path, or the output lane's
+    pod-unreachable FAIL-CLOSED path per ruling 0.3) is RETRYABLE — a transient
+    Bedrock throttle / pod restart clears in seconds. Only tripwires carrying a
+    ``retry_after`` (never a genuine content block) set the header, so a real
+    block stays byte-identical and no 5xx is ever involved.
+    """
+    if tripwire.retry_after is not None:
+        response.headers["Retry-After"] = str(tripwire.retry_after)
 
 
 @query_router.post(
@@ -506,7 +676,9 @@ def _blocked_result(
         },
     },
 )
-def post_query(request: QueryRequest, http_request: Request) -> QueryResponse:
+def post_query(
+    request: QueryRequest, http_request: Request, response: Response
+) -> QueryResponse:
     """
     Answer a single-turn RAG query with the LIVE pipeline.
 
@@ -547,10 +719,16 @@ def post_query(request: QueryRequest, http_request: Request) -> QueryResponse:
             # perf_counter is called ONLY on this tripwire path so the allowed
             # path's deterministic-clock ticks (the golden bytes) are unchanged.
             timings_ms["guardrail"] = (time.perf_counter() - total_start) * 1000.0
+            _apply_guard_retry_after(response, tripwire)
             trace_block = trace_echo(root_span)
             timings_ms["total"] = (time.perf_counter() - total_start) * 1000.0
             result = _blocked_result(
-                request, resolved, settings, timings_ms=timings_ms, trace_block=trace_block
+                request,
+                resolved,
+                settings,
+                timings_ms=timings_ms,
+                trace_block=trace_block,
+                answer_text=input_triage.answer_text_for_decision(tripwire.decision),
             )
             return QueryResponse(
                 result=result,
@@ -600,10 +778,16 @@ def post_query(request: QueryRequest, http_request: Request) -> QueryResponse:
             )
             guardrail_decisions.extend(nemo_decisions)
         except guardrails.GuardrailTripwire as tripwire:
+            _apply_guard_retry_after(response, tripwire)
             trace_block = trace_echo(root_span)
             timings_ms["total"] = (time.perf_counter() - total_start) * 1000.0
             result = _blocked_result(
-                request, resolved, settings, timings_ms=timings_ms, trace_block=trace_block
+                request,
+                resolved,
+                settings,
+                timings_ms=timings_ms,
+                trace_block=trace_block,
+                answer_text=input_triage.answer_text_for_decision(tripwire.decision),
             )
             return QueryResponse(
                 result=result,
@@ -811,7 +995,12 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
         timings_ms["total"] = (time.perf_counter() - total_start) * 1000.0
         root_span.end()
         result = _blocked_result(
-            request, resolved, settings, timings_ms=timings_ms, trace_block=trace_block
+            request,
+            resolved,
+            settings,
+            timings_ms=timings_ms,
+            trace_block=trace_block,
+            answer_text=input_triage.answer_text_for_decision(tripwire.decision),
         )
         envelope = QueryResponse(
             result=result,
@@ -881,10 +1070,11 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
             guardrail_decisions = []
 
             # Out-of-process NeMo output/facts guard (buffered: no tokens have
-            # shipped). A block terminates the stream in ONE final canned refusal
-            # (I3 — NeMo's string never becomes the answer); an advisory flag (or
-            # a fail-OPEN unreachable pod, Q2) appends a non-block decision and
-            # delivers the answer. Off (1.0.0-1.4.0) ⇒ skipped.
+            # shipped). A block — INCLUDING a pod-unreachable FAIL-CLOSED
+            # guard-unavailable (ruling 0.3) — terminates the stream in ONE final
+            # canned refusal (I3 — NeMo's string never becomes the answer); a
+            # genuine advisory flag appends a non-block decision and delivers the
+            # answer. Off (1.0.0-1.4.0) ⇒ skipped.
             if nemo_output_active:
                 nemo_span = start_guardrail_output_span(tracer, context=root_context)
                 open_spans.append(nemo_span)
@@ -921,6 +1111,7 @@ def post_query_stream(request: QueryRequest, http_request: Request) -> Streaming
                         settings,
                         timings_ms=timings_ms,
                         trace_block=trace_block,
+                        answer_text=input_triage.answer_text_for_decision(tripwire.decision),
                     )
                     envelope = QueryResponse(
                         result=result,

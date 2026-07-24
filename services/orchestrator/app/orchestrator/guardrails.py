@@ -28,6 +28,7 @@ configs) makes it a typed identity, so those lanes stay byte-for-byte.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Final, Protocol
 
@@ -51,24 +52,38 @@ _UNICODE_EVASION_INPUT_CATEGORY: Final[str] = "unicode_evasion"
 # NeMo out-of-process OUTPUT/facts lane identities (self check output +
 # independently-gated self check facts). A NeMo block reuses the SAME honest
 # 200-refusal path as the regex secrets block (I3); an advisory flag delivers
-# the answer with a non-block decision (Q2 output/facts fail-OPEN).
+# the answer with a non-block decision (a genuine pod advisory — NOT a fail
+# policy).
 _NEMO_CATEGORY: Final[str] = "nemo"
 _NEMO_OUTPUT_BLOCK_RULE_ID: Final[str] = "nemo-output-block-v1"
 _NEMO_OUTPUT_FLAG_RULE_ID: Final[str] = "nemo-output-flag-v1"
-# The Mode-B FAIL-OPEN window carries its OWN rule id, distinct from the routine
-# advisory above. Both deliver the answer with a `flag`, but they mean opposite
-# things: an advisory is the pod TELLING us something, whereas a fail-open means
-# the pod never answered and the response is UNGUARDED. Alarming on the rationale
-# prose would be fragile, so the machine-readable rule id is what makes the window
-# LOUD — it rides the `guardrail.rule_id` span attribute into Phoenix, so a
-# sustained outage is a countable signal and a silent fail-open is impossible.
-_NEMO_OUTPUT_FAIL_OPEN_RULE_ID: Final[str] = "nemo-output-fail-open-v1"
+# Output-lane fail policy — ruling 0.3 (MANAGER / security-posture owner,
+# 2026-07-24): FAIL CLOSED. When the pod is UNREACHABLE (Mode B) on the output
+# lane the answer's safety is UNKNOWN, so — for audit consistency with the input
+# lane and to leave no answer unadjudicated — the answer is SUPPRESSED to an
+# honest 200 refusal carrying this distinct `guard-unavailable` rule id, NOT
+# delivered with an advisory flag. This REPLACES the earlier
+# `nemo-output-fail-open-v1` deliver-with-flag path. The deterministic secrets
+# rail still runs FIRST at the pod (it needs no pod), so a secrets answer was
+# already blocked before this branch is reached; the circuit breaker + alarm on
+# SUSTAINED unavailability (Group 2) apply to the output lane too, so the
+# fail-closed window is a monitored, bounded, rare degraded mode. The rule id is
+# the machine-readable alarm signal (alarm on the id, not on rationale prose).
+_NEMO_OUTPUT_GUARD_UNAVAILABLE_RULE_ID: Final[str] = "nemo-output-guard-unavailable-v1"
+# Short Retry-After: a transient Bedrock throttle / pod restart clears in
+# seconds, and the guard runs AFTER a paid generation, so the refusal is
+# survivable and retryable. Kept LOCAL (guard_policy imports guardrails, so
+# guardrails cannot import guard_policy — no cycle) and equal to the input
+# lane's `GUARD_UNAVAILABLE_RETRY_AFTER_SECONDS` for consistency.
+_NEMO_OUTPUT_GUARD_UNAVAILABLE_RETRY_AFTER_SECONDS: Final[int] = 5
 _NEMO_DEFAULT_BLOCK_RATIONALE: Final[str] = (
     "NeMo output/facts rail blocked the answer"
 )
 _NEMO_ADVISORY_RATIONALE: Final[str] = "NeMo output/facts advisory"
-_NEMO_FAIL_OPEN_RATIONALE: Final[str] = (
-    "NeMo guardrail pod unavailable on the output/facts path — failing open"
+_NEMO_OUTPUT_GUARD_UNAVAILABLE_RATIONALE: Final[str] = (
+    "NeMo guardrail pod unavailable on the output path — failing CLOSED "
+    "(ruling 0.3: suppress the unadjudicated answer to an honest 200 refusal for "
+    "audit consistency). Retryable."
 )
 # NeMo out-of-process INPUT self-check lane identities (the nemo-all `1.8.0`
 # config's `self_check_input`). A block reuses the SAME honest 200-refusal path
@@ -312,6 +327,7 @@ class GuardrailTripwire(Exception):
         model_id: str | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
+        retry_after: int | None = None,
     ) -> None:
         """
         Carry the block decision + guard-call telemetry to the router.
@@ -319,12 +335,19 @@ class GuardrailTripwire(Exception):
         The router records both on the ``guardrail_input`` LLM span; ``model_id``
         and tokens are ``None`` on a fail-safe block (no verdict) and on an
         output secrets block (regex-only, no model call).
+
+        ``retry_after`` is set ONLY on a ``guard-unavailable`` fail-CLOSED refusal
+        (Group 2 layered fail policy): the guard could not adjudicate, so the
+        honest 200 refusal carries the seconds to wait before retrying — a
+        transient Bedrock throttle clears in seconds, so the refusal is
+        survivable and retryable, never a 5xx. ``None`` on every genuine block.
         """
         super().__init__(decision.rationale or REFUSAL_TEXT)
         self.decision = decision
         self.model_id = model_id
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
+        self.retry_after = retry_after
 
 
 class GuardMisconfiguredError(RuntimeError):
@@ -351,21 +374,39 @@ def _nemo_output_block_decision(rationale: str) -> GuardrailDecision:
     )
 
 
-def _nemo_output_fail_open_decision(rationale: str) -> GuardrailDecision:
+def _nemo_output_guard_unavailable_decision() -> GuardrailDecision:
     """
-    Build the LOUD Mode-B fail-open decision (pod unreachable → answer UNGUARDED).
+    Build the Mode-B FAIL-CLOSED decision (pod unreachable → answer SUPPRESSED).
 
-    Shaped like the advisory flag (non-blocking: a flaky pod must never nuke a
-    valid legal answer) but carrying :data:`_NEMO_OUTPUT_FAIL_OPEN_RULE_ID` so the
-    fail-open window is distinguishable from a genuine pod advisory by rule id
-    alone — the alarm/telemetry signal, not prose.
+    Ruling 0.3: unlike the retired ``nemo-output-fail-open-v1`` deliver-with-flag
+    path, a pod-unreachable output lane now REFUSES — the unadjudicated answer is
+    suppressed to an honest 200 refusal carrying this distinct
+    ``guard-unavailable`` decision and a ``Retry-After``. The rule id is the
+    machine-readable alarm signal (alarm on the id, not on prose), consistent with
+    the input lane's ``guard-unavailable``.
     """
     return GuardrailDecision(
         stage=_OUTPUT_STAGE,
-        decision="flag",
+        decision="guard-unavailable",
         category=_NEMO_CATEGORY,
-        rule_id=_NEMO_OUTPUT_FAIL_OPEN_RULE_ID,
-        rationale=rationale,
+        rule_id=_NEMO_OUTPUT_GUARD_UNAVAILABLE_RULE_ID,
+        rationale=_NEMO_OUTPUT_GUARD_UNAVAILABLE_RATIONALE,
+    )
+
+
+def _nemo_output_guard_unavailable_tripwire() -> GuardrailTripwire:
+    """
+    Pod UNREACHABLE on the output lane → fail CLOSED for THIS answer (ruling 0.3).
+
+    An honest 200 refusal (a :class:`GuardrailTripwire`, NEVER a 5xx) carrying the
+    distinct ``guard-unavailable`` rule id and a ``Retry-After``. NOT fail-open:
+    the answer's safety is UNKNOWN, so — for audit consistency with the input lane
+    (no answer reaches the officer unadjudicated) — it is suppressed rather than
+    delivered with an advisory flag. No pod token telemetry (there was no verdict).
+    """
+    return GuardrailTripwire(
+        _nemo_output_guard_unavailable_decision(),
+        retry_after=_NEMO_OUTPUT_GUARD_UNAVAILABLE_RETRY_AFTER_SECONDS,
     )
 
 
@@ -465,16 +506,15 @@ def check_output_nemo(
         - no decisions on a clean pass;
         - one advisory ``flag`` decision when the pod flags
           (``nemo-output-flag-v1``);
-        - one LOUD fail-open ``flag`` decision when the pod is UNREACHABLE
-          (``nemo-output-fail-open-v1`` — Mode B, Q2: deliver + advise, never
-          block on a flaky/unreachable pod). The distinct rule id is what keeps
-          the fail-open window countable rather than silent;
         plus the guard-call telemetry (pod-stamped ``model_id`` + token counts)
-        for the ``guardrail_output`` span.
+        for the ``guardrail_output`` span. A pod-UNREACHABLE outage no longer
+        returns here — it RAISES (fail CLOSED, ruling 0.3; see Raises).
 
     Raises:
-        GuardrailTripwire: On a genuine NeMo BLOCK (``unsafe`` True) — the whole
-            answer is suppressed to the canned ``REFUSAL_TEXT`` by the router
+        GuardrailTripwire: On a genuine NeMo BLOCK (``unsafe`` True) OR on a
+            pod-UNREACHABLE outage (Mode B → FAIL CLOSED, ruling 0.3, distinct
+            ``nemo-output-guard-unavailable-v1`` decision + ``Retry-After``) — the
+            whole answer is suppressed to the canned ``REFUSAL_TEXT`` by the router
             (I3); NeMo's own refusal string NEVER reaches the UI answer (only a
             terse ``rationale`` enters the decision envelope / span). Carries the
             pod-stamped ``model_id`` + token counts for the span.
@@ -498,22 +538,24 @@ def check_output_nemo(
 
     check_facts = bool(pins.nemo and pins.nemo.check_facts)
 
-    # Output/facts fail OPEN (Q2): a transport failure / non-2xx from the pod
-    # (unreachable, timeout, HTTP error) must NEVER nuke a valid legal answer.
-    # Deliver the answer carrying an advisory flag decision instead of blocking.
-    # (The pod also fails open internally; this handles pod-unreachable, the case
-    # the pod itself cannot signal.) Broad catch mirrors ``check_input``'s
-    # fail-policy ownership; GuardrailTripwire is raised AFTER this block, so it
-    # is never swallowed here.
+    # Output-lane fail policy — ruling 0.3 (MANAGER, 2026-07-24): FAIL CLOSED. A
+    # transport failure / non-2xx from the pod (unreachable, timeout, HTTP error)
+    # leaves the answer's safety UNKNOWN. For audit consistency with the input
+    # lane — no answer reaches the officer unadjudicated — the answer is
+    # SUPPRESSED to an honest 200 refusal carrying the distinct
+    # ``guard-unavailable`` rule id + ``Retry-After``, rather than delivered with
+    # an advisory flag (the retired ``nemo-output-fail-open-v1`` path). This is
+    # the case the pod itself cannot signal, so it is handled HERE. The
+    # deterministic secrets rail ran FIRST at the pod (it needs no pod), so a
+    # secrets answer was already blocked before this branch; the circuit breaker
+    # + alarm on SUSTAINED unavailability (Group 2) keep this a monitored,
+    # bounded, rare degraded mode. Broad catch mirrors ``check_input_nemo``'s
+    # fail-policy ownership; a genuine GuardrailTripwire is raised AFTER this
+    # block, so it is never swallowed here.
     try:
         verdict = nemo_client.check_output(answer_text, chunks, check_facts=check_facts)
-    except Exception:  # noqa: BLE001 - fail OPEN on a flaky/unreachable guard pod
-        # LOUD, not silent: its own rule id (not the advisory's) marks the window
-        # in which answers were delivered UNGUARDED.
-        return GuardOutputResult(
-            answer_text=answer_text,
-            decisions=(_nemo_output_fail_open_decision(_NEMO_FAIL_OPEN_RATIONALE),),
-        )
+    except Exception as exc:  # noqa: BLE001 - fail CLOSED on an unreachable guard pod (0.3)
+        raise _nemo_output_guard_unavailable_tripwire() from exc
 
     if verdict.unsafe:
         # Genuine block: reuse the SAME honest 200-refusal path as the regex
@@ -671,3 +713,219 @@ def check_input_nemo(
         input_tokens=verdict.input_tokens,
         output_tokens=verdict.output_tokens,
     )
+
+
+# ===========================================================================
+# Deterministic malformed pre-check + promoted regex pre-filter (Group 1).
+#
+# The DETERMINISTIC FLOOR: it runs FIRST in the input path, makes NO model call,
+# and is POD-INDEPENDENT — it keeps guarding when the pod is unreachable. It is
+# ENFORCING from day one and is NEVER shadowed (the shadow/enforcing mode flag
+# governs only the LLM triage layer). This floor is what breaks the DoS
+# "attacker-wins-either-way" dilemma, which only holds for a SINGLE LLM gate
+# (arXiv 2606.14517 *From Shield to Target*; arXiv 2410.02916 *Double-Edged
+# Sword*): a bounded, model-free reject/hard-block survives the exact timeout an
+# attacker engineers.
+#
+# NORMALIZE ONCE: the input is NFC-normalized a SINGLE time and the SAME
+# canonical text is forwarded to the guard, the retriever, and the model — no
+# parser differential (the classic smuggling bug is guard-checks-normalized /
+# model-receives-raw, or vice versa). Stripping invisible/tag codepoints before
+# the judge is SAFE: it can only reveal a hidden instruction, never conceal one
+# (never substitute a *rewritten* query for the raw turn — that is a different,
+# forbidden, transform).
+# ===========================================================================
+
+# Max input length. The cap is a SECURITY property, not latency/cost tuning: a
+# bounded prefill caps the reasoning-extension DoS vector (arXiv 2606.14517,
+# 27.7x token amplification on Claude Haiku) — the amplified reasoning loop
+# cannot be seeded by an input the gate refuses to accept in the first place.
+# Value ruled in the spec decisions log (0.2, product owner, 2026-07-24):
+# document-sized (a multi-page pasted excerpt, since the paste vector is IN
+# scope per 0.1) yet bounded. Published HERE as the single named constant task
+# 1.4 consumes — no literal duplicated across the codebase.
+# REVIEWABLE: a provisional engineering default. Group 2 verdict persistence
+# records the observed input-length distribution; revisit the number against
+# real usage before hard-enforcing. Truly document-scale content should go
+# through ingestion (Requirement 3), not the query box.
+MAX_INPUT_CHARS: Final[int] = 32768
+
+# The deterministic floor's officer-visible outcomes carry DISTINCT rule ids so
+# a malformed reject and a pod-down hard block are each machine-distinguishable
+# from a genuine content block (``nemo-input-block-v1``) and from a redirect —
+# alarm on the rule id, not on rationale prose.
+_MALFORMED_CATEGORY: Final[str] = "malformed"
+_MALFORMED_REJECT_RULE_ID: Final[str] = "input-malformed-reject-v1"
+_MALFORMED_REJECT_RATIONALE: Final[str] = (
+    "Input rejected by the deterministic malformed pre-check "
+    "(NORMALIZE-ONCE floor): {reason}."
+)
+_PREFILTER_HARD_BLOCK_RULE_ID: Final[str] = "input-prefilter-hard-block-v1"
+_PREFILTER_HARD_BLOCK_RATIONALE: Final[str] = (
+    "Guard pod unavailable on a regex pre-filter-flagged input — the "
+    "deterministic floor PROMOTED the pre-filter from a cost-gate signal to a "
+    "hard block (degraded to deterministic-only guarding, never NO guarding)."
+)
+
+# Unicode TAG block (U+E0000-U+E007F): an invisible instruction-smuggling
+# channel. Stripped alongside the zero-width ``_INVISIBLE`` set (both are
+# accidental in legitimate text) — kept as a separate range so ``_INVISIBLE``
+# (consumed by ``_prefilter_hit`` on released configs) stays byte-for-byte.
+_TAG_MIN: Final[int] = 0xE0000
+_TAG_MAX: Final[int] = 0xE007F
+# Lone surrogates: a decode never yields a well-formed str containing them, so
+# their presence signals an undecodable/mangled encoding — reject.
+_SURROGATE_MIN: Final[int] = 0xD800
+_SURROGATE_MAX: Final[int] = 0xDFFF
+
+
+def _strip_invisible_and_tags(text: str) -> str:
+    """Drop zero-width/invisible codepoints (``_INVISIBLE``) AND Unicode-tag chars."""
+    return "".join(
+        ch
+        for ch in _strip_invisible(text)
+        if not (_TAG_MIN <= ord(ch) <= _TAG_MAX)
+    )
+
+
+def _is_forbidden_control(ch: str) -> bool:
+    """True for a C0/C1 control char that is NOT tab (0x09) or newline (0x0A)."""
+    o = ord(ch)
+    if o in (0x09, 0x0A):
+        return False
+    return o <= 0x1F or 0x7F <= o <= 0x9F
+
+
+def _malformed_reject_decision(reason: str) -> GuardrailDecision:
+    """Build the deterministic malformed-reject decision (distinct rule id)."""
+    return GuardrailDecision(
+        stage=_INPUT_STAGE,
+        decision="block",
+        category=_MALFORMED_CATEGORY,
+        rule_id=_MALFORMED_REJECT_RULE_ID,
+        rationale=_MALFORMED_REJECT_RATIONALE.format(reason=reason),
+    )
+
+
+def _prefilter_hard_block_decision() -> GuardrailDecision:
+    """Build the pod-down promoted-pre-filter hard-block decision (distinct rule id)."""
+    return GuardrailDecision(
+        stage=_INPUT_STAGE,
+        decision="block",
+        category=_PROMPT_LEAK_INPUT_CATEGORY,
+        rule_id=_PREFILTER_HARD_BLOCK_RULE_ID,
+        rationale=_PREFILTER_HARD_BLOCK_RATIONALE,
+    )
+
+
+def input_floor_active(pins: GuardrailsPin) -> bool:
+    """
+    Whether the deterministic input floor runs for this config.
+
+    The floor is active on the guarded lane (the same condition as the pod input
+    lane, :func:`nemo_input_active`) so the released 1.0.0-1.4.0 / eval 1.1.0
+    configs stay byte-for-byte (floor inactive -> identity). Being config-gated
+    (NOT pod-reachability-gated) is exactly what makes the floor POD-INDEPENDENT:
+    the config says "guarded", so the floor runs deterministically whether or not
+    the pod is up.
+    """
+    return nemo_input_active(pins)
+
+
+def check_input_malformed(question: str) -> str:
+    """
+    Deterministic malformed pre-check — the NORMALIZE-ONCE floor. NO model call.
+
+    Runs FIRST in the input path. Returns the SINGLE canonical NFC text to
+    forward onward (guard + retriever + model all see this identical text — no
+    parser differential). A malformed input raises :class:`GuardrailTripwire`
+    with a DISTINCT ``input-malformed-reject-v1`` decision (distinct from a
+    content block and from a redirect); the router turns it into a 200 refusal,
+    never a 5xx.
+
+    Rejected: over ``MAX_INPUT_CHARS`` (bounded prefill, a DoS security
+    property), undecodable encoding (lone surrogates), a BIDI override
+    (RLO/LRO — a known evasion with no legitimate use in a tax query), a C0/C1
+    control char other than tab/newline, and empty/whitespace-only input.
+    Stripped (NOT rejected — legitimate text carries them by accident):
+    zero-width/invisible and Unicode-tag codepoints.
+
+    Args:
+        question: The raw user turn as received.
+
+    Returns:
+        The canonical NFC text with invisible/tag codepoints stripped.
+
+    Raises:
+        GuardrailTripwire: On any malformed condition (200 refusal path).
+    """
+    # Length cap FIRST (cheap, bounds the prefill before any expansion).
+    if len(question) > MAX_INPUT_CHARS:
+        raise GuardrailTripwire(
+            _malformed_reject_decision(
+                f"input exceeds the {MAX_INPUT_CHARS}-character cap"
+            )
+        )
+    # Undecodable / mangled encoding: a well-formed str never carries a lone
+    # surrogate, so its presence signals a broken decode.
+    if any(_SURROGATE_MIN <= ord(ch) <= _SURROGATE_MAX for ch in question):
+        raise GuardrailTripwire(
+            _malformed_reject_decision("undecodable encoding (lone surrogate)")
+        )
+    # NORMALIZE ONCE (NFC). This canonical form is the one text forwarded on.
+    canonical = unicodedata.normalize("NFC", question)
+    # HARD-REJECT BIDI overrides (reject, never strip-and-forward).
+    if _has_bidi_override(canonical):
+        raise GuardrailTripwire(
+            _malformed_reject_decision("BIDI override codepoint present")
+        )
+    # Canonicalize line endings so a pasted CRLF excerpt is not a false control.
+    canonical = canonical.replace("\r\n", "\n").replace("\r", "\n")
+    # Reject C0/C1 control chars other than tab/newline.
+    if any(_is_forbidden_control(ch) for ch in canonical):
+        raise GuardrailTripwire(
+            _malformed_reject_decision("disallowed C0/C1 control character")
+        )
+    # Strip invisible/zero-width/tag smuggling channels (accidental in real text).
+    canonical = _strip_invisible_and_tags(canonical)
+    # Reject empty / whitespace-only input.
+    if not canonical.strip():
+        raise GuardrailTripwire(
+            _malformed_reject_decision("empty or whitespace-only input")
+        )
+    return canonical
+
+
+def check_input_prefilter_floor(
+    question: str,
+    pins: GuardrailsPin,
+    *,
+    pod_available: bool,
+) -> None:
+    """
+    Deterministic pre-filter floor: cost-gate SIGNAL up, HARD BLOCK on pod-down.
+
+    Keeps the shipped regex pre-filter (``_prefilter_hit`` /
+    ``_PREFILTER_PATTERNS`` / ``_JAILBREAK_PATTERNS``) as a deterministic attack
+    signal that survives pod downtime. When the pod is reachable a hit is a mere
+    SIGNAL (the pod's LLM verdict adjudicates); when the pod is DOWN the SAME hit
+    PROMOTES to a hard block — "pod unavailable" degrades to deterministic-only
+    guarding, NEVER to no guarding. A benign question never blocks (no false
+    lockout), and an unguarded lane never runs the floor at all.
+
+    Args:
+        question: The (already canonical) user turn.
+        pins: The resolved config's guardrails block.
+        pod_available: Whether the guard pod is currently reachable.
+
+    Raises:
+        GuardrailTripwire: On a pre-filter hit while the pod is unavailable
+            (``input-prefilter-hard-block-v1``, a 200 refusal).
+    """
+    if not input_floor_active(pins):
+        return
+    if not _prefilter_hit(question, _NEMO_INPUT_PREFILTER_CATEGORIES):
+        return
+    if pod_available:
+        return  # signal only — the pod adjudicates while it is up
+    raise GuardrailTripwire(_prefilter_hard_block_decision())

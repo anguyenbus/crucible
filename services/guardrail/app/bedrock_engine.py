@@ -19,12 +19,41 @@ Importing this module performs NO I/O and constructs NO client.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 # The langchain-framework path builds ``ChatBedrockConverse`` from the
 # ``bedrock_converse`` engine token (FINDINGS unknown (a), PROVEN). Anything else
 # means the framework shim did not take.
 _EXPECTED_INNER_MODEL: str = "ChatBedrockConverse"
+
+# NeMo's anonymous usage-telemetry opt-out vars. ``LLMRails.__init__`` calls
+# ``nemoguardrails.telemetry.report_usage``, which POSTs a usage event to an
+# NVIDIA endpoint and starts a heartbeat daemon thread, unless one of these is
+# set. NeMo honours EITHER (``telemetry.py`` ``_is_usage_stats_enabled``); both
+# are set so the opt-out survives someone "cleaning up" the vendor-specific one.
+_TELEMETRY_OPT_OUT: dict[str, str] = {
+    "NEMO_GUARDRAILS_NO_USAGE_STATS": "1",
+    "DO_NOT_TRACK": "1",
+}
+
+
+def disable_usage_telemetry() -> None:
+    """
+    Disable NeMo's anonymous usage telemetry (NO unsolicited egress from the pod).
+
+    This pod guards legal / accounting traffic, so the beacon
+    ``LLMRails.__init__`` would otherwise fire on every engine construction is
+    not acceptable regardless of how anonymous its payload is.
+
+    ``_is_usage_stats_enabled`` reads the environment INSIDE ``report_usage`` (at
+    construction time, not at import), so setting the vars any time before
+    :class:`LLMRails` is built is sufficient. Idempotent; deliberately does NOT
+    overwrite an existing value, so an operator can never be silently
+    contradicted — only the absent case is filled in.
+    """
+    for name, value in _TELEMETRY_OPT_OUT.items():
+        os.environ.setdefault(name, value)
 
 
 def force_langchain_framework() -> None:
@@ -54,6 +83,9 @@ def build_rails(config_dir: str) -> Any:
             — the framework shim failed and the pod would silently use a wrong
             (or OpenAI) backend. Fail loud rather than serve on the wrong engine.
     """
+    # Kill the usage beacon BEFORE LLMRails is constructed — that constructor is
+    # what fires it. Defence in depth with the Dockerfile ENV.
+    disable_usage_telemetry()
     force_langchain_framework()
     # Imported lazily so importing this module (e.g. from the settings-only unit
     # tests) does not require the full NeMo import graph.

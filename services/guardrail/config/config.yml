@@ -28,13 +28,22 @@ models:
 lowest_temperature: 0.0
 
 rails:
-  # `self check input` SHIPS so migrating the input lane to NeMo is a config flip,
-  # not new code (Q6b fast-follow). For THIS slice the orchestrator keeps its
-  # in-house Haiku confirm-step on the input lane, so the pod runs this rail ONLY
-  # when the orchestrator calls /check/input on a pre-filter HIT.
+  # ONE input flow is listed — the `guarded input` DISPATCHER
+  # (config/rails/input_triage.co). `run input rails` iterates the FULL input.flows
+  # list on every input-rail generate() (the per-request rails.input list only
+  # toggles input rails on/off, it does NOT select which flows run), so co-listing
+  # `self check input` and `input triage` would run BOTH on every call. The
+  # dispatcher instead routes to exactly ONE lane using a per-call `$triage_mode`
+  # context variable set by app/nemo_runtime:
+  #   - triage_mode falsy → `do self check input` (the enforcing binary block rail,
+  #     byte-for-byte unchanged) — the `/check/input` path.
+  #   - triage_mode true  → `do input triage` (the Group 4 three-way triage rail,
+  #     ATTACK/OFFTOPIC/OK) — the `/check/input/triage` path.
+  # The two never fire inside one turn, so the SHADOW triage coexists with the
+  # still-enforcing self-check without interfering with it.
   input:
     flows:
-      - self check input
+      - guarded input
 
   # `self check deterministic output` is ORDERED FIRST: a pure-regex, NO-LLM
   # secrets / high-severity-PII scan (config/actions.py + rails/deterministic_output.co,
@@ -60,7 +69,8 @@ rails:
       - self check facts
 
 # I3 signal: with rail exceptions ON, a BLOCK emits a `role: "exception"` turn
-# (InputRailException / OutputRailException / FactCheckRailException) instead of a
-# canned refusal string. app/nemo_runtime maps that turn to `unsafe: true`; NeMo's
-# own message text is NEVER forwarded to the UI.
+# (InputRailException / OutputRailException / FactCheckRailException, and the
+# Group 4 TriageAttackException / TriageRedirectException) instead of a canned
+# refusal string. app/nemo_runtime maps that turn to a verdict; NeMo's own
+# message text is NEVER forwarded to the UI.
 enable_rails_exceptions: true

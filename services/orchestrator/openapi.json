@@ -24,7 +24,7 @@
             "type": "string"
           },
           "pipeline_config": {
-            "default": "legal-rag-default-1.1.0",
+            "default": "legal-rag-default-1.8.0",
             "description": "Fully-qualified config ref pinning the generator model, e.g. 'legal-rag-default-1.8.0'. Only the generator model id is used.",
             "title": "Pipeline Config",
             "type": "string"
@@ -106,7 +106,7 @@
             "type": "string"
           },
           "pipeline_config": {
-            "default": "legal-rag-default-1.1.0",
+            "default": "legal-rag-default-1.8.0",
             "description": "Fully-qualified config ref pinning the generator model, e.g. 'legal-rag-default-1.8.0'. Only the generator model id + region are used.",
             "title": "Pipeline Config",
             "type": "string"

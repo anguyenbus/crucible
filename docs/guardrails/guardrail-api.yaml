@@ -1,0 +1,218 @@
+openapi: 3.1.0
+
+info:
+  title: Guardrail Service — BFF API
+  version: 1.0.0
+  description: |
+    The api-wrapper (BFF) facing contract for the guardrail capability.
+
+    The guardrail service itself is INTERNAL and verdict-only (see the east-west
+    twin, guardrail-openapi.yaml). End users never call it directly, and the
+    request-time input/output lanes (/check/input/triage, /check/output) are
+    orchestrator-internal — they do NOT appear here.
+
+    What the BFF exposes to the UI is the guardrail's OUTCOMES on ingested
+    documents: when an officer uploads a case document, the ingestion pipeline
+    runs it through the document lane (/check/document) before indexing, and the
+    verdict (clean / flag / quarantine) is recorded. This API lets the UI show
+    "this document was quarantined and why" and lets an operator trigger a
+    re-check. It is a thin, read-mostly projection of guard verdicts — not a way
+    to invoke the raw guard rails.
+
+    STATUS: PROPOSED. The document lane (Requirement 3, corpus-poisoning
+    detection) is not yet implemented; this contract is hand-authored ahead of it
+    so the BFF/UI surface can be reviewed. Marked `x-status: proposed`.
+
+    AUTH: JWT Bearer (same issuer/JWKS as ingestion + eval). `project_id` and
+    permissions come from token claims, NEVER a request body. A document that
+    belongs to another project returns 404 (no existence leakage), never 403.
+    Scopes: `guard:read` (GETs), `guard:admin` (re-check).
+
+servers:
+  - url: https://api.internal/guard
+    description: Behind the api-wrapper (BFF). CORS + user rate limiting owned by the BFF.
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: document-verdicts
+    description: Read guard outcomes on ingested documents; operator re-check.
+  - name: health
+    description: Liveness.
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness
+      security: []
+      responses:
+        "200":
+          description: Alive.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthzResponse" }
+
+  /v1/guard/documents:
+    get:
+      tags: [document-verdicts]
+      summary: "PROPOSED — list guard verdicts for the caller's project"
+      x-status: proposed
+      description: |
+        List the guard verdicts on the project's ingested documents, newest first.
+        Scope `guard:read`. `project_id` comes from the token; results are the
+        caller's project only. Use to render a review queue of flagged /
+        quarantined documents.
+      parameters:
+        - name: verdict
+          in: query
+          required: false
+          schema: { type: string, enum: [clean, flag, quarantine] }
+          description: Filter by verdict (e.g. only quarantined documents).
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: A page of document verdicts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentVerdictList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/guard/documents/{document_id}:
+    get:
+      tags: [document-verdicts]
+      summary: "PROPOSED — the guard verdict for one document"
+      x-status: proposed
+      description: |
+        The recorded guard verdict + detections for a single ingested document.
+        Scope `guard:read`. A document outside the caller's project returns 404.
+      parameters:
+        - name: document_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The document's guard verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentVerdictRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Unknown document, or a document in another project (no existence leakage).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/guard/documents/{document_id}/recheck:
+    post:
+      tags: [document-verdicts]
+      summary: "PROPOSED — re-run the document check (operator)"
+      x-status: proposed
+      description: |
+        Re-run /check/document for a document (e.g. after a guard config bump, or
+        to clear a false-positive quarantine). Scope `guard:admin`. Idempotent for
+        an unchanged document + unchanged guard config version (the check is a pure
+        function of markdown + config). A re-check that clears a quarantine may
+        trigger ingestion to index the document; that is an ingestion action, not
+        performed here.
+      parameters:
+        - name: document_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The re-computed verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentVerdictRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Missing `guard:admin` scope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Unknown document, or another project's.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT Bearer. project_id + scopes from token claims, never the body.
+
+  responses:
+    Unauthorized:
+      description: Missing / invalid / expired token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    HealthzResponse:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, const: "ok" }
+
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: { type: string, description: "Human-readable reason. No internal leakage." }
+
+    Detection:
+      type: object
+      description: One detector hit — labels + counts only, NO spans/offsets.
+      required: [category, label, count]
+      properties:
+        category: { type: string }
+        label: { type: string }
+        count: { type: integer, minimum: 1 }
+
+    DocumentVerdictRecord:
+      type: object
+      x-status: proposed
+      description: The recorded guard outcome for one ingested document (a projection of the guard verdict record).
+      required: [document_id, verdict, detections]
+      properties:
+        document_id: { type: string }
+        verdict:
+          type: string
+          enum: [clean, flag, quarantine]
+          description: "clean (indexed) | flag (indexed, tagged) | quarantine (NOT indexed)."
+        detections:
+          type: array
+          items: { $ref: "#/components/schemas/Detection" }
+        rationale:
+          type: [string, "null"]
+          description: "Terse reason for a flag/quarantine (e.g. 'bidi_override', 'ai_directed_instruction')."
+        indexed:
+          type: boolean
+          description: "Whether the document reached the index (true for clean/flag, false for quarantine)."
+        guard_config_version:
+          type: [string, "null"]
+          description: "The pinned guard config version that adjudicated it (audit)."
+        checked_at:
+          type: [string, "null"]
+          format: date-time
+          description: "When the verdict was produced (UTC)."
+
+    DocumentVerdictList:
+      type: object
+      x-status: proposed
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/DocumentVerdictRecord" }

@@ -6,11 +6,12 @@ FRESHLY-computed values; THIS file tracks the LITERAL 64-hex constants the demo
 ``guardrail-pod`` Makefile target injects as
 ``GUARDRAIL_EXPECTED_CONFIG_DIR_DIGEST`` / ``GUARDRAIL_EXPECTED_UV_LOCK_SHA256``.
 
-Every ``config/`` edit SUPERSEDES the previous config-dir pin. Two have landed:
-the ``detectors.yml`` fold, and the 2026-07-23 guardrail-calibration slice (the
-``pii:`` withdrawal + the ``self_check_output`` advice boundary — ONE digest bump
-pod ``config_version`` 1.3.0 → 1.4.0). This file asserts the
-RECONCILED truth:
+Every ``config/`` edit SUPERSEDES the previous config-dir pin. Three have landed:
+the ``detectors.yml`` fold, the 2026-07-23 guardrail-calibration slice (the
+``pii:`` withdrawal + the ``self_check_output`` advice boundary), and the
+2026-07-24 Group 4 input-triage rail (the ``input_triage`` prompt + the
+``guarded input`` dispatcher + ``rails/input_triage.co`` — ONE digest bump, pod
+``config_version`` 1.4.0 → 1.5.0). This file asserts the RECONCILED truth:
 
 - the CURRENT ``1.8.0`` config-dir digest MATCHES live (the pod serves against
   its own config/),
@@ -42,14 +43,16 @@ from app.config_digest import (
 # demo Makefile injects as GUARDRAIL_EXPECTED_CONFIG_DIR_DIGEST. Regen:
 #   cd services/guardrail && uv run python -m app.config_digest --write-env
 DEMO_EXPECTED_CONFIG_DIR_DIGEST = (
-    "19e706bf05435f605bd3d04e2c37a79c69bcf5c681837aa201bce4e64f22a58d"
+    "338c2abcfa6cdd2f93c79c86ba0cab1f9c2f3397e99fb3ce2ea0f8beaa89a3f6"
 )
 # Retired config-dir digests, retained to PROVE each config/ edit moved the live
-# digest off the previous pin: the PRE-FOLD pin, then the pre-calibration
-# (post-fold) pin superseded by the items 6 + 7 edits.
+# digest off the previous pin: the PRE-FOLD pin, the pre-calibration (post-fold)
+# pin, then the pre-triage (post-calibration) pin superseded by the Group 4
+# input-triage rail.
 SUPERSEDED_CONFIG_DIR_DIGESTS = (
     "413182c3937f6345ed957fcb2bc2c3f166672f75352367b7ed7bdae51ce5ec89",
     "b5da30dbae57309c6045138bd569bf13d7c67ed19ceb2153484183e1eb7b2183",
+    "19e706bf05435f605bd3d04e2c37a79c69bcf5c681837aa201bce4e64f22a58d",
 )
 # uv.lock is NOT touched by a config/ edit, so its sha is stable across all of them.
 DEMO_EXPECTED_UV_LOCK_SHA256 = (

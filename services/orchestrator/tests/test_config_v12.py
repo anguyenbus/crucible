@@ -104,8 +104,14 @@ def test_1_2_0_template_carries_the_history_placeholder_under_the_hash():
     assert "{history}" in raw
 
 
-def test_eval_lane_default_config_ref_is_still_1_1_0():
-    """1.1.0 stays the eval lane's default; 1.2.0 is the UI's ref, never a default here."""
+def test_product_default_config_ref_is_flipped_to_the_guarded_config():
+    """Group 3 (2026-07-24) flipped the PRODUCT default to the guarded nemo-all config.
+
+    The eval MEASUREMENT lane is NOT this constant — it is pinned independently in
+    services/eval/dev/stubs/rag/orchestrator_query.py and stays on 1.1.0 (asserted
+    in test_guarded_default_flip.py). This constant is the orchestrator product
+    default (lifespan facts + /analyze + /compare schema default).
+    """
     from app.config import DEFAULT_PIPELINE_CONFIG_REF
 
-    assert DEFAULT_PIPELINE_CONFIG_REF == "legal-rag-default-1.1.0"
+    assert DEFAULT_PIPELINE_CONFIG_REF == "legal-rag-default-1.8.0"

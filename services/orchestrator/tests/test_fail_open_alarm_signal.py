@@ -1,15 +1,18 @@
 """
-The WRITER half of the fail-open alarm contract (item 9a, task 6.1).
+The WRITER half of the guard-unavailable alarm contract (item 9a, task 6.1).
 
-The watch that alarms the fail-open window
-(``services/eval/app/phoenix/fail_open_monitor.py``) reads Phoenix spans and
-counts the ``guardrail.rule_id`` attribute. ``test_gate_mode_b.py`` already pins
-that a Mode-B (pod unreachable) output lane delivers the answer with the LOUD
-``nemo-output-fail-open-v1`` rule id in ``guardrail_decisions[]``. What nothing
-asserted — and what the watch entirely depends on — is that the SAME id reaches
-the ``guardrail_output`` SPAN, which is the only surface Phoenix (and therefore
-the watch) can see. An envelope-only rule id would leave the monitor counting
-zero through a real outage: a green watch over an unwatched window.
+Ruling 0.3 flipped the OUTPUT lane from fail-OPEN (deliver-with-flag) to fail
+CLOSED (suppress the unadjudicated answer to a ``guard-unavailable`` refusal).
+So the Mode-B (pod unreachable) output window is no longer a delivered fail-open
+window — it is a REFUSAL window carrying the distinct
+``nemo-output-guard-unavailable-v1`` rule id. The watch that alarms on a
+sustained pod outage still reads Phoenix spans and counts the
+``guardrail.rule_id`` attribute; ``test_gate_mode_b.py`` pins that the window
+surfaces that id in ``guardrail_decisions[]``. What nothing else asserts — and
+what the watch entirely depends on — is that the SAME id reaches the
+``guardrail_output`` SPAN, the only surface Phoenix (and therefore the watch)
+can see. An envelope-only rule id would leave the monitor counting zero through a
+real outage: a green watch over an unwatched window.
 
 Failure injection is the EXISTING ``UnreachablePod`` from ``test_gate_mode_b``
 (imported, not re-implemented — there is deliberately one injection mechanism).
@@ -22,6 +25,7 @@ from __future__ import annotations
 import pytest
 from app.clients import AppClients
 from app.main import app as main_app
+from app.orchestrator.guardrails import REFUSAL_TEXT
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -29,8 +33,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from tests.conftest import FIXTURE_SETTINGS
 from tests.test_gate_mode_b import (
     BENIGN_QUESTION,
-    FAIL_OPEN_RULE_ID,
-    ExplodingClassifier,
+    OUTPUT_GUARD_UNAVAILABLE_RULE_ID,
     UnreachablePod,
 )
 
@@ -50,17 +53,17 @@ def _cleanup_state():
             delattr(main_app.state, attr)
 
 
-def test_mode_b_fail_open_stamps_the_rule_id_on_the_guardrail_output_span(
+def test_mode_b_fail_closed_stamps_the_rule_id_on_the_guardrail_output_span(
     mock_bedrock, mock_search, _cleanup_state
 ):
     """
     A pod-unreachable window is COUNTABLE in Phoenix, not just in the envelope.
 
-    Three benign answers are delivered while the pod is unreachable — the
-    synthetic fail-open window the watch is built to see. Each must leave a
-    ``guardrail_output`` span carrying ``guardrail.rule_id =
-    nemo-output-fail-open-v1``; the watch's windowed count is exactly the number
-    of such spans.
+    Three answers are REFUSED while the pod is unreachable (ruling 0.3 fail
+    CLOSED) — the synthetic guard-unavailable window the watch is built to see.
+    Each must leave a ``guardrail_output`` span carrying ``guardrail.rule_id =
+    nemo-output-guard-unavailable-v1``; the watch's windowed count is exactly the
+    number of such spans.
     """
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
@@ -85,28 +88,31 @@ def test_mode_b_fail_open_stamps_the_rule_id_on_the_guardrail_output_span(
         for _ in range(3)
     ]
 
-    # Fail policy UNCHANGED: the answers are DELIVERED (200, never a 5xx, never
-    # a refusal) — this group makes the window visible, it does not close it.
+    # Fail policy 0.3: the answers are REFUSED (200, never a 5xx) — this group
+    # makes the guard-unavailable window visible in telemetry.
     assert [response.status_code for response in responses] == [200, 200, 200]
     assert all(
-        decision["rule_id"] == FAIL_OPEN_RULE_ID
+        response.json()["result"]["answer"]["text"] == REFUSAL_TEXT for response in responses
+    )
+    assert all(
+        decision["rule_id"] == OUTPUT_GUARD_UNAVAILABLE_RULE_ID
         for response in responses
         for decision in response.json()["guardrail_decisions"]
     )
 
-    fail_open_spans = [
+    unavailable_spans = [
         span
         for span in exporter.get_finished_spans()
         if span.name == "guardrail_output"
-        and span.attributes.get(RULE_ID_ATTRIBUTE) == FAIL_OPEN_RULE_ID
+        and span.attributes.get(RULE_ID_ATTRIBUTE) == OUTPUT_GUARD_UNAVAILABLE_RULE_ID
     ]
 
-    assert len(fail_open_spans) == 3, (
-        "the fail-open rule id must reach the guardrail_output SPAN — it is the "
-        "only surface the Phoenix-side watch can count"
+    assert len(unavailable_spans) == 3, (
+        "the guard-unavailable rule id must reach the guardrail_output SPAN — it "
+        "is the only surface the Phoenix-side watch can count"
     )
-    attributes = fail_open_spans[0].attributes
+    attributes = unavailable_spans[0].attributes
     assert attributes["guardrail.stage"] == "output"
     assert attributes["guardrail.category"] == "nemo"
-    # Advisory, never a block: the delivery happened and went out UNGUARDED.
-    assert attributes["guardrail.decision"] == "flag"
+    # Fail CLOSED: the delivery did NOT happen — the answer was suppressed.
+    assert attributes["guardrail.decision"] == "guard-unavailable"

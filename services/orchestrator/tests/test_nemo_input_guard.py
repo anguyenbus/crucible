@@ -29,7 +29,7 @@ from typing import Any
 import httpx
 import pytest
 from app.clients import AppClients
-from app.clients.nemo_guard import NemoVerdict
+from app.clients.nemo_guard import NemoTriageVerdict, NemoVerdict
 from app.main import app as main_app
 from app.orchestrator.guardrails import (
     REFUSAL_TEXT,
@@ -38,6 +38,7 @@ from app.orchestrator.guardrails import (
     check_input_nemo,
     nemo_prefilter_hit,
 )
+from app.orchestrator.input_triage import TRIAGE_ATTACK_BLOCK_RULE_ID
 from app.schemas.pipeline_config import GuardrailsPin, NemoGuardPin
 from fastapi.testclient import TestClient
 
@@ -67,12 +68,22 @@ BENIGN_QUESTION = "Is a supply of legal services to a non-resident GST-free?"
 
 
 class FakeNemo:
-    """Injected NeMo client: scripted input verdict or error; records check_input calls."""
+    """Injected NeMo client: scripted input/triage verdict; records rail calls.
 
-    def __init__(self, verdict: Any = None, error: Exception | None = None) -> None:
+    Post-Group-7 the ACTIVE input adjudicator on 1.8.0 is the triage rail (ATTACK
+    enforcing); ``self_check_input`` runs in SHADOW. The double therefore exposes
+    ``check_input_triage`` too, defaulting to an ``ok`` allow so benign route tests
+    are unaffected.
+    """
+
+    def __init__(
+        self, verdict: Any = None, error: Exception | None = None, triage: str = "ok"
+    ) -> None:
         self._verdict = verdict
         self._error = error
+        self._triage = triage
         self.input_calls: list[str] = []
+        self.triage_calls: list[str] = []
         self.output_calls: list[tuple[str, list[str], bool]] = []
 
     def check_input(self, question: str) -> Any:
@@ -80,6 +91,17 @@ class FakeNemo:
         if self._error is not None:
             raise self._error
         return self._verdict
+
+    def check_input_triage(self, question: str) -> NemoTriageVerdict:
+        self.triage_calls.append(question)
+        return NemoTriageVerdict(
+            verdict=self._triage,
+            unavailable=False,
+            rationale=None,
+            input_tokens=313,
+            output_tokens=4,
+            model_id=HAIKU,
+        )
 
     def check_output(self, answer: str, chunks: list[str], *, check_facts: bool) -> Any:
         self.output_calls.append((answer, chunks, check_facts))
@@ -219,8 +241,11 @@ def _cleanup_state():
 def test_1_8_0_input_block_is_a_200_refusal_and_no_haiku_or_regex_runs(
     mock_bedrock, mock_search, _cleanup_state
 ):
-    """A pod input BLOCK on 1.8.0 → 200 refusal, no generation, no in-house decision."""
-    nemo = FakeNemo(verdict=_verdict(unsafe=True, rationale="jailbreak"))
+    """An input BLOCK on 1.8.0 → 200 refusal, no generation. Post-Group-7 the ACTIVE
+    block is the TRIAGE ATTACK rail; ``self_check_input`` runs in SHADOW."""
+    # self_check_input ALSO flags unsafe (input_unsafe) — but it now only shadows;
+    # the enforcing block comes from triage ATTACK.
+    nemo = FakeNemo(verdict=_verdict(unsafe=True, rationale="jailbreak"), triage="attack")
     client = _client(mock_bedrock, mock_search, nemo)
 
     response = client.post(
@@ -235,7 +260,13 @@ def test_1_8_0_input_block_is_a_200_refusal_and_no_haiku_or_regex_runs(
     assert decision["decision"] == "block"
     assert decision["category"] == "nemo"
     assert decision["stage"] == "input"
-    # The RAW question reached the pod (input lane routed through the pod).
+    # The ACTIVE block is the triage rail (its distinct rule id), NOT the retired
+    # self_check_input (nemo-input-block-v1).
+    assert decision["rule_id"] == TRIAGE_ATTACK_BLOCK_RULE_ID
+    assert decision["rule_id"] != "nemo-input-block-v1"
+    # Both rails saw the RAW turn: triage (unconditional) + self_check_input (shadow,
+    # on the pre-filter hit).
+    assert nemo.triage_calls == [LEAK_QUESTION]
     assert nemo.input_calls == [LEAK_QUESTION]
     # Input blocked BEFORE any generation — and the in-house classifier never ran
     # (ExplodingClassifier would have raised).
@@ -269,7 +300,8 @@ def test_1_8_0_benign_query_routes_output_through_the_pod_and_skips_in_house(
 def test_1_8_0_input_block_on_stream_emits_one_final_refusal_zero_tokens(
     mock_bedrock, mock_search, _cleanup_state
 ):
-    nemo = FakeNemo(verdict=_verdict(unsafe=True, rationale="jailbreak"))
+    """Stream: the triage ATTACK block terminates in ONE final refusal (zero tokens)."""
+    nemo = FakeNemo(verdict=_verdict(unsafe=True, rationale="jailbreak"), triage="attack")
     client = _client(mock_bedrock, mock_search, nemo)
 
     response = client.post(
@@ -283,3 +315,5 @@ def test_1_8_0_input_block_on_stream_emits_one_final_refusal_zero_tokens(
     assert final["result"]["answer"]["text"] == REFUSAL_TEXT
     assert final["guardrail_decisions"][0]["category"] == "nemo"
     assert final["guardrail_decisions"][0]["stage"] == "input"
+    # The active block is the triage rail (post-cutover), not self_check_input.
+    assert final["guardrail_decisions"][0]["rule_id"] == TRIAGE_ATTACK_BLOCK_RULE_ID

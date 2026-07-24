@@ -8,11 +8,12 @@ Env surface of the demo UI (read at call time so tests can monkeypatch).
   for the UI's own OTLP-HTTP exporter and the rendered trace links. Unset →
   a genuine no-op tracer; the UI stays fully functional.
 - ``DEMO_UI_PIPELINE_CONFIG`` — pinned pipeline config ref sent on every
-  request (default ``legal-rag-default-1.4.0``, the output PII/secrets +
-  hardened-input guard config; eval's lane stays on ``legal-rag-default-1.1.0``
-  untouched). A leak/injection attempt is refused verbatim; a secret in the
-  generated answer is refused; PII is masked in place and delivered with an
-  honest redaction note; a benign question streams and cites as before.
+  request (default ``legal-rag-default-1.8.0``, the GUARDED nemo-all config —
+  the pod owns every verdict; Group 3 flip 2026-07-24, from ``1.4.0``). The
+  deterministic malformed floor + regex pre-filter enforce; the NEW LLM triage
+  layer ships in shadow. Eval's measurement lane stays on
+  ``legal-rag-default-1.1.0`` untouched (pinned independently in the eval
+  adapter). Requires a NeMo guard pod URL in the environment.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from __future__ import annotations
 import os
 
 DEFAULT_ORCHESTRATOR_URL = "http://localhost:8000"
-DEFAULT_PIPELINE_CONFIG = "legal-rag-default-1.4.0"
+DEFAULT_PIPELINE_CONFIG = "legal-rag-default-1.8.0"
 
 
 def orchestrator_url() -> str:

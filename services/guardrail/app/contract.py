@@ -8,8 +8,10 @@ already consumes — the ``stages-pure`` seam barely changes. This is deliberate
 just data: no NeMo / LangChain types cross the wire, so the orchestrator app
 imports nothing new (I2).
 
-Two request shapes, mirroring the two rail stages:
+Three request shapes, mirroring the rail stages:
 - ``/check/input`` carries the user turn ONLY (self check input framing).
+- ``/check/input/triage`` carries the user turn ONLY (Group 4 triage framing);
+  it returns a three-way LABEL rather than a binary block.
 - ``/check/output`` carries the generated ``answer`` PLUS the retrieved
   ``chunks`` (grounding evidence for self check facts) and an independent
   ``check_facts`` toggle (Q6) selecting whether the facts rail runs.
@@ -17,15 +19,18 @@ Two request shapes, mirroring the two rail stages:
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class CheckInputRequest(BaseModel):
-    """``POST /check/input`` body: the user turn only."""
+    """``POST /check/input`` (and ``/check/input/triage``) body: the user turn only."""
 
     question: str = Field(
-        description="The user turn to self-check (the orchestrator calls this "
-        "ONLY on a regex pre-filter HIT, so benign traffic never reaches it).",
+        description="The user turn to self-check (the orchestrator calls "
+        "/check/input ONLY on a regex pre-filter HIT; /check/input/triage is "
+        "called on EVERY question — Group 4's unconditional shadow triage).",
     )
 
 
@@ -121,4 +126,45 @@ class CheckResponse(BaseModel):
         "counts, NO offsets) from the pod's FIRST output rail. Recorded even when "
         "a block short-circuits the paid LLM rails; empty on the input lane and "
         "on a clean output.",
+    )
+
+
+class TriageResponse(BaseModel):
+    """
+    PLAIN-DATA three-way verdict returned by ``POST /check/input/triage`` (Group 4).
+
+    The triage rail is not a binary block: it returns a LABEL — ``attack`` (→ the
+    orchestrator's block path), ``offtopic`` (→ redirect), or ``ok`` (→ allow) —
+    recovered from the Colang flow's TWO distinct exception types (an ``ok`` turn
+    raises none). ``unavailable`` marks an infrastructure failure (the pod could
+    not adjudicate): the verdict then reads ``ok`` and the orchestrator applies
+    its layered fail policy (ATTACK fails CLOSED, OFFTOPIC fails OPEN) at the
+    boundary. NeMo's own refusal string is NEVER forwarded — only ``rationale``
+    (the terse exception ``type``) may enter the decision/span.
+    """
+
+    verdict: Literal["attack", "offtopic", "ok"] = Field(
+        description="The triage LABEL: 'attack' (block), 'offtopic' (redirect), "
+        "or 'ok' (allow). Fails toward 'ok' on an unparseable/absent verdict.",
+    )
+    unavailable: bool = Field(
+        default=False,
+        description="True when the pod could NOT adjudicate (generate raised) — "
+        "the verdict defaults to 'ok' and the orchestrator's layered fail policy "
+        "decides (ATTACK closed, OFFTOPIC open). Distinct from a genuine 'ok'.",
+    )
+    rationale: str | None = Field(
+        default=None,
+        description="Terse reason (the exception `type` for a blocking label, or "
+        "a fail label); NeMo's own refusal string is NEVER forwarded.",
+    )
+    input_tokens: int | None = Field(
+        default=None, description="Bedrock prompt-token count for the triage call."
+    )
+    output_tokens: int | None = Field(
+        default=None, description="Bedrock completion-token count for the triage call."
+    )
+    model_id: str = Field(
+        description="The configured Haiku id, stamped by the pod (NOT read from "
+        "NeMo, whose reported id is unreliable).",
     )

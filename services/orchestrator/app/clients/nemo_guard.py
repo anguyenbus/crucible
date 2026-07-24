@@ -8,7 +8,8 @@ the pure stage receives the
 instance and never imports ``httpx`` / ``nemoguardrails`` / ``langchain`` itself
 (the ``stages-pure`` import-linter contract, invariant I2). ALL HTTP +
 NeMo-contract detail lives HERE; the stage sees only a
-:class:`typing.Protocol` describing :meth:`check_output` / :meth:`check_input`.
+:class:`typing.Protocol` describing :meth:`check_output` / :meth:`check_input` /
+:meth:`check_input_triage`.
 
 Role separation: this client speaks HTTP to a
 SEPARATE pod whose ``type: main`` model is Haiku — DISTINCT from the Sonnet
@@ -19,12 +20,13 @@ so the orchestrator never guesses it.
 Design decision — this client is THIN: it
 performs the HTTP round-trip and RAISES on a transport / non-2xx failure (like
 a transport error is re-raised as-is). The per-rail FAIL
-POLICY lives in the PURE stage (``app.orchestrator.guardrails``), exactly as
-``check_input`` owns the in-house classifier's fail-SAFE policy: the output/facts
-lane fails OPEN (deliver the answer + an advisory ``flag``) when this client
-raises, while the input lane fails SAFE/BLOCK on an already pre-filter-flagged
-question (Q2/Mode B). The pod ALSO fails open internally; this transport-layer
-policy handles the distinct case of the pod being unreachable.
+POLICY lives in the PURE stage (``app.orchestrator.guardrails`` /
+``app.orchestrator.input_triage``), exactly as ``check_input`` owns the in-house
+classifier's fail-SAFE policy: the output/facts lane fails OPEN (deliver the
+answer + an advisory ``flag``) when this client raises, while the input lane fails
+SAFE/BLOCK on an already pre-filter-flagged question (Q2/Mode B). The pod ALSO
+fails open internally; this transport-layer policy handles the distinct case of
+the pod being unreachable.
 
 Scope: the NeMo lane started OUTPUT + FACTS only (Q6b), and the nemo-all
 ``legal-rag-default-1.8.0`` config takes the config flip that was always the plan
@@ -32,6 +34,11 @@ Scope: the NeMo lane started OUTPUT + FACTS only (Q6b), and the nemo-all
 the INPUT verdict and the in-house Haiku confirm-step is retired ON THAT CONFIG.
 The in-house ``1.0.0``-``1.4.0`` configs leave ``input_self_check`` off and keep
 the in-house classifier, so :meth:`check_input` is never reached on them.
+
+Group 4 adds :meth:`check_input_triage` (``/check/input/triage``): a SEPARATE,
+independent pod call returning a three-way ``ATTACK`` / ``OFFTOPIC`` / ``OK``
+label, run UNCONDITIONALLY in SHADOW — it never interferes with the still-
+enforcing ``check_input`` self-check.
 """
 
 from __future__ import annotations
@@ -47,6 +54,7 @@ import httpx
 # hanging the request path.
 _DEFAULT_TIMEOUT_SECONDS: Final[float] = 10.0
 _CHECK_INPUT_PATH: Final[str] = "/check/input"
+_CHECK_INPUT_TRIAGE_PATH: Final[str] = "/check/input/triage"
 _CHECK_OUTPUT_PATH: Final[str] = "/check/output"
 
 
@@ -103,6 +111,27 @@ class NemoVerdict:
     detections: tuple[NemoDetection, ...] = field(default=())
 
 
+@dataclass(frozen=True)
+class NemoTriageVerdict:
+    """
+    One NeMo pod TRIAGE verdict as PLAIN DATA (Group 4).
+
+    Maps 1:1 onto the pod's ``TriageResponse`` contract. ``verdict`` is the
+    three-way label (``attack`` / ``offtopic`` / ``ok``); ``unavailable`` marks an
+    infrastructure failure (the pod could not adjudicate — the verdict reads
+    ``ok`` and the pure stage applies the layered fail policy). ``model_id`` is
+    the pod-STAMPED Haiku id (``None`` only on a transport failure the pure stage
+    turns into an unavailable observation).
+    """
+
+    verdict: str
+    unavailable: bool
+    rationale: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    model_id: str | None
+
+
 def _parse_detections(raw: Any) -> tuple[NemoDetection, ...]:
     """
     Map the pod's ``detections`` array onto plain :class:`NemoDetection` data.
@@ -138,6 +167,25 @@ def _parse_verdict(payload: dict[str, Any]) -> NemoVerdict:
         model_id=payload.get("model_id"),
         flag=bool(payload.get("flag", False)),
         detections=_parse_detections(payload.get("detections")),
+    )
+
+
+def _parse_triage_verdict(payload: dict[str, Any]) -> NemoTriageVerdict:
+    """
+    Map a pod triage JSON body onto the plain :class:`NemoTriageVerdict`.
+
+    Defensive: an absent/garbled ``verdict`` degrades to ``ok`` (fail toward OK —
+    a topicality parser hiccup must never refuse a legitimate case question; the
+    ATTACK regex floor sits behind this rail).
+    """
+    verdict = payload.get("verdict")
+    return NemoTriageVerdict(
+        verdict=str(verdict) if verdict in ("attack", "offtopic", "ok") else "ok",
+        unavailable=bool(payload.get("unavailable", False)),
+        rationale=payload.get("rationale"),
+        input_tokens=payload.get("input_tokens"),
+        output_tokens=payload.get("output_tokens"),
+        model_id=payload.get("model_id"),
     )
 
 
@@ -202,6 +250,33 @@ class NemoGuardClient:
         response = self._http.post(_CHECK_INPUT_PATH, json={"question": question})
         response.raise_for_status()
         return _parse_verdict(response.json())
+
+    def check_input_triage(self, question: str) -> NemoTriageVerdict:
+        """
+        Triage ONE RAW user turn via the pod's ``/check/input/triage`` rail (Group 4).
+
+        A SEPARATE, independent pod call selecting the ``input triage`` flow ONLY,
+        so it never interferes with the enforcing ``check_input`` self-check. The
+        orchestrator calls this UNCONDITIONALLY (every question), in SHADOW. The
+        ``question`` is forwarded RAW (never a rewritten query — the adversarial
+        payload reaches the judge as written).
+
+        Args:
+            question: The RAW user turn to triage.
+
+        Returns:
+            A plain :class:`NemoTriageVerdict` (the pod STAMPS ``model_id``).
+
+        Raises:
+            httpx.HTTPError: Transport failure or non-2xx pod response — the pure
+                SHADOW stage catches this and records an ``unavailable``
+                observation without affecting real traffic (the caller owns the
+                fail policy).
+
+        """
+        response = self._http.post(_CHECK_INPUT_TRIAGE_PATH, json={"question": question})
+        response.raise_for_status()
+        return _parse_triage_verdict(response.json())
 
     def check_output(self, answer: str, chunks: list[str], *, check_facts: bool) -> NemoVerdict:
         """

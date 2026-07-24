@@ -71,11 +71,20 @@ def _output_text() -> str:
     return " ".join(_output_content().split())
 
 
-def test_prompts_parse_with_the_three_tasks_and_the_one_word_convention():
-    """All three rails survive, each at `max_tokens: 4` with a one-word decision."""
+def test_prompts_parse_with_the_four_tasks_and_the_one_word_convention():
+    """All rails survive, each at `max_tokens: 4` with a one-word decision.
+
+    Group 4 added `input_triage` (label-first ATTACK/OFFTOPIC/OK) — it shares the
+    same `max_tokens: 4` one-word convention as the three self-check rails.
+    """
     prompts = _prompts()
 
-    assert set(prompts) == {"self_check_input", "self_check_output", "self_check_facts"}
+    assert set(prompts) == {
+        "self_check_input",
+        "self_check_output",
+        "self_check_facts",
+        "input_triage",
+    }
     for entry in prompts.values():
         assert entry["max_tokens"] == 4
 

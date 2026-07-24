@@ -1,0 +1,34 @@
+# Group 4 input triage rail (shadow-first) + the per-call dispatcher that keeps it
+# mutually exclusive with the enforcing `self check input` rail.
+#
+# WHY A DISPATCHER: in this NeMo version `run input rails` iterates the FULL
+# config.rails.input.flows list on EVERY input-rail generate() — the per-request
+# GenerationOptions.rails.input list only toggles input rails on/off, it does NOT
+# select WHICH input flows run (unlike the output lane). Co-listing both rails
+# would therefore run BOTH on every call: the triage call would also fire the
+# enforcing self-check (wasted call + a stray InputRailException corrupting the
+# triage read), and the self-check call would also fire triage. So a SINGLE
+# dispatcher flow is listed, and the pod passes a `$triage_mode` context variable
+# per call to route to exactly ONE lane — the enforcing self-check is byte-for-
+# byte unchanged (same built-in flow, same action, same InputRailException), and
+# the triage runs INDEPENDENTLY in its own generate() call.
+#
+# With `enable_rails_exceptions: true`, `create event <Name>Exception` surfaces as
+# a `role: "exception"` turn whose content `type` is the event name; the two
+# blocking triage labels use TWO DISTINCT exception types so the orchestrator can
+# tell an attack BLOCK from a topic REDIRECT. An `ok` verdict creates no exception.
+
+define flow guarded input
+  if $triage_mode
+    do input triage
+  else
+    do self check input
+
+define flow input triage
+  $verdict = execute input_triage_check
+  if $verdict == "attack"
+    create event TriageAttackException(message="input triage: attack")
+    stop
+  if $verdict == "offtopic"
+    create event TriageRedirectException(message="input triage: offtopic")
+    stop
