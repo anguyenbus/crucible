@@ -5,3 +5,8 @@
 # artifact — without this line NeMo would try to merge its `secrets:` / `pii:`
 # keys into the RailsConfig. The pod loads it directly via app/detectors.py.
 detectors.yml
+
+# `injections.yml` is the pod's own deterministic INJECTION pattern table for the
+# ingest-time /check/chunks lane (a HASHED data file folded into config_dir_digest),
+# NOT a NeMo rails/prompts artifact. The pod loads it directly via app/chunk_scan.py.
+injections.yml

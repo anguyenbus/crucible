@@ -163,16 +163,17 @@ guardrails:
     # identity is config_dir_digest below). BUMPED from 1.4.0 for the Group 4
     # triage config/ edits (prompts.yml `input_triage` + config.yml dispatcher +
     # rails/input_triage.co) — ONE bump covers the slice.
-    config_version: "1.5.0"
+    config_version: "1.6.0"
     # The guardrail container image the pod runs. CI-POPULATED at build time —
     # this is a PLACEHOLDER until an image is built (no image exists yet).
     image_digest: "pending-ci-build"
     # Determinism hash (i) (I4): sha256 digest of services/guardrail/config/
-    # (config.yml + prompts.yml + detectors.yml + any rails/*.co). REGENERATED
-    # ONCE for the Group 4 triage edits. The same value is published as the single
+    # (config.yml + prompts.yml + detectors.yml + injections.yml + any rails/*.co).
+    # REGENERATED for the ingest-time /check/chunks injection table (injections.yml,
+    # config_version 1.5.0 -> 1.6.0). The same value is published as the single
     # generated deploy source services/guardrail/deploy/guardrail-pins.env.
     # Regen: cd services/guardrail && uv run python -m app.config_digest --write-env
-    config_dir_digest: 338c2abcfa6cdd2f93c79c86ba0cab1f9c2f3397e99fb3ce2ea0f8beaa89a3f6
+    config_dir_digest: 7db3d4b5f97243dc9c374fe2248ecc0961ad191f2030e119c5ca5f862411dc76
     # Determinism hash (ii) (I4): sha256 of services/guardrail/uv.lock. UNCHANGED
     # — this slice adds no dependency, so the lock must not move.
     uv_lock_sha256: 86d6e9a5b1b7b1bb4bd549747890c232e5d8d521ec5078767ad7d060b1f19603

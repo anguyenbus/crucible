@@ -26,8 +26,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app import nemo_runtime
+from app import chunk_scan, nemo_runtime
 from app.contract import (
+    CheckChunksRequest,
+    CheckChunksResponse,
     CheckInputRequest,
     CheckOutputRequest,
     CheckResponse,
@@ -43,6 +45,14 @@ def _require_rails(request: Request):
     if rails is None:
         raise HTTPException(status_code=503, detail="guard engine not initialized")
     return rails
+
+
+def _require_chunk_scanner(request: Request) -> chunk_scan.ChunkScanner:
+    """Return the lifespan-compiled injection scanner or 503 if it failed to compile."""
+    scanner = getattr(request.app.state, "chunk_scanner", None)
+    if scanner is None:
+        raise HTTPException(status_code=503, detail="chunk scanner not initialized")
+    return scanner
 
 
 @check_router.post("/check/input", response_model=CheckResponse)
@@ -87,3 +97,19 @@ def check_output(request: Request, body: CheckOutputRequest) -> CheckResponse:
         check_facts=body.check_facts,
         detectors=detectors,
     )
+
+
+@check_router.post("/check/chunks", response_model=CheckChunksResponse)
+def check_chunks(request: Request, body: CheckChunksRequest) -> CheckChunksResponse:
+    """Scan a document's chunks for injection at ingest time (per-chunk verdict).
+
+    The ingest-time corpus-poisoning lane (Requirement 3): ingestion sends the
+    chunks a document was split into (AFTER chunking, BEFORE indexing) and gets a
+    per-chunk safe/unsafe verdict with FORENSIC attribution. Pure-regex, NO LLM
+    call — the lifespan-compiled scanner (``app.state.chunk_scanner``) is reused
+    per request. ``safe=false`` (any unsafe chunk) means the caller must reject
+    the whole document and alert; there is no fail-open path because the scan is
+    pod-local and needs no model.
+    """
+    scanner = _require_chunk_scanner(request)
+    return chunk_scan.check_chunks(scanner, body)

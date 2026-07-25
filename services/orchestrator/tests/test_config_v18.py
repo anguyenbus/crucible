@@ -32,10 +32,10 @@ from pathlib import Path
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 CONFIGS_DIR = SERVICE_ROOT / "app" / "configs"
 
-# The FRESH config_dir_digest pinned into 1.8.0.yaml, covering the 2026-07-24
-# Group 4 input-triage rail's config/ edits. Regen + publish:
+# The FRESH config_dir_digest pinned into 1.8.0.yaml, covering the 2026-07-25
+# ingest-time /check/chunks injection table (config/injections.yml). Regen + publish:
 # `cd services/guardrail && uv run python -m app.config_digest --write-env`.
-FRESH_CONFIG_DIR_DIGEST = "338c2abcfa6cdd2f93c79c86ba0cab1f9c2f3397e99fb3ce2ea0f8beaa89a3f6"
+FRESH_CONFIG_DIR_DIGEST = "7db3d4b5f97243dc9c374fe2248ecc0961ad191f2030e119c5ca5f862411dc76"
 # Retired digests — pinned here to PROVE 1.8.0 moved off each of them.
 PRE_FOLD_CONFIG_DIR_DIGEST = "413182c3937f6345ed957fcb2bc2c3f166672f75352367b7ed7bdae51ce5ec89"
 PRE_CALIBRATION_CONFIG_DIR_DIGEST = (
@@ -44,6 +44,8 @@ PRE_CALIBRATION_CONFIG_DIR_DIGEST = (
 # The post-calibration / pre-triage pin (the Group 3 default), superseded by the
 # Group 4 input-triage config edits.
 PRE_TRIAGE_CONFIG_DIR_DIGEST = "19e706bf05435f605bd3d04e2c37a79c69bcf5c681837aa201bce4e64f22a58d"
+# The Group 4 input-triage pin, superseded by the ingest-time /check/chunks table.
+PRE_CHUNKS_CONFIG_DIR_DIGEST = "338c2abcfa6cdd2f93c79c86ba0cab1f9c2f3397e99fb3ce2ea0f8beaa89a3f6"
 # uv.lock is UNCHANGED by a config/ edit — the SAME value 1.4.0's pod lane pins.
 UV_LOCK_SHA256 = "86d6e9a5b1b7b1bb4bd549747890c232e5d8d521ec5078767ad7d060b1f19603"
 
@@ -85,9 +87,10 @@ def test_1_8_0_routes_every_verdict_through_the_pod():
     # OUTPUT policy + grounding verdicts via the pod.
     assert nemo.output_self_check is True
     assert nemo.check_facts is True
-    # BUMPED pod config label — the Group 4 input-triage rail's config/ edits
-    # (input_triage prompt + guarded-input dispatcher + rails/input_triage.co).
-    assert nemo.config_version == "1.5.0"
+    # BUMPED pod config label — the ingest-time /check/chunks injection table
+    # (config/injections.yml) is the next config/ edit after the Group 4 triage
+    # rail: config_version 1.5.0 -> 1.6.0.
+    assert nemo.config_version == "1.6.0"
 
 
 def test_1_8_0_carries_1_4_0_non_guard_pins_forward_byte_identical():
@@ -115,6 +118,7 @@ def test_1_8_0_pins_a_fresh_digest_that_moved_off_every_retired_pin():
         PRE_FOLD_CONFIG_DIR_DIGEST,
         PRE_CALIBRATION_CONFIG_DIR_DIGEST,
         PRE_TRIAGE_CONFIG_DIR_DIGEST,
+        PRE_CHUNKS_CONFIG_DIR_DIGEST,
     )
     # uv.lock carried forward (a config/ edit does not touch it).
     assert nemo.uv_lock_sha256 == UV_LOCK_SHA256

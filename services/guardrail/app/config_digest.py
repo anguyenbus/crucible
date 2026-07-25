@@ -6,8 +6,9 @@ TWO values fold into the orchestrator's active NeMo pin's ``nemo`` selector so
 bare NeMo-config digest would MISS NeMo/LangChain/langchain-aws resolution drift):
 
   (i)  ``config_dir_digest`` — a stable digest of THIS pod's NeMo ``config/``
-       directory (``config.yml`` + ``prompts.yml`` + ``detectors.yml`` + any
-       ``rails/*.co``). Computed by :func:`compute_config_dir_digest` HERE, in
+       directory (``config.yml`` + ``prompts.yml`` + ``detectors.yml`` +
+       ``injections.yml`` + any ``rails/*.co``). Computed by
+       :func:`compute_config_dir_digest` HERE, in
        ``services/guardrail/``. ``detectors.yml`` (the deterministic secrets/PII
        pattern tables) is FOLDED INTO this SAME digest — one determinism
        mechanism, NO new pin hash — so a regex change becomes a pod
@@ -54,13 +55,15 @@ from pathlib import Path
 from typing import Final
 
 # The files that constitute the hashed NeMo config artifact. config.yml,
-# prompts.yml and detectors.yml are MANDATORY; rails/*.co is globbed. detectors.yml
-# (the deterministic secrets/PII pattern tables) is folded in HERE so a regex edit
-# forces a re-pin through the SAME config_dir_digest — no separate hash.
+# prompts.yml, detectors.yml and injections.yml are MANDATORY; rails/*.co is
+# globbed. detectors.yml (secrets/PII patterns) and injections.yml (the ingest-time
+# injection patterns) are folded in HERE so a regex edit to EITHER forces a re-pin
+# through the SAME config_dir_digest — no separate hash.
 _MANDATORY_CONFIG_FILES: Final[tuple[str, ...]] = (
     "config.yml",
     "prompts.yml",
     "detectors.yml",
+    "injections.yml",
 )
 _RAILS_GLOB: Final[str] = "rails/*.co"
 
@@ -84,9 +87,9 @@ def _digest_member_paths(config_dir: Path) -> list[Path]:
     Resolve the ordered, deterministic list of files that enter the digest.
 
     Order is stable: the mandatory files first (in declared order —
-    ``config.yml``, ``prompts.yml``, ``detectors.yml``), then any ``rails/*.co``
-    sorted by POSIX relative path — so the digest is independent of filesystem
-    enumeration order.
+    ``config.yml``, ``prompts.yml``, ``detectors.yml``, ``injections.yml``), then
+    any ``rails/*.co`` sorted by POSIX relative path — so the digest is
+    independent of filesystem enumeration order.
     """
     members: list[Path] = []
     missing: list[str] = []
@@ -112,7 +115,7 @@ def compute_config_dir_digest(config_dir: str | Path) -> str:
     Compute the deterministic sha256 digest of the NeMo ``config/`` directory.
 
     The digest hashes, for each member file (``config.yml``, ``prompts.yml``,
-    ``detectors.yml``, then sorted ``rails/*.co``): the file's POSIX relative
+    ``detectors.yml``, ``injections.yml``, then sorted ``rails/*.co``): the file's POSIX relative
     path, a NUL separator, the raw file bytes, and a trailing NUL. Path framing
     makes a rename tamper-evident; the fixed order makes the result independent of
     directory enumeration order.

@@ -39,10 +39,11 @@ from app.config_digest import (
 
 
 def _write_min_config(root: Path) -> None:
-    """Write the three mandatory digest members into ``root`` (config.yml + prompts.yml + detectors.yml)."""
+    """Write the mandatory digest members into ``root`` (config + prompts + detectors + injections)."""
     (root / "config.yml").write_text("models: []\n")
     (root / "prompts.yml").write_text("prompts: []\n")
     (root / "detectors.yml").write_text("secrets: []\n")
+    (root / "injections.yml").write_text("injections: []\n")
 
 
 def test_config_dir_digest_is_deterministic_and_64_hex():
@@ -71,6 +72,17 @@ def test_config_dir_digest_changes_when_detectors_change(tmp_path):
     # A regex/detector change (e.g. adding a pattern) must move the digest so it
     # becomes a pod config_version bump + fresh orchestrator config_sha256.
     (tmp_path / "detectors.yml").write_text("secrets: []\n# new rule\n")
+    assert compute_config_dir_digest(tmp_path) != baseline
+
+
+def test_config_dir_digest_changes_when_injections_change(tmp_path):
+    """injections.yml is a hashed member: an injection-pattern edit forces a fresh digest."""
+    _write_min_config(tmp_path)
+    baseline = compute_config_dir_digest(tmp_path)
+
+    # An injection-table change (the ingest-time /check/chunks lane) must move the
+    # digest so it becomes a pod config_version bump + fresh orchestrator config_sha256.
+    (tmp_path / "injections.yml").write_text("injections: []\n# new pattern\n")
     assert compute_config_dir_digest(tmp_path) != baseline
 
 
@@ -131,6 +143,15 @@ def test_missing_detectors_yml_is_a_hard_digest_error(tmp_path):
     (tmp_path / "config.yml").write_text("models: []\n")
     (tmp_path / "prompts.yml").write_text("prompts: []\n")
     with pytest.raises(FileNotFoundError, match="detectors.yml"):
+        compute_config_dir_digest(tmp_path)
+
+
+def test_missing_injections_yml_is_a_hard_digest_error(tmp_path):
+    """injections.yml is MANDATORY: its absence is a FileNotFoundError, not a silent skip."""
+    (tmp_path / "config.yml").write_text("models: []\n")
+    (tmp_path / "prompts.yml").write_text("prompts: []\n")
+    (tmp_path / "detectors.yml").write_text("secrets: []\n")
+    with pytest.raises(FileNotFoundError, match="injections.yml"):
         compute_config_dir_digest(tmp_path)
 
 

@@ -10,30 +10,32 @@ info:
 
     This is the INTERNAL spec. The orchestrator calls the request-time lanes
     (/check/input/triage, /check/output); the ingestion service calls the
-    document lane (/check/document) on parser-produced markdown before indexing.
-    The BFF twin (guardrail-api.yaml) exposes only the document verdict surface to
-    the api-wrapper for the upload flow; the input/output lanes are NOT
-    end-user-facing and appear ONLY here.
+    ingest-time lane (/check/chunks) on a document's chunks after chunking and
+    before indexing. The BFF twin (guardrail-api.yaml) exposes only the document
+    verdict surface to the api-wrapper for the upload flow; the input/output lanes
+    are NOT end-user-facing and appear ONLY here.
 
     STATUS:
-      * /check/input, /check/input/triage, /check/output, /healthz, /readyz are
-        AS-BUILT (services/guardrail).
-      * /check/document + its schemas are PROPOSED (Requirement 3, corpus-poisoning
-        detection at ingestion) — hand-authored ahead of implementation, marked
-        `x-status: proposed`.
+      * /check/input, /check/input/triage, /check/output, /check/chunks, /healthz,
+        /readyz are AS-BUILT (services/guardrail).
+      * /check/chunks is the ingest-time corpus-poisoning lane (Requirement 3):
+        deterministic, per-chunk, forensic; ANY unsafe chunk => the caller rejects
+        the WHOLE document.
 
     INVARIANTS (contractual):
       * VERDICT-ONLY. The pod returns a decision + attribution; it NEVER returns
-        the caller's text rewritten as authoritative. (`normalized_text` on the
-        document lane is advisory deterministic Unicode normalisation, not a
-        rewrite — the caller decides whether to index it.)
-      * HONEST 200, NEVER 5xx for a verdict. A block / redirect / flag / quarantine
+        the caller's text rewritten as authoritative. (The ingest lane's forensic
+        `matched_excerpt` / `char_span` locate the offending text for the operator
+        alert; they are attribution, not a rewrite.)
+      * HONEST 200, NEVER 5xx for a verdict. A block / redirect / flag / reject
         is a 200 with a machine-readable verdict. NeMo's own refusal string is
         NEVER forwarded. A 5xx means a genuine infrastructure fault, not a policy
         decision.
       * FAIL-CLOSED at the caller. When the pod cannot adjudicate, the caller does
-        NOT proceed unguarded: the orchestrator fails ATTACK closed; the ingestion
-        service quarantines the document (retryable).
+        NOT proceed unguarded: the orchestrator fails ATTACK closed; on /check/chunks
+        the ingestion caller rejects a document it could not scan (a 503 means the
+        scanner failed to compile — never index unscanned). Note the chunk scan is
+        deterministic and needs no model, so a Bedrock outage does not disable it.
       * DETERMINISM-PINNED. The config-dir digest + uv.lock sha256 are pinned; the
         pod refuses to serve on drift. Each verdict is reproducible from its inputs
         + the guard config version.
@@ -175,48 +177,58 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  /check/document:
+  /check/chunks:
     post:
       tags: [check]
-      summary: "PROPOSED — check parser-produced markdown before ingestion indexes it"
-      x-status: proposed
+      summary: "Scan a document's chunks for injection at ingest time (per-chunk verdict)"
+      x-status: implemented
       description: |
-        PROPOSED (Requirement 3). Verdict-only content check over the markdown a
-        document parsed to, called by the ingestion service after /parse and
-        BEFORE chunk/embed/index. Checks the WHOLE document (not per chunk) so an
-        injection spanning chunk boundaries is still seen.
+        The ingest-time corpus-poisoning lane (Requirement 3). Called by the
+        ingestion service AFTER chunking and BEFORE embed/index: it takes the
+        chunks a document was split into and returns a per-chunk safe/unsafe
+        verdict with FORENSIC attribution.
 
-        Cheapest-first: (1) deterministic Unicode sanitisation — strip zero-width
-        and tag characters, NFC-normalise, HARD-REJECT BIDI overrides; (2)
-        deterministic injection scan — YARA-style (SQLi/XSS/code/template) plus
-        prompt-injection patterns aimed at an AI reviewer; (3) OPTIONAL one bounded
-        Haiku classification (config-gated, off by default) for fluent evasions.
+        DETERMINISTIC, NO LLM CALL — pure regex over each chunk (the pinned
+        `config/injections.yml` table): prompt-injection / jailbreak (DAN, IGNORE,
+        developer-mode) / AI-directive (instructions aimed at an AI reviewer) /
+        role-impersonation (fake SYSTEM: headers, chat-template tokens) / BIDI +
+        zero-width + Unicode-tag smuggling. Because it needs no model, the verdict
+        survives a Bedrock outage at zero cost (there is no fail-open path). An
+        OPTIONAL one-token Haiku rail for fluent evasions is config-gated and off.
+
+        WHOLE-DOCUMENT POLICY (caller): ANY unsafe chunk sets `safe:false`. The
+        ingestion caller then REJECTS THE WHOLE DOCUMENT — indexes nothing — and
+        surfaces the forensic results to the frontend ("this document is not safe
+        to ingest; chunk N contains a prompt injection"). This is a deliberate
+        change from a whole-markdown `/check/document` check: per-chunk gives the
+        precise "which part" attribution the alert needs. The 120-token chunk
+        overlap covers most boundary-spanning injections; a residual gap (an
+        injection split cleanly across two non-overlapping chunks) is accepted for
+        the attribution win and is a known limitation.
+
+        FORENSIC CARVE-OUT: unlike the answer lanes (`Detection` — labels + counts,
+        no offsets, because the pod never rewrites an answer), each hit here
+        carries the `char_start`/`char_end` span and an escaped `matched_excerpt` /
+        `context` — invisible/BIDI codepoints escaped to \uXXXX so an unprintable
+        hit is still legible. The operator is triaging an uploaded document; seeing
+        the offending span IS the job. The pod still only reports — never mutates.
 
         LIMITATION (contractual): this sees the TEXT. Visual hiding (zero-size /
         off-canvas / colour-hidden / metadata-only text) is destroyed at parse and
-        is NOT detectable here — it is the parser's job (text-layer-vs-OCR diff,
-        per-span provenance), optionally supplied via `provenance`. A `clean`
-        verdict means "no injected content detected in the text", NOT "no hidden
-        text in the source".
-
-        Verdict: `clean` (index), `flag` (index but tag; advisory), `quarantine`
-        (do NOT index; high-confidence injection or a BIDI hard-reject). For a
-        first release `quarantine` requires a deterministic high-confidence signal;
-        the LLM signal is `flag`, not `quarantine`, until its false-positive rate is
-        measured — over-quarantining legitimate case documents deletes the corpus.
+        is the parser's job (text-layer-vs-OCR diff), NOT detectable here.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/CheckDocumentRequest" }
+            schema: { $ref: "#/components/schemas/CheckChunksRequest" }
       responses:
         "200":
-          description: Document verdict + detections (+ advisory normalised text).
+          description: Whole-document verdict + per-chunk forensic results.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/DocumentCheckResponse" }
+              schema: { $ref: "#/components/schemas/CheckChunksResponse" }
         "503":
-          description: Guard engine not initialised.
+          description: Injection scanner not initialised (failed to compile).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -316,49 +328,73 @@ components:
         output_tokens: { type: [integer, "null"] }
         model_id: { type: string, description: "The configured Haiku id, stamped by the pod." }
 
-    CheckDocumentRequest:
+    ChunkInput:
       type: object
-      x-status: proposed
-      required: [text]
+      required: [id, text]
       properties:
-        text:
-          type: string
-          description: "The parser-produced markdown for the WHOLE document (not a single chunk)."
+        id: { type: string, description: "Stable chunk id (ingestion's), echoed on the verdict." }
+        text: { type: string, description: "The chunk's extracted text (post-chunking)." }
+        ordinal: { type: [integer, "null"], description: "0-based position in the document (forensic ordering only)." }
+
+    CheckChunksRequest:
+      type: object
+      required: [chunks]
+      properties:
+        chunks:
+          type: array
+          items: { $ref: "#/components/schemas/ChunkInput" }
+          description: "The document's chunks (post-chunking, pre-index). Empty list = vacuously safe."
+        document_id:
+          type: [string, "null"]
+          description: "Opaque document id, echoed on the response for the ingestion audit record + alert."
         source_ref:
           type: [string, "null"]
-          description: "Opaque reference to the source document (for the verdict audit record). Never fetched by the pod."
-        provenance:
-          type: [object, "null"]
-          description: |
-            OPTIONAL parser-supplied hints the guardrail cannot derive from text
-            alone — e.g. spans the parser found render invisibly (text-layer-vs-OCR
-            diff). Lets the deterministic rails weight likely-hidden text. The
-            visual-hiding detection itself is the parser's job; this is the channel
-            for its result.
-          additionalProperties: true
+          description: "Human-facing source reference (filename / URI), echoed for the alert."
 
-    DocumentCheckResponse:
+    ChunkDetection:
       type: object
-      x-status: proposed
-      description: Plain-data document verdict returned by /check/document.
-      required: [verdict, detections, model_id]
+      description: One injection hit in a chunk — FORENSIC (spans + escaped excerpt), unlike Detection.
+      required: [category, label, severity, char_start, char_end, matched_excerpt, context]
       properties:
-        verdict:
-          type: string
-          enum: [clean, flag, quarantine]
-          description: "clean (index) | flag (index but tag; advisory) | quarantine (do NOT index)."
+        category: { type: string, description: "prompt_injection | jailbreak | ai_directive | role_impersonation | bidi | invisible_unicode." }
+        label: { type: string, description: "The specific rule (e.g. 'ignore_previous', 'dan_acronym')." }
+        severity: { type: string, enum: [high, medium], description: "Forensic ranking only; does NOT gate the verdict (any hit is unsafe)." }
+        char_start: { type: integer, minimum: 0, description: "0-based start offset of the match in the chunk." }
+        char_end: { type: integer, minimum: 0, description: "Exclusive end offset of the match in the chunk." }
+        matched_excerpt: { type: string, description: "The exact matched span; invisible/control codepoints escaped to \\uXXXX so it is legible." }
+        context: { type: string, description: "A short surrounding window (same escaping) so the operator sees the text in situ." }
+
+    ChunkVerdict:
+      type: object
+      required: [chunk_id, verdict, detections]
+      properties:
+        chunk_id: { type: string, description: "The input chunk's id, echoed back." }
+        ordinal: { type: [integer, "null"], description: "The input chunk's ordinal, echoed if given." }
+        verdict: { type: string, enum: [safe, unsafe], description: "'unsafe' when ANY rule fired on this chunk." }
         detections:
           type: array
-          items: { $ref: "#/components/schemas/Detection" }
-          description: "What fired (injection patterns, YARA rules, BIDI/Unicode). Labels + counts, NO offsets."
-        normalized_text:
-          type: [string, "null"]
-          description: "ADVISORY deterministic Unicode normalisation (zero-width/tag stripped, NFC). NOT a rewrite of the caller's authoritative copy — ingestion decides whether to index this form."
-        rationale:
-          type: [string, "null"]
-          description: "Terse reason for a flag/quarantine (e.g. 'bidi_override', 'ai_directed_instruction')."
-        model_id:
-          type: [string, "null"]
-          description: "Stamped Haiku id when the optional LLM classifier ran; null on a purely deterministic verdict."
-        input_tokens: { type: [integer, "null"] }
-        output_tokens: { type: [integer, "null"] }
+          items: { $ref: "#/components/schemas/ChunkDetection" }
+          description: "Every hit on this chunk (not deduplicated); empty when safe."
+
+    CheckChunksResponse:
+      type: object
+      description: Whole-document verdict returned by /check/chunks (deterministic, per-chunk).
+      required: [safe, verdict, chunk_count, unsafe_chunk_count, detection_count, results, engine]
+      properties:
+        safe:
+          type: boolean
+          description: "true only when EVERY chunk is safe. false => the caller REJECTS the whole document (index nothing) and alerts."
+        verdict: { type: string, enum: [clean, unsafe], description: "Whole-document roll-up: 'clean' iff safe." }
+        document_id: { type: [string, "null"], description: "Echoed document id (audit + alert)." }
+        source_ref: { type: [string, "null"], description: "Echoed source reference (filename / URI)." }
+        chunk_count: { type: integer, minimum: 0, description: "How many chunks were scanned." }
+        unsafe_chunk_count: { type: integer, minimum: 0, description: "How many chunks were unsafe." }
+        detection_count: { type: integer, minimum: 0, description: "Total hits across all chunks (alert roll-up)." }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/ChunkVerdict" }
+          description: "Per-chunk verdicts in input order, each with its detections."
+        engine:
+          type: string
+          const: "deterministic"
+          description: "Always 'deterministic' — this lane makes NO LLM call, so the verdict survives a Bedrock outage."

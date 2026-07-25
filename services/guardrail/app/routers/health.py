@@ -72,4 +72,11 @@ def readyz(request: Request) -> ReadyzResponse:
         if reason:
             detail = f"{detail}: {reason}"
         raise HTTPException(status_code=503, detail=detail)
+    chunk_scanner = getattr(request.app.state, "chunk_scanner", None)
+    if chunk_scanner is None:
+        reason = getattr(request.app.state, "chunk_scanner_error", None)
+        detail = "injection chunk scanner failed to compile"
+        if reason:
+            detail = f"{detail}: {reason}"
+        raise HTTPException(status_code=503, detail=detail)
     return ReadyzResponse(status="ready")

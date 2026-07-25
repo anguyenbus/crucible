@@ -1,7 +1,8 @@
 # Guardrail Service — topology
 
-**Status:** as-built (request-time) + proposed (ingest-time) · **Scope:** how the guardrail service
-sits between the other services and where each one calls it.
+**Status:** as-built — request-time (orchestrator) + ingest-time (`/check/chunks`, built end-to-end: the
+pod endpoint AND the ingestion call that consumes it; the ingestion call is opt-in via env) · **Scope:**
+how the guardrail service sits between the other services and where each one calls it.
 **Companion:** [guardrail-service-overview.md](guardrail-service-overview.md) · contracts
 [guardrail-openapi.yaml](guardrail-openapi.yaml) (internal) / [guardrail-api.yaml](guardrail-api.yaml) (BFF)
 
@@ -19,7 +20,7 @@ imports another's Python.** Every guardrail call is HTTP-only over a location fa
 | Service | Role | Talks to the guardrail via | Wire fact |
 |---|---|---|---|
 | **Orchestrator** (`services/orchestrator`) | live `POST /query` pipeline: retrieve → generate → cite | `/check/input/triage`, `/check/output` | `ORCHESTRATOR_NEMO_GUARD_URL` |
-| **Ingestion** (`services/ingestion`) | `POST /ingest`: fetch → parse → **guard** → chunk → embed → index | `/check/document` *(proposed)* | `INGESTION_GUARDRAIL_URL` *(proposed)* |
+| **Ingestion** (`services/ingestion`) | `POST /ingest`: fetch → parse → chunk → **guard** → embed → index | `/check/chunks` *(built; opt-in via env)* | `INGESTION_GUARDRAIL_URL` |
 | **Parser** (`services/parser`) | document bytes → clean **Markdown** | — (does not call the guardrail; owns provenance, see §5) | called by ingestion via `INGESTION_PARSER_URL` |
 | **Guardrail** (`services/guardrail`) | verdict-only NeMo pod (Bedrock Haiku) | — | — |
 
@@ -97,21 +98,34 @@ skipped entirely and the question is answered as-is. This is the demo surface (s
 
 ---
 
-## 3. Ingest-time flow (ingestion + parser) — PROPOSED
+## 3. Ingest-time flow (ingestion + parser) — BUILT end-to-end (ingestion call opt-in)
 
-A document is submitted; the ingestion service parses it to markdown and guards that markdown before it
-is allowed into the index.
+A document is submitted; the ingestion service parses it, chunks it, and guards **each chunk** before
+any of it is allowed into the index. **Both halves are built:** the pod endpoint `POST /check/chunks`
+(`services/guardrail`) and the ingestion call that consumes it (`services/ingestion/app/pipeline/guard.py`
++ `run.py`, config `guardrail_check_enabled` / `guardrail_url`). The ingestion call is **opt-in** —
+`INGESTION_GUARDRAIL_CHECK_ENABLED` defaults **off** (so the offline ingestion suite makes no guard call)
+and is turned **on** in the dev Makefile's `ingestion` target; production should enable it.
+
+**Ordering caveat:** the guard runs at the **chunking** stage, which is *after* ingestion's pre-parse
+**raw-bytes dedup gate**. Re-uploading a byte-identical document that is already fully indexed
+short-circuits to "skipped" before parse/chunk, so the guard does not re-scan it — a poisoned file must
+be scanned on its **first** ingest (or into a fresh index). This is correct for dedup but worth knowing
+when demoing: upload the poisoned file to a fresh project, or delete the prior copy first.
 
 **Ordered pipeline (`/ingest`):**
 
 ```
-fetch → parse (parser: /parse → markdown)
-      → /check/document (guardrail, on the WHOLE markdown, before chunking)
-      → normalize → dedup → chunk → embed → bulk index → prune
+fetch → parse (parser: /parse → markdown) → normalize → dedup → chunk
+      → /check/chunks (guardrail, per-chunk, AFTER chunking)
+      → if safe:   embed → bulk index → prune
+      → if unsafe: index NOTHING · reject whole document · alert frontend (which chunk, why)
 ```
 
-Checking the **whole document before chunking** is deliberate: an injection can span chunk boundaries,
-so a per-chunk check would miss instructions split across two chunks.
+Checking **per chunk** (not the whole markdown) is the deliberate choice: it yields the precise "which
+part is unsafe" attribution the officer alert needs. The chunker's 120-token overlap covers most
+boundary-spanning injections; the residual gap (an injection split cleanly across two non-overlapping
+chunks) is an accepted, documented limitation of the attribution win.
 
 ```mermaid
 sequenceDiagram
@@ -125,31 +139,34 @@ sequenceDiagram
     I->>P: POST /parse (bytes, filename)
     P-->>I: 200 {markdown, page_routes, warnings}
     Note over I,P: parser owns visual-hiding provenance (text-layer vs OCR) — §5
+    Note over I: normalize → dedup → CHUNK (tiktoken 800/120)
 
-    I->>G: POST /check/document {text: markdown, provenance?}
-    alt guardrail reachable
-        G-->>I: 200 {verdict, detections[], normalized_text?}
-        alt verdict == quarantine
-            I-->>C: 422 document_quarantined {detections}
-            Note over I: NOT indexed. Recorded + alerted.
-        else clean | flag
-            I->>OS: normalize → chunk → embed → index (flag rides as metadata)
-            I-->>C: 200 {chunks_indexed, guard:{verdict, detections}}
+    I->>G: POST /check/chunks {chunks:[{id,ordinal,text}], document_id, source_ref}
+    alt scanner reachable (200)
+        G-->>I: 200 {safe, results:[{chunk_id, verdict, detections[]}], unsafe_chunk_count}
+        alt safe == false (any unsafe chunk)
+            I-->>C: 422 document_rejected {results with forensic detections}
+            Note over I: index NOTHING. Whole document rejected + alerted.
+        else safe == true
+            I->>OS: embed → bulk index → prune
+            I-->>C: 200 {chunks_indexed, guard:{safe:true}}
         end
-    else guardrail unreachable
-        Note over I,G: FAIL-CLOSED — do not index unguarded
+    else scanner not ready (503)
+        Note over I,G: FAIL-CLOSED — do not index unscanned
         I-->>C: 503 guard_unavailable (Retry-After)
     end
 ```
 
-**What `/check/document` does (cheapest-first, mirroring the output lane):** deterministic Unicode
-sanitisation (strip zero-width/tag chars, NFC, **hard-reject BIDI**) → deterministic injection scan
-(YARA-style SQLi/XSS/code/template + prompt-injection patterns aimed at an AI) → an **optional** bounded
-Haiku classification (config-gated, off by default). Verdict: `clean` (index) / `flag` (index but tag)
-/ `quarantine` (do not index). For a first release, `quarantine` requires a deterministic
-high-confidence signal; the LLM signal starts as `flag`, because legal/tax documents are full of
-imperatives ("the Contractor shall…") that read like instructions and over-quarantining deletes the
-corpus.
+**What `/check/chunks` does — deterministic, NO LLM call.** Each chunk is scanned with the pinned
+`config/injections.yml` regex table: prompt-injection (IGNORE/override/reveal-system-prompt), jailbreak
+(DAN, do-anything-now, developer-mode), AI-directive (instructions aimed at an AI reviewer; "mark this
+entity compliant"; "do not flag discrepancies"), role-impersonation (all-caps `SYSTEM:` headers, chat
+template tokens), and BIDI / zero-width / Unicode-tag smuggling. Because it needs no model, the verdict
+survives a Bedrock outage at zero cost. Verdict per chunk: `safe` / `unsafe`; **any** unsafe chunk →
+`safe:false` → the caller **rejects the whole document**. Patterns are written high-precision because
+one hit rejects an entire document, and legal/tax documents are full of imperatives ("the Contractor
+shall…"); an **optional** one-token Haiku rail for fluent evasions is config-gated and off. Each hit
+carries a `char_span` + escaped `matched_excerpt` so the alert shows the officer exactly which text.
 
 ---
 
@@ -160,7 +177,7 @@ steering an answer:
 
 | Seam | Stops | Cost of stopping late |
 |---|---|---|
-| **Ingest-time** (`/check/document`) | a poisoned document **entering the index** | once indexed, it is retrievable context on *every* future query until re-ingested |
+| **Ingest-time** (`/check/chunks`) | a poisoned document **entering the index** | once indexed, it is retrievable context on *every* future query until re-ingested |
 | **Request-time** (`/check/output`) | a poisoned chunk **reaching the officer** in an answer | the answer is already generated (paid); catches what slipped past ingestion |
 
 Ingest-time is the cheaper, more complete place to stop poisoning — it is checked once per document,
@@ -178,15 +195,15 @@ and cannot see:
 
 | Threat | Detectable in the markdown? | Owner |
 |---|---|---|
-| Injected **content** (AI-directed instructions, YARA payloads, invisible Unicode that survived extraction) | **Yes** | **Guardrail** (`/check/document`) |
+| Injected **content** (AI-directed instructions, YARA payloads, invisible Unicode that survived extraction) | **Yes** | **Guardrail** (`/check/chunks`) |
 | **Visual hiding** (zero-size / transparent fonts, off-canvas, colour-hidden, metadata-only text) | **No — destroyed at parse** | **Parser** (text-layer-vs-OCR diff, per-span provenance) |
 
 The parser is the natural owner of provenance because it *has* the render layer: a text-layer-vs-OCR
 diff (extracted text that does not appear in an OCR of the rendered page is text a human never saw) and
-per-span font/colour/position metadata. That result flows to `/check/document` as the optional
-`provenance` hint, so the guardrail can weight likely-hidden spans. **A green `/check/document` means
-"no injected content in the text," not "no hidden text in the source"** — the two halves are separate
-and composable, and neither alone is a complete document-injection defence.
+per-span font/colour/position metadata. A future extension can carry that provenance alongside each
+chunk so the scan weights likely-hidden spans. **A green `/check/chunks` means "no injected content in
+the text," not "no hidden text in the source"** — the two halves are separate and composable, and
+neither alone is a complete document-injection defence.
 
 ---
 
@@ -194,7 +211,7 @@ and composable, and neither alone is a complete document-injection defence.
 
 | Consumer | Contract | Auth |
 |---|---|---|
-| Orchestrator, ingestion (in-mesh) | [guardrail-openapi.yaml](guardrail-openapi.yaml) — the full internal service: `/check/input`, `/check/input/triage`, `/check/output`, `/check/document` (proposed), health | mTLS peer |
+| Orchestrator, ingestion (in-mesh) | [guardrail-openapi.yaml](guardrail-openapi.yaml) — the full internal service: `/check/input`, `/check/input/triage`, `/check/output`, `/check/chunks`, health | mTLS peer |
 | BFF / UI (document verdict surface) | [guardrail-api.yaml](guardrail-api.yaml) — read guard outcomes on ingested documents; operator re-check | JWT Bearer, project-scoped |
 
 The request-time input/output lanes are orchestrator-internal and appear only in the internal

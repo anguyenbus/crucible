@@ -36,6 +36,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.bedrock_engine import build_rails
+from app.chunk_scan import ChunkScanConfigError, load_chunk_scanner
 from app.config_digest import verify_pinned_digests
 from app.detectors import DetectorConfigError, load_detectors
 from app.routers.check import check_router
@@ -76,6 +77,17 @@ async def lifespan(app: FastAPI):
         except DetectorConfigError as exc:
             app.state.detectors = None
             app.state.detectors_error = str(exc)
+    # Compile the deterministic injection scanner ONCE (the ingest-time
+    # /check/chunks lane). Same fail-fast discipline as the secrets detector: a
+    # non-compiling injection pattern leaves the slot None so /readyz reports 503,
+    # never a silently dead corpus-poisoning guard.
+    if getattr(app.state, "chunk_scanner", None) is None:
+        try:
+            app.state.chunk_scanner = load_chunk_scanner(settings.config_dir)
+            app.state.chunk_scanner_error = None
+        except ChunkScanConfigError as exc:
+            app.state.chunk_scanner = None
+            app.state.chunk_scanner_error = str(exc)
     if getattr(app.state, "rails", None) is None:
         app.state.rails = build_rails(settings.config_dir)
     yield

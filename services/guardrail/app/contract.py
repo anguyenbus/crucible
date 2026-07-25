@@ -129,6 +129,138 @@ class CheckResponse(BaseModel):
     )
 
 
+class ChunkInput(BaseModel):
+    """One chunk a document was split into, sent for ingest-time injection scan."""
+
+    id: str = Field(
+        description="Stable chunk identifier (ingestion's chunk id) — echoed on "
+        "the verdict so the caller and the UI can point at the offending part.",
+    )
+    text: str = Field(description="The chunk's extracted text (post-chunking).")
+    ordinal: int | None = Field(
+        default=None,
+        description="0-based position of the chunk within the document, if known "
+        "— forensic ordering only; the scan is independent of it.",
+    )
+
+
+class CheckChunksRequest(BaseModel):
+    """
+    ``POST /check/chunks`` body: a document's chunks, checked AFTER chunking.
+
+    The ingest-time corpus-poisoning lane (Requirement 3). Ingestion calls this
+    once per document, with the chunks it is about to embed + index; the pod
+    returns a per-chunk safe/unsafe verdict. ANY unsafe chunk means the WHOLE
+    document must be rejected (indexed: nothing) — the caller's policy, reported
+    by ``CheckChunksResponse.safe``.
+    """
+
+    chunks: list[ChunkInput] = Field(
+        description="The document's chunks (post-chunking, pre-index). An empty "
+        "list is a vacuously-safe document (no content to poison).",
+    )
+    document_id: str | None = Field(
+        default=None,
+        description="Opaque document identifier, echoed on the response for the "
+        "ingestion audit record and the frontend alert.",
+    )
+    source_ref: str | None = Field(
+        default=None,
+        description="Human-facing source reference (filename / URI), echoed for "
+        "the 'document X is not safe to ingest' alert.",
+    )
+
+
+class ChunkDetection(BaseModel):
+    """
+    One injection hit inside a chunk — FORENSIC attribution (spans + excerpt).
+
+    Emitted by the pod's pure-regex injection scanner (``app.chunk_scan``). Unlike
+    :class:`Detection` (the answer-lane secrets attribution, which carries NO
+    offsets because the pod never rewrites an answer), this lane DELIBERATELY
+    carries the ``char_start``/``char_end`` span and an escaped ``matched_excerpt``
+    / ``context``: the caller is an operator triaging an uploaded document and the
+    whole point is to show *which part* is unsafe. Invisible/BIDI/zero-width
+    codepoints are escaped to ``\\uXXXX`` so an unprintable hit is still legible.
+    """
+
+    category: str = Field(
+        description="The injection class (prompt_injection / jailbreak / "
+        "ai_directive / role_impersonation / bidi / invisible_unicode).",
+    )
+    label: str = Field(description="The specific rule label (e.g. 'ignore_previous').")
+    severity: str = Field(
+        description="Forensic ranking only ('high' | 'medium'); does NOT gate the "
+        "verdict — any hit makes the chunk unsafe.",
+    )
+    char_start: int = Field(description="0-based start offset of the match in the chunk.")
+    char_end: int = Field(description="Exclusive end offset of the match in the chunk.")
+    matched_excerpt: str = Field(
+        description="The exact matched span, with invisible/control codepoints "
+        "escaped to \\uXXXX so it is legible in the alert.",
+    )
+    context: str = Field(
+        description="A short surrounding window around the match (same escaping), "
+        "so the operator sees the offending text in situ.",
+    )
+
+
+class ChunkVerdict(BaseModel):
+    """Per-chunk verdict: safe/unsafe plus every forensic detection on that chunk."""
+
+    chunk_id: str = Field(description="The input chunk's id, echoed back.")
+    ordinal: int | None = Field(
+        default=None, description="The input chunk's ordinal, echoed back if given."
+    )
+    verdict: Literal["safe", "unsafe"] = Field(
+        description="'unsafe' when ANY injection rule fired on this chunk, else 'safe'.",
+    )
+    detections: list[ChunkDetection] = Field(
+        default_factory=list,
+        description="Every hit on this chunk (not deduplicated); empty when safe.",
+    )
+
+
+class CheckChunksResponse(BaseModel):
+    """
+    Whole-document verdict for ``POST /check/chunks`` (per-chunk, deterministic).
+
+    ``safe`` is the load-bearing field: False when ANY chunk is unsafe, which the
+    ingestion caller treats as "reject the whole document, index nothing, and
+    alert the frontend with the forensic results". ``engine`` is ``deterministic``
+    (no LLM call is made on this lane), so there is no ``model_id`` / token
+    accounting — the verdict is a pure function of the chunks and the pinned
+    ``injections.yml`` table.
+    """
+
+    safe: bool = Field(
+        description="True only when EVERY chunk is safe. False → the caller must "
+        "reject the whole document (index nothing) and alert.",
+    )
+    verdict: Literal["clean", "unsafe"] = Field(
+        description="Whole-document roll-up: 'clean' iff safe, else 'unsafe'.",
+    )
+    document_id: str | None = Field(
+        default=None, description="Echoed document identifier (audit + alert)."
+    )
+    source_ref: str | None = Field(
+        default=None, description="Echoed source reference (filename / URI)."
+    )
+    chunk_count: int = Field(description="How many chunks were scanned.")
+    unsafe_chunk_count: int = Field(description="How many chunks were unsafe.")
+    detection_count: int = Field(
+        description="Total injection hits across all chunks (for the alert roll-up).",
+    )
+    results: list[ChunkVerdict] = Field(
+        description="Per-chunk verdicts in input order, each with its detections.",
+    )
+    engine: str = Field(
+        default="deterministic",
+        description="Always 'deterministic' — this lane makes NO LLM call, so the "
+        "verdict survives a Bedrock outage at zero cost.",
+    )
+
+
 class TriageResponse(BaseModel):
     """
     PLAIN-DATA three-way verdict returned by ``POST /check/input/triage`` (Group 4).

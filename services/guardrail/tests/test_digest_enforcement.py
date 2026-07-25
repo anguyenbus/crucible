@@ -43,7 +43,7 @@ from app.config_digest import (
 # demo Makefile injects as GUARDRAIL_EXPECTED_CONFIG_DIR_DIGEST. Regen:
 #   cd services/guardrail && uv run python -m app.config_digest --write-env
 DEMO_EXPECTED_CONFIG_DIR_DIGEST = (
-    "338c2abcfa6cdd2f93c79c86ba0cab1f9c2f3397e99fb3ce2ea0f8beaa89a3f6"
+    "7db3d4b5f97243dc9c374fe2248ecc0961ad191f2030e119c5ca5f862411dc76"
 )
 # Retired config-dir digests, retained to PROVE each config/ edit moved the live
 # digest off the previous pin: the PRE-FOLD pin, the pre-calibration (post-fold)
@@ -53,6 +53,9 @@ SUPERSEDED_CONFIG_DIR_DIGESTS = (
     "413182c3937f6345ed957fcb2bc2c3f166672f75352367b7ed7bdae51ce5ec89",
     "b5da30dbae57309c6045138bd569bf13d7c67ed19ceb2153484183e1eb7b2183",
     "19e706bf05435f605bd3d04e2c37a79c69bcf5c681837aa201bce4e64f22a58d",
+    # The Group 4 input-triage pin, superseded by the ingest-time injections.yml
+    # table (/check/chunks, config_version 1.5.0 -> 1.6.0).
+    "338c2abcfa6cdd2f93c79c86ba0cab1f9c2f3397e99fb3ce2ea0f8beaa89a3f6",
 )
 # uv.lock is NOT touched by a config/ edit, so its sha is stable across all of them.
 DEMO_EXPECTED_UV_LOCK_SHA256 = (

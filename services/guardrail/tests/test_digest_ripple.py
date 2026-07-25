@@ -92,9 +92,10 @@ def test_the_recomputed_digest_equals_the_value_pinned_in_1_8_0():
 
 def test_the_pod_config_version_tracks_the_config_dir_edits():
     """Each `config/` edit bumps the pod config_version exactly once."""
-    # Group 4 added the `input_triage` prompt + Colang flow — a single config/
-    # edit → a single bump 1.4.0 → 1.5.0.
-    assert _nemo_pin()["config_version"] == "1.5.0"
+    # Group 4 added the `input_triage` prompt + Colang flow (1.4.0 → 1.5.0); the
+    # ingest-time `/check/chunks` injection table (config/injections.yml) is the
+    # next single config/ edit → a single bump 1.5.0 → 1.6.0.
+    assert _nemo_pin()["config_version"] == "1.6.0"
 
 
 def test_uv_lock_sha256_did_not_move():

@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: Guardrail Service — BFF API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     The api-wrapper (BFF) facing contract for the guardrail capability.
 
@@ -11,17 +11,31 @@ info:
     request-time input/output lanes (/check/input/triage, /check/output) are
     orchestrator-internal — they do NOT appear here.
 
-    What the BFF exposes to the UI is the guardrail's OUTCOMES on ingested
-    documents: when an officer uploads a case document, the ingestion pipeline
-    runs it through the document lane (/check/document) before indexing, and the
-    verdict (clean / flag / quarantine) is recorded. This API lets the UI show
-    "this document was quarantined and why" and lets an operator trigger a
-    re-check. It is a thin, read-mostly projection of guard verdicts — not a way
-    to invoke the raw guard rails.
+    What the BFF exposes to the UI is the guardrail's OUTCOME on an uploaded
+    document. When an officer uploads a case document, the INGESTION pipeline
+    scans its chunks through the ingest-time lane (/check/chunks) AFTER chunking
+    and BEFORE indexing (services/ingestion/app/pipeline/guard.py). ANY unsafe
+    chunk REJECTS the WHOLE document: nothing is indexed, and the upload itself
+    fails with a forensic verdict naming which chunk is unsafe and why.
 
-    STATUS: PROPOSED. The document lane (Requirement 3, corpus-poisoning
-    detection) is not yet implemented; this contract is hand-authored ahead of it
-    so the BFF/UI surface can be reviewed. Marked `x-status: proposed`.
+    TWO surfaces, two statuses:
+      * SYNCHRONOUS upload rejection — BUILT. The upload call returns the rejection
+        inline: ingestion answers 422 `document_rejected` (or, over its SSE stream,
+        a terminal `error` frame) carrying the per-chunk forensic detail, which the
+        BFF forwards to the UI so the officer immediately sees "this document is not
+        safe to ingest — chunk N contains a prompt injection". No persistence needed.
+      * PERSISTED verdict read-surface (the GET/recheck endpoints below) — PROPOSED.
+        A queryable record of past verdicts + an operator re-check requires a store
+        that does not exist yet; this contract is hand-authored ahead of it so the
+        BFF/UI review-queue surface can be reviewed. Marked `x-status: proposed`.
+
+    VOCABULARY (new approach, 2026-07-25). A document is `safe` (indexed) or
+    `rejected` (NOT indexed — any unsafe chunk). This replaces the earlier
+    whole-markdown `clean/flag/quarantine` triage: the ingest lane is now per-chunk
+    and reject-whole-doc, and each hit carries FORENSIC attribution (the injection
+    label + the char span + an escaped excerpt) so the UI can show exactly which
+    text is unsafe. There is no "indexed-but-flagged" state — an unsafe document is
+    not indexed at all.
 
     AUTH: JWT Bearer (same issuer/JWKS as ingestion + eval). `project_id` and
     permissions come from token claims, NEVER a request body. A document that
@@ -37,7 +51,7 @@ security:
 
 tags:
   - name: document-verdicts
-    description: Read guard outcomes on ingested documents; operator re-check.
+    description: Read guard outcomes on uploaded documents; operator re-check.
   - name: health
     description: Liveness.
 
@@ -60,16 +74,18 @@ paths:
       summary: "PROPOSED — list guard verdicts for the caller's project"
       x-status: proposed
       description: |
-        List the guard verdicts on the project's ingested documents, newest first.
-        Scope `guard:read`. `project_id` comes from the token; results are the
-        caller's project only. Use to render a review queue of flagged /
-        quarantined documents.
+        List the guard verdicts on the project's recently-uploaded documents,
+        newest first. Scope `guard:read`. `project_id` comes from the token;
+        results are the caller's project only. Use to render a review queue of
+        rejected documents (an unsafe upload is not indexed, so the queue is the
+        only durable trace of the rejection — until this store exists, the
+        rejection is surfaced only synchronously at upload time).
       parameters:
         - name: verdict
           in: query
           required: false
-          schema: { type: string, enum: [clean, flag, quarantine] }
-          description: Filter by verdict (e.g. only quarantined documents).
+          schema: { type: string, enum: [safe, rejected] }
+          description: Filter by verdict (e.g. only rejected documents).
         - name: limit
           in: query
           required: false
@@ -88,8 +104,9 @@ paths:
       summary: "PROPOSED — the guard verdict for one document"
       x-status: proposed
       description: |
-        The recorded guard verdict + detections for a single ingested document.
-        Scope `guard:read`. A document outside the caller's project returns 404.
+        The recorded guard verdict + per-chunk forensic detail for a single
+        uploaded document. Scope `guard:read`. A document outside the caller's
+        project returns 404.
       parameters:
         - name: document_id
           in: path
@@ -111,15 +128,16 @@ paths:
   /v1/guard/documents/{document_id}/recheck:
     post:
       tags: [document-verdicts]
-      summary: "PROPOSED — re-run the document check (operator)"
+      summary: "PROPOSED — re-run the ingest-time scan (operator)"
       x-status: proposed
       description: |
-        Re-run /check/document for a document (e.g. after a guard config bump, or
-        to clear a false-positive quarantine). Scope `guard:admin`. Idempotent for
-        an unchanged document + unchanged guard config version (the check is a pure
-        function of markdown + config). A re-check that clears a quarantine may
-        trigger ingestion to index the document; that is an ingestion action, not
-        performed here.
+        Re-run the ingest-time chunk scan (/check/chunks) for a document — e.g.
+        after a guard config bump, or to re-evaluate a suspected false-positive
+        rejection. Scope `guard:admin`. Deterministic for an unchanged document +
+        unchanged guard config version (the scan is a pure function of the chunks +
+        the pinned injection table). A re-check that now returns `safe` may trigger
+        ingestion to index the document; that is an ingestion action, not performed
+        here.
       parameters:
         - name: document_id
           in: path
@@ -171,35 +189,60 @@ components:
       properties:
         detail: { type: string, description: "Human-readable reason. No internal leakage." }
 
-    Detection:
+    ChunkDetection:
       type: object
-      description: One detector hit — labels + counts only, NO spans/offsets.
-      required: [category, label, count]
+      description: One injection hit inside a chunk — FORENSIC (label + severity + span + escaped excerpt).
+      required: [category, label, severity, char_start, char_end, matched_excerpt]
       properties:
-        category: { type: string }
-        label: { type: string }
-        count: { type: integer, minimum: 1 }
+        category: { type: string, description: "prompt_injection | jailbreak | ai_directive | role_impersonation | bidi | invisible_unicode." }
+        label: { type: string, description: "The specific rule (e.g. 'ignore_previous', 'dan_persona')." }
+        severity: { type: string, enum: [high, medium], description: "Forensic ranking; does not gate the verdict (any hit is unsafe)." }
+        char_start: { type: integer, minimum: 0 }
+        char_end: { type: integer, minimum: 0 }
+        matched_excerpt: { type: string, description: "The matched span; invisible/control codepoints escaped to \\uXXXX so it is legible." }
+        context: { type: [string, "null"], description: "A short surrounding window (same escaping) for the operator." }
+
+    ChunkVerdict:
+      type: object
+      required: [chunk_id, verdict]
+      properties:
+        chunk_id: { type: string }
+        ordinal: { type: [integer, "null"] }
+        verdict: { type: string, enum: [safe, unsafe] }
+        detections:
+          type: array
+          items: { $ref: "#/components/schemas/ChunkDetection" }
+          description: "Every hit on this chunk; empty when safe."
 
     DocumentVerdictRecord:
       type: object
       x-status: proposed
-      description: The recorded guard outcome for one ingested document (a projection of the guard verdict record).
-      required: [document_id, verdict, detections]
+      description: The recorded guard outcome for one uploaded document (a projection of the ingest-time /check/chunks verdict).
+      required: [document_id, verdict, indexed]
       properties:
         document_id: { type: string }
+        source_ref:
+          type: [string, "null"]
+          description: "The uploaded filename / reference, for the alert."
         verdict:
           type: string
-          enum: [clean, flag, quarantine]
-          description: "clean (indexed) | flag (indexed, tagged) | quarantine (NOT indexed)."
-        detections:
-          type: array
-          items: { $ref: "#/components/schemas/Detection" }
-        rationale:
-          type: [string, "null"]
-          description: "Terse reason for a flag/quarantine (e.g. 'bidi_override', 'ai_directed_instruction')."
+          enum: [safe, rejected]
+          description: "safe (indexed) | rejected (any unsafe chunk → NOT indexed)."
         indexed:
           type: boolean
-          description: "Whether the document reached the index (true for clean/flag, false for quarantine)."
+          description: "Whether the document reached the index (true for safe, false for rejected)."
+        unsafe_chunk_count:
+          type: integer
+          minimum: 0
+          description: "How many chunks were unsafe (0 for a safe document)."
+        detection_count:
+          type: integer
+          minimum: 0
+          description: "Total injection hits across all chunks."
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/ChunkVerdict" }
+          description: "Per-chunk forensic detail for the unsafe chunks (the 'which part' the UI renders)."
         guard_config_version:
           type: [string, "null"]
           description: "The pinned guard config version that adjudicated it (audit)."

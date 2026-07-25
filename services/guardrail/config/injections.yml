@@ -1,0 +1,152 @@
+# Deterministic INJECTION detector table for the pod's `/check/chunks` lane.
+#
+# This is the ingest-time, per-chunk corpus-poisoning scan (Requirement 3,
+# refined 2026-07-25 from a whole-document `/check/document` to a per-chunk
+# `/check/chunks`). Each rule is pure `re` over ONE chunk's text — NO LLM call —
+# so the scan survives a Bedrock outage at zero cost, exactly like the secrets
+# detector (`detectors.yml`). The compiled scanner lives in `app/chunk_scan.py`.
+#
+# WHY A SEPARATE FILE (not `detectors.yml`): `app/detectors.py` hard-rejects any
+# top-level key other than `secrets:` (a reintroduced table must never silently
+# no-op). Injection patterns are a DIFFERENT class with a DIFFERENT verdict
+# vocabulary (unsafe → the document is REJECTED whole, not a secrets block on an
+# answer) and a DIFFERENT, FORENSIC response (matched excerpt + char span, so the
+# frontend can show the officer *which part* is unsafe). It therefore gets its own
+# hashed artifact.
+#
+# HASHED ARTIFACT: this file is folded into the pod's single `config_dir_digest`
+# (app/config_digest.py `_MANDATORY_CONFIG_FILES`), so a pattern change becomes a
+# pod `config_version` bump + a fresh orchestrator `config_sha256` — one
+# determinism mechanism, no new pin hash. NeMo is told to ignore it via
+# `config/.railsignore` (it is the pod's own data file, not a rails artifact).
+#
+# VERDICT POLICY (deterministic, no LLM):
+#   any rule fires on any chunk  -> that chunk is UNSAFE
+#   any chunk UNSAFE             -> the WHOLE document is rejected (not indexed)
+# Severity (`high` | `medium`) is FORENSIC metadata only — both are unsafe. It
+# exists so the alert and the eval red-team set can rank findings, not to gate
+# indexing (decision 2026-07-25: reject the whole document).
+#
+# FALSE-POSITIVE DISCIPLINE: because ONE hit rejects an ENTIRE document, every
+# pattern is written high-precision — anchored, multi-word, and (where a token is
+# also an English word) case-SENSITIVE so ordinary case text does not trip it.
+# The corpus is adversarial by construction (submitted by the party under
+# assessment), but a legitimate legal/tax document is full of imperatives ("the
+# Contractor shall…"); patterns target instructions aimed at an AI, not ordinary
+# directives. The eval red-team set measures the benign false-positive rate.
+#
+# Patterns are single-quoted YAML (backslashes are literal — no escape
+# processing), compiled WITHOUT a global IGNORECASE flag; case-insensitivity is
+# carried inline per-rule via `(?i)` exactly where it is safe.
+
+injections:
+  # ── prompt_injection: instruction-override aimed at the model ───────────────
+  - category: prompt_injection
+    label: ignore_previous
+    severity: high
+    pattern: '(?i)\bignore\s+(?:all\s+)?(?:the\s+|any\s+)?(?:previous|prior|above|preceding|earlier|foregoing)\s+(?:instructions?|prompts?|messages?|context|directions?|commands?)\b'
+  - category: prompt_injection
+    label: disregard_instructions
+    severity: high
+    pattern: '(?i)\bdisregard\s+(?:all\s+)?(?:the\s+|any\s+)?(?:previous|prior|above|earlier|foregoing|system)\s+(?:instructions?|rules?|prompts?|context|directions?)\b'
+  - category: prompt_injection
+    label: forget_instructions
+    severity: high
+    pattern: '(?i)\bforget\s+(?:everything|all|your|the)\s+(?:previous\s+|prior\s+|above\s+)?(?:instructions?|rules?|training|context|prompts?)\b'
+  - category: prompt_injection
+    label: new_instructions_header
+    severity: high
+    pattern: '(?im)^\s*(?:new|updated|revised|real|actual|true)\s+(?:instructions?|task|prompt|directive)\s*:'
+  - category: prompt_injection
+    label: override_directive
+    severity: high
+    pattern: '(?i)\boverride\s+(?:your|the|all|any)\s+(?:previous\s+)?(?:instructions?|settings?|rules?|guardrails?|safety(?:\s+(?:rules?|filters?))?|restrictions?)\b'
+  - category: prompt_injection
+    label: reveal_system_prompt
+    severity: high
+    pattern: '(?i)\b(?:reveal|print|show|repeat|display|output|reprint|tell\s+me)\s+(?:me\s+)?(?:your|the)\s+(?:system\s+prompt|initial\s+instructions?|system\s+message|original\s+prompt|hidden\s+(?:prompt|instructions?)|guidelines)\b'
+
+  # ── jailbreak: persona / mode escape ────────────────────────────────────────
+  # `DAN` requires a jailbreak CONTEXT (a reprogramming verb, or "DAN mode") so an
+  # all-caps signatory like "DAN SMITH" in a legitimate document does not trip it
+  # and reject the whole document. Bare all-caps "DAN" alone is intentionally not a
+  # hit; the persona phrasings below plus `do_anything_now` cover real DAN attacks.
+  - category: jailbreak
+    label: dan_persona
+    severity: high
+    pattern: '(?i)(?:\b(?:you\s+are|act\s+as|pretend\s+to\s+be|enable|activate|become|roleplay\s+as)\s+(?:now\s+)?(?:a\s+|an\s+|the\s+)?DAN\b|\bDAN\s+mode\b)'
+  - category: jailbreak
+    label: do_anything_now
+    severity: high
+    pattern: '(?i)\bdo\s+anything\s+now\b'
+  - category: jailbreak
+    label: developer_mode
+    severity: high
+    pattern: '(?i)\bdeveloper\s+mode\b'
+  - category: jailbreak
+    label: jailbreak_word
+    severity: high
+    pattern: '(?i)\bjail\s?break(?:ing|en)?\b'
+  - category: jailbreak
+    label: unrestricted_persona
+    severity: high
+    pattern: '(?i)\byou\s+are\s+now\s+(?:a\s+|an\s+)?(?:free|unrestricted|unfiltered|uncensored|unbound|DAN|jailbroken)\b'
+
+  # ── ai_directive: instructions addressed to an AI/reviewer inside a document ─
+  # The domain-signature threat: the corpus is supplied by the party under
+  # assessment, so instructions aimed at the AI reviewer are indirect injection.
+  - category: ai_directive
+    label: ai_addressee
+    severity: high
+    pattern: '(?i)\b(?:to|dear|attention|note\s+to|message\s+to|instructions?\s+(?:to|for))\s+(?:any\s+|the\s+|all\s+)?(?:ai|a\.i\.|artificial\s+intelligence|language\s+model|llm|chat\s?bot|ai\s+(?:reviewer|assistant|model|auditor|agent|system))\b'
+  - category: ai_directive
+    label: mark_compliant
+    severity: high
+    pattern: '(?i)\b(?:mark|classify|treat|deem|consider|record|report|assess)\s+(?:this|the)\s+(?:entity|taxpayer|business|company|account|subject|matter|case|individual|person)\s+(?:as\s+)?(?:compliant|fully\s+compliant|innocent|clean|low[\s-]?risk|no[\s-]?risk|non[\s-]?compliant\s+free|not\s+at\s+risk)\b'
+  - category: ai_directive
+    label: do_not_flag
+    severity: high
+    pattern: '(?i)\bdo\s+not\s+(?:flag|report|raise|record|note|mention|disclose|highlight|escalate|surface)\s+(?:any\s+)?(?:discrepanc|issue|concern|risk|breach|anomal|finding|irregular)'
+  - category: ai_directive
+    label: suppress_evidence_request
+    severity: high
+    pattern: '(?i)\b(?:do\s+not|don.?t|never|no\s+need\s+to)\s+(?:request|require|ask\s+for|seek|demand)\s+(?:any\s+)?(?:further|additional|more|other)\s+(?:documents?|information|evidence|records?|details?|substantiation)\b'
+  - category: ai_directive
+    label: as_an_ai
+    severity: medium
+    pattern: '(?i)\bas\s+an?\s+(?:ai|a\.i\.|language\s+model|large\s+language\s+model|helpful\s+assistant)\b'
+
+  # ── role_impersonation: fake role headers / model chat-template tokens ───────
+  # All-caps role headers at line start are case-SENSITIVE (real prose rarely
+  # writes `SYSTEM:` in all caps at a line boundary). `AI`/`MODEL` are deliberately
+  # EXCLUDED — they collide with legitimate spec/table lines ("AI:", "MODEL:") and
+  # one hit rejects the whole document.
+  - category: role_impersonation
+    label: role_header
+    severity: high
+    pattern: '(?m)^\s*(?:SYSTEM|ASSISTANT|INSTRUCTION|SYS)\s*[:>]'
+  - category: role_impersonation
+    label: chat_template_token
+    severity: high
+    pattern: '(?i)(?:<\|(?:im_start|im_end|system|endoftext|assistant|user)\|>|\[/?INST\]|<<\s*/?SYS\s*>>|###\s*(?:system|instruction|assistant)\s*:)'
+
+  # ── unicode / bidi: invisible-character smuggling (codepoint classes) ────────
+  # No legitimate use in extracted document body text; the orchestrator input
+  # floor hard-rejects the same classes on the query side.
+  - category: bidi
+    label: bidi_override
+    severity: high
+    # U+202A..U+202E (embeddings/overrides) + U+2066..U+2069 (isolates).
+    pattern: '[\u202a-\u202e\u2066-\u2069]'
+  - category: invisible_unicode
+    label: zero_width
+    severity: medium
+    # Soft hyphen U+00AD, Mongolian vowel sep U+180E, ZWSP/ZWNJ/ZWJ (U+200B..U+200D),
+    # word-joiner + invisible math ops (U+2060..U+2064), BOM/ZWNBSP U+FEFF \u2014 all
+    # format (Cf) chars used to break up injection keywords or smuggle instructions.
+    pattern: '[\u00ad\u180e\u200b-\u200d\u2060-\u2064\ufeff]'
+  - category: invisible_unicode
+    label: unicode_tag_char
+    severity: high
+    # Unicode Tags block (U+E0000..U+E007F): ASCII smuggled as invisible tags.
+    pattern: '[\U000e0000-\U000e007f]'

@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.chunk_scan import load_chunk_scanner
 from app.detectors import load_detectors
 from app.main import app
 from app.settings import Settings
@@ -75,6 +76,8 @@ def make_client(monkeypatch, settings):
         app.state.rails = rails
         app.state.detectors = load_detectors(settings.config_dir)
         app.state.detectors_error = None
+        app.state.chunk_scanner = load_chunk_scanner(settings.config_dir)
+        app.state.chunk_scanner_error = None
         client = TestClient(app)
         created.append(client)
         return client
@@ -85,6 +88,13 @@ def make_client(monkeypatch, settings):
         client.close()
     # Clear every lifespan/seam-populated slot so state never leaks between tests
     # (a stale compiled detector would mask the /readyz fail-fast path).
-    for attr in ("settings", "rails", "detectors", "detectors_error"):
+    for attr in (
+        "settings",
+        "rails",
+        "detectors",
+        "detectors_error",
+        "chunk_scanner",
+        "chunk_scanner_error",
+    ):
         if hasattr(app.state, attr):
             delattr(app.state, attr)
