@@ -1,0 +1,362 @@
+openapi: 3.1.0
+
+info:
+  title: Parser Service — Internal API
+  version: 1.0.0
+  description: |
+    East-west (service-to-service) contract for the parser microservice — it turns
+    document bytes into ONE clean, RAG-ready Markdown string plus routing telemetry,
+    using Docling on CPU with per-page escalation to AWS Textract (default) or a
+    Bedrock Claude VLM (selectable). In-mesh callers only.
+
+    This is the ONLY contract for the parser. It has a single caller — the INGESTION
+    service, which routes every non-`.md` upload here after fetch and before chunk /
+    guard / index (services/ingestion/app/pipeline/parser_client.py). The parser is
+    NOT end-user-facing and has no BFF twin: its output reaches the UI only through
+    ingestion (indexed chunks + per-page progress on /ingest/stream).
+
+    STATUS: /parse, /parse/stream, /healthz are AS-BUILT (services/parser).
+
+    INVARIANTS (contractual):
+      * NEVER-RAISES CORE. The vendored parse_to_markdown never raises — every
+        failure lands in `warnings` / `page_routes`. A thin runner is the SINGLE
+        place HTTP statuses are assigned (the 200/400/413/422/502 table below).
+      * S3-IAM-FREE. The parser receives raw bytes over the wire and writes them to
+        a context-managed tempfile for Docling's Path API. It never fetches; fetch
+        ownership + the source-error mapping stay in ingestion.
+      * CONFIDENCE IS ADVISORY. `confidence` is a routing-derived heuristic — it
+        NEVER gates parsing and is NEVER part of any hash. It is telemetry.
+      * NO FABRICATED PROGRESS. On /parse/stream the `page` frames are a POST-HOC
+        per-page MANIFEST derived from `page_routes` AFTER the opaque Docling parse
+        completes (the vendored pipeline exposes no page-level callback) — not live
+        mid-parse progress.
+      * DETERMINISTIC ESCALATION BY DEFAULT. Textract is the default engine because
+        it is deterministic (same page → same text → predictable dedup). The VLM is
+        selectable but non-deterministic.
+      * OFFLINE RUNTIME. Docling + rapidocr models are baked at build time; the pod
+        serves with networking disabled (HF_HUB_OFFLINE=1). AWS Textract/Bedrock are
+        the only outbound calls, via the standard boto3 credential chain.
+
+    AUTH MODEL — NETWORK ISOLATION, NO APP-LEVEL AUTH. The parser accepts arbitrary
+    bytes and bills Textract per page, so an exposed instance is a cost-bomb / DoS.
+    It has NO app-level auth; this is acceptable ONLY because it is east-west —
+    network isolation (the internal compose network here; VPC + security groups in
+    prod) is the entire control. In compose it publishes NO host port (`expose:`
+    only). Do NOT add a `ports:` mapping or an ingress route.
+
+servers:
+  - url: http://parser.internal:8000
+    description: In-mesh (VPC-only). No public endpoint, no host port.
+
+tags:
+  - name: parse
+    description: Document bytes → clean Markdown + routing telemetry.
+  - name: health
+    description: Liveness probe.
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness
+      description: Always 200 while the process serves. No dependency calls.
+      responses:
+        "200":
+          description: Alive.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthzResponse" }
+
+  /parse:
+    post:
+      tags: [parse]
+      summary: Parse a document to Markdown (synchronous drain)
+      description: |
+        Drain the parse to completion and return the terminal result. Input is the
+        raw document bytes as EITHER `multipart/form-data` (a `file` part) OR a raw
+        `application/octet-stream` body; the filename (which drives format dispatch)
+        resolves from the `filename` query param, the multipart part's own filename,
+        or an `X-Filename` header, in that order.
+
+        One in-flight parse per pod (a shared semaphore across both endpoints); the
+        blocking, CPU-bound parse runs in a threadpool. Scale by replicas.
+
+        STATUS TABLE (the runner is the single source of truth):
+          * non-empty markdown                                 -> 200 (+ warnings)
+          * empty markdown OR every page errored (no content)  -> 422
+          * over the page cap OR the input-size cap            -> 413
+          * unsupported / unknown type                         -> 400
+          * ALL escalation calls failed TRANSIENTLY and those
+            pages are the MAJORITY of the document             -> 502 (retryable)
+          * escalation unreachable but Docling produced usable
+            markdown (failed pages a minority)                 -> 200
+      parameters:
+        - name: filename
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            The document filename. Its extension drives format dispatch (pdf / image
+            / docx / xlsx / html). Optional here only because a multipart part or an
+            `X-Filename` header can supply it; an extension-less blob classifies as
+            unknown → 400.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The document bytes (the part's own filename is used if no query param).
+      responses:
+        "200":
+          description: Parsed Markdown + routing telemetry.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ParseResult" }
+        "400":
+          description: Unsupported / unknown document type.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: Over the page cap (PARSER_MAX_PAGES) or the input-size cap (PARSER_MAX_INPUT_MB).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: No extractable content (empty markdown, or every page errored) — refusing to index nothing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: The escalation engine was transiently unreachable for the majority of pages; retry.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /parse/stream:
+    post:
+      tags: [parse]
+      summary: Parse a document to Markdown (per-page SSE)
+      description: |
+        Run the SAME parse as /parse, but stream it as `text/event-stream`. Emits
+        `data: {json}` frames: a leading `{"phase":"parsing"}`, then one
+        `{"phase":"page","current":i,"total":N,"route":...}` per page, then EXACTLY
+        one terminal frame — `{"phase":"done", ...result}` on success or
+        `{"phase":"error","status":N,"detail":...}` on a typed failure.
+
+        The HTTP status is 200 for the WHOLE stream: a mid-parse failure arrives as a
+        terminal `error` frame, NEVER a status change after the headers are sent
+        (only a pre-stream error — e.g. a bad multipart body — is a non-200 status).
+
+        HONESTY: the `page` frames are a POST-HOC per-page MANIFEST (derived from
+        `page_routes` after the opaque Docling parse completes), NOT live progress.
+        Input shape, filename resolution, and the one-in-flight-per-pod bound are
+        identical to /parse.
+      parameters:
+        - name: filename
+          in: query
+          required: false
+          schema: { type: string }
+          description: As in /parse — drives format dispatch.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: |
+            An SSE stream (`text/event-stream`). Frames are `PhaseEvent`s then one
+            terminal `done` (a `ParseResult`) or `error` frame. The schemas below
+            describe the JSON payload of each `data:` frame.
+          content:
+            text/event-stream:
+              schema: { $ref: "#/components/schemas/StreamFrame" }
+        "400":
+          description: Malformed request before the stream began (e.g. multipart without a `file` part).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+components:
+  schemas:
+    HealthzResponse:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, const: "ok", description: "Always 'ok' while serving." }
+
+    Error:
+      type: object
+      description: FastAPI error envelope. `detail` is a string or a `{message}` object.
+      required: [detail]
+      properties:
+        detail:
+          oneOf:
+            - type: string
+            - type: object
+              properties:
+                message: { type: string }
+          description: Human-readable reason (stable client-facing message). No raw internals.
+
+    ParseResult:
+      type: object
+      description: The terminal drain result (also the payload of the `done` stream frame).
+      required: [markdown, confidence, page_count, page_routes, call_counts, warnings]
+      properties:
+        markdown:
+          type: string
+          description: >
+            The full document as ONE RAG-ready Markdown string; pages joined in order
+            with `\n\n`, no inline page markers (provenance lives in page_routes).
+        confidence:
+          $ref: "#/components/schemas/Confidence"
+        page_count:
+          type: integer
+          minimum: 0
+          description: Number of pages in `page_routes` (authoritative post-parse count).
+        page_routes:
+          type: array
+          items: { $ref: "#/components/schemas/PageRoute" }
+          description: Per-page routing telemetry, in page order.
+        call_counts:
+          $ref: "#/components/schemas/CallCounts"
+        warnings:
+          type: array
+          items: { $ref: "#/components/schemas/Warning" }
+          description: >
+            All non-fatal issues. Partial degradation is ALWAYS loud here
+            (`docling_fallback_summary`: "N/M pages fell back to Docling"); a
+            below-threshold page adds an advisory `low_confidence_page`.
+
+    Confidence:
+      type: object
+      description: >
+        ADVISORY routing-derived heuristic — NOT a calibrated probability. NEVER
+        gates parsing and is NEVER part of any hash.
+      required: [document, pages]
+      properties:
+        document:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Content-weighted (by rendered n_chars) mean of the per-page confidences; 0.0 when nothing rendered.
+        pages:
+          type: array
+          items:
+            type: object
+            required: [page_index, confidence]
+            properties:
+              page_index: { type: integer, minimum: 0 }
+              confidence: { type: number, minimum: 0, maximum: 1 }
+
+    PageRoute:
+      type: object
+      description: One page's routing outcome. Additional keys (quality signals, arbitration) may appear.
+      required: [page_index, route]
+      properties:
+        page_index: { type: integer, minimum: 0, description: "0-based page index." }
+        route:
+          type: string
+          enum:
+            - docling-kept
+            - textract
+            - vlm
+            - textract-fallback-docling
+            - vlm-fallback-docling
+            - textract-rejected-kept-docling
+            - vlm-rejected-kept-docling
+          description: >
+            docling-kept (gate kept Docling) | textract/vlm (engine markdown shipped)
+            | *-fallback-docling (engine called, returned nothing usable → Docling
+            shipped) | *-rejected-kept-docling (arbitration kept a clean Docling render
+            over a low-quality engine render).
+        reason:
+          type: [string, "null"]
+          description: >
+            Why the page routed as it did (e.g. a gate reason, or `throttled` for an
+            exhausted transient escalation failure — the signal the 502 row keys on).
+        n_chars:
+          type: integer
+          minimum: 0
+          description: Rendered character count of the shipped page markdown (the document-confidence weight).
+
+    CallCounts:
+      type: object
+      description: This invocation's SUCCESSFUL escalation calls (per-worker-thread counters; race-free).
+      properties:
+        vlm: { type: integer, minimum: 0 }
+        textract: { type: integer, minimum: 0 }
+
+    Warning:
+      type: object
+      description: A non-fatal issue captured during parse (the never-raises contract puts every failure here).
+      required: [scope, code, message]
+      properties:
+        scope: { type: string, enum: [document, page, element] }
+        code:
+          type: string
+          description: >
+            e.g. unsupported_type, input_too_large, docling_failed,
+            vlm_fallback_docling, vlm_rejected_kept_docling, low_confidence_page,
+            docling_fallback_summary, page_unparseable, unhandled_exception.
+        message: { type: string }
+        page_index: { type: [integer, "null"] }
+        element_id: { type: [string, "null"] }
+
+    PhaseEvent:
+      type: object
+      description: A non-terminal SSE progress frame. `current`/`total`/`route` are present only on `page` frames.
+      required: [phase]
+      properties:
+        phase: { type: string, enum: [parsing, page] }
+        current: { type: [integer, "null"], description: "1-based page number (page frames only)." }
+        total: { type: [integer, "null"], description: "Total pages (page frames only)." }
+        route: { type: [string, "null"], description: "The page's final route (page frames only)." }
+
+    DoneFrame:
+      allOf:
+        - type: object
+          required: [phase]
+          properties:
+            phase: { type: string, const: "done" }
+        - $ref: "#/components/schemas/ParseResult"
+      description: The terminal success frame — a ParseResult with `phase:"done"` added.
+
+    ErrorFrame:
+      type: object
+      description: The terminal failure frame (mirrors the /parse status codes in `status`).
+      required: [phase, status, detail]
+      properties:
+        phase: { type: string, const: "error" }
+        status:
+          type: integer
+          enum: [400, 413, 422, 502]
+          description: The HTTP-equivalent status the drain endpoint would have returned.
+        detail:
+          oneOf:
+            - type: string
+            - type: object
+              properties:
+                message: { type: string }
+
+    StreamFrame:
+      oneOf:
+        - $ref: "#/components/schemas/PhaseEvent"
+        - $ref: "#/components/schemas/DoneFrame"
+        - $ref: "#/components/schemas/ErrorFrame"
+      description: The JSON payload of one `data:` SSE frame — a PhaseEvent, or exactly one terminal Done/Error frame.
