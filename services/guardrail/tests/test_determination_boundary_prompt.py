@@ -1,5 +1,5 @@
 """
-Item 7: the ``self_check_output`` advice boundary, calibrated for the CASE
+Item 7: the ``self_check_output`` determination boundary, calibrated for the CASE
 OFFICER reader — without letting the rail suppress the product's core job.
 
 The reader is an officer examining a SUBJECT ENTITY suspected of not declaring

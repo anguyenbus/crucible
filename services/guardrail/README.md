@@ -96,7 +96,7 @@ discrepancy, and recommending escalation **must never be blocked**. Hedged
 findings ("appears", "indicates", "is consistent with") are allowed. An
 over-blocking policy rail here does not degrade this product — it deletes it.
 
-Regression cover: [`tests/test_advice_boundary_prompt.py`](tests/test_advice_boundary_prompt.py).
+Regression cover: [`tests/test_determination_boundary_prompt.py`](tests/test_determination_boundary_prompt.py).
 
 ---
 
@@ -327,7 +327,7 @@ services/guardrail/
 ├── tests/
 │   ├── test_deterministic_output_rail.py   # Detector: block / short-circuit / attribution, /readyz fail-fast
 │   ├── test_pii_retirement.py              # PII table is gone; the blocks/validator seam still works (synthetic fixture)
-│   ├── test_advice_boundary_prompt.py      # The case-officer output prompt says what it must say
+│   ├── test_determination_boundary_prompt.py      # The case-officer output prompt says what it must say
 │   ├── test_gate_parity_and_mode_a.py      # Deterministic parity + Mode A (LLM rail fails → detector still blocks)
 │   ├── test_bedrock_smoke.py               # @requires_aws live smoke — real Haiku verdicts end-to-end
 │   ├── test_config_digest.py               # Digest is stable and folds detectors.yml

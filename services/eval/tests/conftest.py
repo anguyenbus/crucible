@@ -6,6 +6,12 @@ Phoenix endpoint is not reachable, so unmarked/local runs never error on a
 missing server. The default suite is invoked with ``-m "not phoenix_integration"``
 and stays fully hermetic; the live write-back tests only run when both the marker
 is selected AND ``PHOENIX_ENDPOINT`` resolves to a reachable host.
+
+``@pytest.mark.requires_aws`` is the same idea for paid Bedrock calls, mirroring
+the guardrail pod's convention (``services/guardrail/tests/conftest.py``): the
+determination-boundary calibration smoke bills real Haiku, so it is SKIPPED cleanly when
+the ambient credential chain resolves nothing and a credential-less run never
+errors.
 """
 
 from __future__ import annotations
@@ -33,11 +39,27 @@ def _phoenix_endpoint_reachable() -> bool:
         return False
 
 
+def _aws_credentials_available() -> bool:
+    """True when the ambient AWS credential chain resolves a credential set."""
+    try:
+        import boto3
+
+        return boto3.Session().get_credentials() is not None
+    except Exception:
+        return False
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip phoenix_integration tests when no live Phoenix endpoint is reachable."""
-    if _phoenix_endpoint_reachable():
-        return
-    skip = pytest.mark.skip(reason="PHOENIX_ENDPOINT unreachable; skipping live Phoenix tests")
+    """Skip live-Phoenix and paid-AWS tests when their dependency is absent."""
+    phoenix_ready = _phoenix_endpoint_reachable()
+    aws_ready = _aws_credentials_available()
+    skip_phoenix = pytest.mark.skip(
+        reason="PHOENIX_ENDPOINT unreachable; skipping live Phoenix tests"
+    )
+    skip_aws = pytest.mark.skip(reason="AWS credentials not available")
+
     for item in items:
-        if "phoenix_integration" in item.keywords:
-            item.add_marker(skip)
+        if not phoenix_ready and "phoenix_integration" in item.keywords:
+            item.add_marker(skip_phoenix)
+        if not aws_ready and "requires_aws" in item.keywords:
+            item.add_marker(skip_aws)

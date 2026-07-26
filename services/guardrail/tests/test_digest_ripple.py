@@ -2,7 +2,7 @@
 The SINGLE cross-service digest ripple for the 2026-07-23 calibration slice.
 
 Two ``config/`` edits landed — the ``pii:`` detector-table withdrawal (item 6)
-and the ``self_check_output`` advice boundary (item 7) — and both are members of
+and the ``self_check_output`` determination boundary (item 7) — and both are members of
 ``config_dir_digest``. They therefore share **ONE** regeneration, **ONE** re-pin
 into ``legal-rag-default-1.8.0``, and **ONE** ``nemo.config_version`` bump
 (``1.3.0`` → ``1.4.0``). This file is what stops that ripple being forgotten or

@@ -8,7 +8,7 @@ FRESHLY-computed values; THIS file tracks the LITERAL 64-hex constants the demo
 
 Every ``config/`` edit SUPERSEDES the previous config-dir pin. Three have landed:
 the ``detectors.yml`` fold, the 2026-07-23 guardrail-calibration slice (the
-``pii:`` withdrawal + the ``self_check_output`` advice boundary), and the
+``pii:`` withdrawal + the ``self_check_output`` determination boundary), and the
 2026-07-24 Group 4 input-triage rail (the ``input_triage`` prompt + the
 ``guarded input`` dispatcher + ``rails/input_triage.co`` — ONE digest bump, pod
 ``config_version`` 1.4.0 → 1.5.0). This file asserts the RECONCILED truth:
