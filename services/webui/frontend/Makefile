@@ -117,6 +117,7 @@ ingestion: ## Convenience: ingestion service on :8001 — upload target (needs A
 	@# INGESTION_PARSER_URL routes every non-`.md` upload to the parser (make parser); if the
 	@# parser isn't running, PDF/DOCX/etc. ingest fails at the parse stage (markdown still works).
 	cd $(INGEST_DIR) && INGESTION_PARSER_URL=$(PARSER_URL) \
+	INGESTION_GUARDRAIL_CHECK_ENABLED=true INGESTION_GUARDRAIL_URL=$(NEMO_GUARD_URL) \
 	./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload --reload-dir app
 
 parser: ## Convenience: parser service on :8003 — Docling+Textract (needs AWS for scanned/escalated pages)
