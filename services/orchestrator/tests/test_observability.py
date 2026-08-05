@@ -289,12 +289,11 @@ def test_guardrail_output_span_records_stage_decision_category_rule_and_count():
 
 def test_guardrail_output_span_helpers_are_a_noop_under_the_noop_tracer():
     """Under the NoOpTracer the helpers do not crash and export nothing."""
-    from opentelemetry.trace import NoOpTracer
-
     from app.observability import (
         set_guardrail_output_attributes,
         start_guardrail_output_span,
     )
+    from opentelemetry.trace import NoOpTracer
 
     span = start_guardrail_output_span(NoOpTracer())
     # A block carries only decision/category/rule_id (no count) — still a no-op.

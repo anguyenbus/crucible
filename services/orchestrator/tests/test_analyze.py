@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import json
 
-from botocore.exceptions import ClientError
-
 from app.clients.bedrock import GenerationResult
+from botocore.exceptions import ClientError
 
 
 def _json_generation(summary: str, facts: list[str]) -> GenerationResult:

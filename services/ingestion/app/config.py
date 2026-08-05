@@ -45,6 +45,20 @@ class Settings(BaseSettings):
     # The compose default targets the internal, east-west-only `parser` service.
     parser_url: str = "http://parser:8000"
 
+    # Guardrail pod (ingest-time corpus-poisoning scan, POST /check/chunks). After
+    # chunking and BEFORE embed/index, ingestion sends the chunks to the pod; any
+    # unsafe chunk REJECTS the whole document (indexed: nothing) with a forensic
+    # verdict the caller surfaces to the UI. Same HTTP firewall as the parser — no
+    # import of the guardrail package.
+    #
+    # OFF by default so this is a non-disruptive cross-team addition (the offline
+    # ingestion suite makes no guard call). PRODUCTION should set
+    # INGESTION_GUARDRAIL_CHECK_ENABLED=true (fail-closed: an unreachable pod
+    # rejects rather than indexing unscanned). The dev Makefile enables it and
+    # points INGESTION_GUARDRAIL_URL at the local pod (:8080).
+    guardrail_check_enabled: bool = False
+    guardrail_url: str = "http://guardrail:8080"
+
     # Standard AWS variables stay unprefixed
     aws_region: str = Field(default="ap-southeast-2", validation_alias="AWS_REGION")
 

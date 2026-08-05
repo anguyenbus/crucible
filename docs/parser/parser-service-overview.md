@@ -208,3 +208,58 @@ Input on both routes: raw bytes as **either** `multipart/form-data` (a `file` pa
 the *text* the parser produced; **visual hiding** (zero-size / off-canvas / colour-hidden / metadata-only
 text) is destroyed at parse and is the parser's job, not the guardrail's. The two halves are separate and
 composable — see [parser-topology.md](parser-topology.md) §4.
+
+---
+
+## 9. Source layout (parser tree)
+
+The `app/` HTTP layer is a **thin FastAPI wrapper**; all extraction logic lives in the vendored
+`parser_service/` core, which has **no FastAPI / HTTP dependency** and is the **never-raises** boundary
+(§3). Section references point at where each module's behaviour is specified above.
+
+```
+services/parser/
+├── Dockerfile                    # offline image: bakes Docling + rapidocr models at build time (§7)
+├── pyproject.toml                # owns the heavy docling + torch + rapidocr + pypdfium2 stack (Python 3.11)
+├── README.md
+│
+├── app/                          # HTTP layer — thin FastAPI wrapper over parser_service (imports it, never vice-versa)
+│   ├── main.py                   #   app factory: GET /healthz liveness + API router wiring
+│   ├── config.py                 #   PARSER_* settings (pydantic-settings); caps, engine select, budget
+│   ├── parse_runner.py           #   §3 error-translation seam — reconciles never-raises → the HTTP status table
+│   └── api/
+│       └── parse.py              #   POST /parse (drain) + POST /parse/stream (SSE); one shared 1-in-flight semaphore (§6)
+│
+├── parser_service/               # vendored core — the never-raises pipeline (no FastAPI, no HTTP)
+│   ├── markdown_pipeline.py      #   parse_to_markdown: format-routed, per-page-gated orchestrator (§2) — NEVER raises
+│   ├── quality_gate.py           #   evaluate_page: the two-layer keep-vs-promote gate + coverage check (§2.2)
+│   ├── render.py                 #   render_markdown: parser-owned Route B renderer + DPI-bounded page rasterizer (§2.1)
+│   ├── markdown.py               #   element-JSON → Markdown (tables, furniture-drop); shared by Docling + both engines
+│   ├── textract_client.py        #   AWS Textract escalation — default, deterministic, never raises (§2.3)
+│   ├── vlm_client.py             #   Bedrock Claude VLM escalation — opt-in, never raises (§2.3)
+│   ├── retry.py                  #   bounded exponential backoff + transient (throttle/5xx) detection
+│   ├── route_stats.py            #   per-worker call_counts (threading.local → race-free under concurrency)
+│   ├── confidence.py             #   advisory, routing-derived confidence — NEVER gates, NEVER hashed (§4)
+│   ├── io_layer.py               #   context-managed tempfile for Docling's Path API (no disk leak; S3-IAM-free)
+│   └── parser_service.py         #   legacy parse() path (VLM table crops) + the element-type schema
+│
+├── scripts/
+│   ├── bake_models.py            #   build-time model bake for the offline image (network on)
+│   ├── offline_smoke.py          #   network-blocked offline-startup smoke (proves HF_HUB_OFFLINE serving)
+│   ├── run_offline_smoke.sh      #   wrapper that blocks networking, then runs offline_smoke.py
+│   └── make_fixture_pdf.py       #   generates the deterministic test PDF
+│
+└── tests/
+    ├── test_parse_runner_error_table.py   # the §3 HTTP status table (200/400/413/422/502 ordering)
+    ├── test_parse_stream.py               # SSE framing / post-hoc per-page manifest (§5)
+    ├── test_offline_smoke.py              # offline startup under blocked networking
+    ├── test_healthz.py                    # liveness
+    ├── test_config.py                     # PARSER_* settings resolution
+    └── fixtures/hello.pdf                 # deterministic parse fixture
+```
+
+**Reading the split:** a change to *what markdown looks like* lives in `render.py` / `markdown.py`; a
+change to *keep-vs-escalate* lives in `quality_gate.py`; a change to *which HTTP status a failure gets*
+lives only in `app/parse_runner.py` (the single seam, §3). The escalation clients
+(`textract_client`, `vlm_client`) are interchangeable behind the same element-JSON shape, which is why
+`markdown.py` renders all three sources unchanged.

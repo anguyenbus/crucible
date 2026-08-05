@@ -104,7 +104,8 @@ def _build_prompt(mode: str, text: str, max_facts: int) -> str:
 
 
 def _extract_json_object(raw: str) -> dict[str, Any] | None:
-    """Best-effort parse of the model's reply into a JSON object.
+    """
+    Best-effort parse of the model's reply into a JSON object.
 
     Tries the whole reply first, then the widest ``{...}`` slice (tolerating
     stray prose or code fences the model may add). Returns ``None`` if no JSON
@@ -128,7 +129,8 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
 
 
 def _parse_analysis(raw: str, max_facts: int) -> tuple[str, list[str]]:
-    """Map the model reply to ``(summary, facts)``, degrading honestly.
+    """
+    Map the model reply to ``(summary, facts)``, degrading honestly.
 
     A reply we cannot parse as JSON becomes the summary with no facts, so the
     caller always gets SOMETHING truthful rather than a 500.
@@ -149,7 +151,8 @@ def _parse_analysis(raw: str, max_facts: int) -> tuple[str, list[str]]:
 
 @analyze_router.post("/analyze", response_model=AnalyzeResponse)
 def post_analyze(request: AnalyzeRequest, http_request: Request) -> AnalyzeResponse:
-    """Analyse one document's text into a summary and/or discrete facts (non-RAG).
+    """
+    Analyse one document's text into a summary and/or discrete facts (non-RAG).
 
     ``mode`` selects the work: ``facts`` and ``summary`` each run a single
     focused generation (the UI's "Extract" / "Summarise" buttons); ``both``

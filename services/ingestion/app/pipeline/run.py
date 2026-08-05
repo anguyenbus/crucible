@@ -42,6 +42,7 @@ from app.config import get_settings
 from app.pipeline.chunk import chunk_text
 from app.pipeline.embed import EmbeddingUpstreamError, embed_texts_iter
 from app.pipeline.fetch import InvalidSourceError, SourceNotFoundError, fetch_bytes
+from app.pipeline.guard import GuardUnavailableError, GuardVerdict, check_chunks
 from app.pipeline.hash_dedup import (
     content_sha256,
     derive_doc_id,
@@ -65,6 +66,45 @@ _BULK_FAILURE_MESSAGE = (
     "Some chunks could not be indexed; please retry the ingest "
     "(a retry safely overwrites the same chunk IDs)."
 )
+_GUARD_UNAVAILABLE_MESSAGE = (
+    "The document-safety guard is temporarily unavailable; the document was NOT "
+    "indexed (fail-closed). Please retry the ingest."
+)
+
+
+def _rejection_detail(verdict: GuardVerdict, source: str) -> dict:
+    """Build the UI-facing rejection body from the guard's forensic verdict.
+
+    Names the offending chunk(s) and the injection labels that fired so the officer
+    sees WHICH part of the document is unsafe and WHY.
+    """
+    unsafe = [r for r in verdict.results if r.get("verdict") == "unsafe"]
+    labels: list[str] = []
+    for chunk in unsafe:
+        for det in chunk.get("detections", []):
+            label = det.get("label")
+            if label and label not in labels:
+                labels.append(label)
+    first = unsafe[0].get("chunk_id") if unsafe else None
+    message = (
+        f"Document rejected as unsafe to ingest: prompt injection detected in "
+        f"{verdict.unsafe_chunk_count} of {verdict.chunk_count} chunk(s)"
+        + (f" (first: {first})" if first else "")
+        + ". Detected: "
+        + ", ".join(labels[:12])
+        + (" …" if len(labels) > 12 else "")
+        + ". The document was NOT indexed."
+    )
+    return {
+        "message": message,
+        "guard": {
+            "safe": verdict.safe,
+            "unsafe_chunk_count": verdict.unsafe_chunk_count,
+            "detection_count": verdict.detection_count,
+            "source_ref": source,
+            "results": unsafe,  # per-chunk forensic detail (spans + excerpts)
+        },
+    }
 
 
 logger = logging.getLogger(__name__)
@@ -190,6 +230,24 @@ def run_ingest(request: IngestRequest) -> Iterator[PhaseEvent | ResultEvent]:
             f"Document produces {len(chunks)} chunks, which exceeds the "
             f"limit of {settings.max_chunks_per_doc} (max_chunks_per_doc).",
         )
+
+    # --- ingest-time corpus-poisoning guard (guardrail pod /check/chunks) -------
+    # Scan the chunks AFTER chunking and BEFORE any embed/index. ANY unsafe chunk
+    # rejects the WHOLE document (422 with forensic attribution); the pod being
+    # unreachable fails CLOSED (503 — never index unscanned). OFF unless
+    # INGESTION_GUARDRAIL_CHECK_ENABLED=true (the dev Makefile enables it).
+    if settings.guardrail_check_enabled and chunks:
+        try:
+            verdict = check_chunks(
+                chunks,
+                url=settings.guardrail_url,
+                document_id=doc_id,
+                source_ref=request.source,
+            )
+        except GuardUnavailableError as exc:
+            raise PipelineError(503, {"message": _GUARD_UNAVAILABLE_MESSAGE}) from exc
+        if not verdict.safe:
+            raise PipelineError(422, _rejection_detail(verdict, request.source))
 
     # Dedup check runs in the chunking phase (needs the local expected count);
     # an identical prior ingest short-circuits to a skip, no AWS embed calls.

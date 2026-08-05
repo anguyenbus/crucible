@@ -170,3 +170,76 @@ See [guardrail-topology.md](guardrail-topology.md) for the full request-time and
 **Not covered here (by design):** cross-case isolation is a deterministic `case_id` assertion at
 retrieval, not an LLM guard; the chunk-scan lane's visual-hiding detection (zero-size/off-canvas text) is
 the parser's job — the chunk scan sees content, not the render layer.
+
+---
+
+## 8. Source layout (guardrail tree)
+
+Two halves, deliberately separable. `app/` is the **Python pod** (FastAPI + the deterministic detectors,
+which need no model); `config/` is the **pinned NeMo config** (rails, prompts, injection/secret tables) —
+its digest is one of the two hashes in the determinism pin (§6). The deterministic lanes
+(`chunk_scan.py`, `detectors.py`) survive a Bedrock outage because they never call the model (§3–§4).
+
+```
+services/guardrail/
+├── Dockerfile                    # Bedrock-only image; NeMo usage-beacon opt-out ENV (§6 no-egress)
+├── pyproject.toml                # nemoguardrails 0.23.0 + langchain-aws; NEVER the [server] extra (pulls openai, §6)
+├── README.md
+│
+├── app/                          # the pod — FastAPI + deterministic detectors (no state)
+│   ├── main.py                   #   FastAPI entry point / app factory; router + lifespan wiring
+│   ├── settings.py               #   env-resolved pod settings, no I/O at import (construct-in-lifespan)
+│   ├── contract.py               #   HTTP request + PLAIN-DATA response; maps 1:1 to orchestrator ClassifierVerdict
+│   ├── bedrock_engine.py         #   NeMo LLM-framework shim → ChatBedrockConverse (Bedrock Claude Haiku, §1)
+│   ├── nemo_runtime.py           #   LLMRails.generate → PLAIN-DATA + the per-rail layered fail policy (§4)
+│   ├── chunk_scan.py             #   pure-regex /check/chunks injection scanner — deterministic (§2.3)
+│   ├── detectors.py              #   pure-regex SECRETS detector — the first output rail (§2.2 step 1)
+│   ├── config_digest.py          #   two-hash config-determinism digests (config-dir + uv.lock, §6 pinned)
+│   └── routers/
+│       ├── check.py              #   POST /check/input · /check/input/triage · /check/output (§2.1–§2.2)
+│       └── health.py             #   GET /healthz (liveness) · /readyz (503 if the scanner won't compile, §4)
+│
+├── config/                       # the pinned NeMo config — its digest is half the determinism pin (§6)
+│   ├── config.yml                #   NeMo Guardrails config: models, rail wiring, telemetry opt-out
+│   ├── prompts.yml               #   LLM prompt bodies (triage classifier, case-officer content check)
+│   ├── detectors.yml             #   secrets patterns (backs detectors.py)
+│   ├── injections.yml            #   the pinned injection table (prompt-injection/DAN/AI-directive/BIDI, §2.3)
+│   ├── actions.py                #   registered NeMo custom actions for the deterministic + triage rails
+│   ├── rails/
+│   │   ├── input_triage.co       #   Colang flow: three-way ATTACK / OFF-TOPIC / OK triage (§2.1)
+│   │   └── deterministic_output.co  # Colang flow: secrets → content → optional grounding (§2.2)
+│   └── .railsignore
+│
+├── deploy/
+│   ├── guardrail-pins.env        #   the pinned config digest + uv.lock sha (refuse-to-serve on drift)
+│   └── k8s/                      #   deployment.yaml · service.yaml · serviceaccount.yaml (+ kustomization)
+│
+├── scripts/
+│   ├── demo_nemo_capability.py   #   live rail demo
+│   └── demo_refuse_to_serve.sh   #   proves the pod refuses to serve on config-digest drift (§6)
+│
+├── dev/
+│   └── demo_corpus/              #   poisoned-PDF corpus for the /check/chunks lane (mock + poisoned docs)
+│
+└── tests/
+    ├── test_input_triage_rail.py        # §2.1 three-way triage
+    ├── test_gate_parity_and_mode_a.py   # triage-vs-legacy parity (zero-regression cutover, §2.1)
+    ├── test_deterministic_output_rail.py# §2.2 secrets → content ordering
+    ├── test_output_lane_case_officer.py # content check allows the officer's real job (§2.2)
+    ├── test_pii_retirement.py           # PII stays visible — never blocked/redacted (§2.2, §6)
+    ├── test_chunk_scan.py               # §2.3 per-chunk injection verdicts + attribution
+    ├── test_config_digest.py            # §6 two-hash digest computation
+    ├── test_digest_enforcement.py       # refuse-to-serve on drift (§6)
+    ├── test_digest_ripple.py            # a config-dir change ripples into the pin
+    ├── test_no_openai_guard.py          # §6 Bedrock-only — no openai in the tree
+    ├── test_no_telemetry_egress.py      # §6 usage-beacon opt-out pinned to the library
+    ├── test_deploy_surface_pins.py      # k8s manifests carry the pins
+    ├── test_bedrock_smoke.py            # live model reachability
+    └── test_determination_boundary_prompt.py  # determination-boundary content calibration
+```
+
+**Reading the split:** a change to *what a rail decides* lives in `config/` (prompts + Colang) and bumps
+the determinism pin; a change to *how a verdict is shaped or how failure degrades* lives in `app/`
+(`nemo_runtime.py` for fail policy, `contract.py` for the wire shape). The two deterministic lanes
+(`chunk_scan.py`, `detectors.py`) are the parts that keep guarding through a Bedrock outage — they are
+plain Python + pinned YAML tables, no model call.

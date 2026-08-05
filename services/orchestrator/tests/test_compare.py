@@ -13,12 +13,11 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from botocore.exceptions import BotoCoreError, ClientError
-from langchain_core.exceptions import OutputParserException
-
 from app.routers import compare as compare_module
 from app.routers.compare import _AtomicClaim, _ClaimSet
 from app.schemas.compare import Contradiction, ContradictionReport
+from botocore.exceptions import BotoCoreError, ClientError
+from langchain_core.exceptions import OutputParserException
 
 
 class _FakeStructured:

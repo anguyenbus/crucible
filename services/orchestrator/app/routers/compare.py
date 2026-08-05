@@ -117,7 +117,8 @@ _VERIFY_SYSTEM: Final[str] = (
 
 
 def _build_chat_model(model_id: str, region: str, max_tokens: int) -> Any:
-    """Construct the pinned ``ChatBedrockConverse`` (the test seam).
+    """
+    Construct the pinned ``ChatBedrockConverse`` (the test seam).
 
     Imported lazily so importing this module (and the app) never requires the
     full LangChain import graph at process start, mirroring the guardrail pod's
@@ -169,7 +170,8 @@ def _verify_messages(
 
 
 def _decompose(model: Any, request: CompareRequest, text_a: str, text_b: str) -> list[_ClaimSet]:
-    """Stage 1: decompose both documents concurrently, resilient PER DOCUMENT.
+    """
+    Stage 1: decompose both documents concurrently, resilient PER DOCUMENT.
 
     ``return_exceptions=True`` isolates the two documents: a PARSE failure on one
     degrades only THAT document to an empty claim set, so the other's claims are
@@ -215,7 +217,8 @@ def _verify(
 
 
 def _is_parse_error(exc: Exception) -> bool:
-    """True only for a model reply that could not be parsed into structured output.
+    """
+    True only for a model reply that could not be parsed into structured output.
 
     We degrade ONLY these to an empty result — the model ran but returned no
     valid tool call / a schema-invalid object. A genuine dependency fault (a
@@ -232,7 +235,8 @@ def _is_parse_error(exc: Exception) -> bool:
 
 
 def _dedupe(contradictions: list[Contradiction]) -> list[Contradiction]:
-    """Drop empty/degenerate entries and exact-duplicate conflicts, order-stable.
+    """
+    Drop empty/degenerate entries and exact-duplicate conflicts, order-stable.
 
     A genuine contradiction has a description and the conflicting quote from
     BOTH documents; entries missing any of these are dropped rather than shown
@@ -256,7 +260,8 @@ def _dedupe(contradictions: list[Contradiction]) -> list[Contradiction]:
 
 @compare_router.post("/compare", response_model=CompareResponse)
 def post_compare(request: CompareRequest, http_request: Request) -> CompareResponse:
-    """Detect contradictions between two documents (non-RAG, decompose-then-verify).
+    """
+    Detect contradictions between two documents (non-RAG, decompose-then-verify).
 
     Pins the SAME generator model + region as ``/query`` via ``pipeline_config``,
     decomposes each document into atomic quoted claims, then cross-examines the

@@ -41,7 +41,8 @@ ContradictionType = Literal[
 
 
 class Contradiction(BaseModel):
-    """One genuine contradiction between the two documents.
+    """
+    One genuine contradiction between the two documents.
 
     ``quote_a``/``quote_b`` are the EXACT conflicting spans from document A and
     document B respectively — verbatim source text, never a paraphrase, so the
